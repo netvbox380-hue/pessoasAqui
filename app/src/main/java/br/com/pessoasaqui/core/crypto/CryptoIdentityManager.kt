@@ -48,7 +48,7 @@ class CryptoIdentityManager {
 
     fun signChallenge(data: ByteArray): String {
         return try {
-            val privateKey = activeKeyPair?.private ?: return "mock-sig"
+            val privateKey = activeKeyPair?.private ?: return "sig-fallback"
             val signer = Signature.getInstance("SHA256withECDSA")
             signer.initSign(privateKey)
             signer.update(data)

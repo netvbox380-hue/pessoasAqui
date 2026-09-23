@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 
 /**
- * Controla a regra fundamental de sessão do PessoasAqui (Seção 18 do Prompt):
+ * Controla a regra fundamental de sessão do PessoasAqui:
  * "1 identidade = 1 dispositivo ativo"
  *
  * Ao recuperar com sucesso em um novo celular, a sessão do aparelho antigo é revogada imediatamente.

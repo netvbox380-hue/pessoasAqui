@@ -344,6 +344,41 @@ class PessoasAquiRepository(
         return proximitySimulator.generateFamilyRecoveryAuthorization(targetIdentityHash, familyName)
     }
 
+    suspend fun claimRecovery(recoveryKey: String, pin: String): Result<String> {
+        // Tenta validação e reivindicação no servidor de produção (Render / Supabase)
+        val remoteResult = networkClient.claimFamilyRecovery(
+            recoveryKey = recoveryKey.trim().uppercase(),
+            pin = pin.trim(),
+            newDeviceFingerprint = deviceSessionManager.getDeviceId()
+        )
+        if (remoteResult.isSuccess) {
+            val recoveredId = remoteResult.getOrThrow()
+            deviceSessionManager.resetSession()
+            return Result.success(recoveredId)
+        }
+
+        // Caso o servidor retorne erro ou chave seja do simulador local
+        val localAuth = proximitySimulator.findActiveRecoveryAuthorization(recoveryKey)
+        if (localAuth != null) {
+            val pinResult = pinSecurityManager.verifyPinForRecovery("session-device-new", pin)
+            if (pinResult.isSuccess) {
+                deviceSessionManager.resetSession()
+                return Result.success(localAuth.targetIdentityHash)
+            } else {
+                return Result.failure(pinResult.exceptionOrNull() ?: Exception("PIN incorreto"))
+            }
+        }
+
+        return Result.failure(remoteResult.exceptionOrNull() ?: Exception("Chave inválida ou expirada."))
+    }
+
+    suspend fun issueFamilyRecoveryRemote(targetIdentityHash: String): Result<String> {
+        return networkClient.issueFamilyRecovery(
+            targetIdentity = targetIdentityHash,
+            familyIdentity = cryptoIdentityManager.getTechnicalIdentity()
+        )
+    }
+
     fun transferIdentityToThisDevice(recoveredIdentityHash: String) {
         deviceSessionManager.resetSession()
     }

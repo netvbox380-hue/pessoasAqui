@@ -121,7 +121,7 @@ class ProximitySimulator(
             )
         )
 
-        // Oferta do Marcos Mecânico (exemplo do prompt)
+        // Oferta inicial de demonstração
         _localOffers.value = listOf(
             OfferItem(
                 id = "offer-1",
@@ -254,7 +254,6 @@ class ProximitySimulator(
 
     /**
      * Gera autorização temporária de recuperação de identidade por um familiar autorizado.
-     * (Seções 19, 20, 21 e 22 do Prompt)
      */
     fun generateFamilyRecoveryAuthorization(
         targetIdentityHash: String,

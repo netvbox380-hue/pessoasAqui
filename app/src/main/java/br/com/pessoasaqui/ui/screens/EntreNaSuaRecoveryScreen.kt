@@ -22,10 +22,11 @@ import androidx.compose.ui.unit.sp
 import br.com.pessoasaqui.core.crypto.PinSecurityManager
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.ui.theme.*
+import kotlinx.coroutines.launch
 
 /**
- * Tela "🔐 Entre na sua" (Seções 16 a 25 do Prompt).
- * NÃO é login tradicional (sem e-mail/senha/Google).
+ * Tela de Recuperação e Transferência de Identidade Criptográfica.
+ * Arquitetura segura sem dados tradicionais (sem e-mail/senha).
  * Fluxo de recuperação e transferência de identidade via autorização de familiar + PIN pessoal.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -33,16 +34,19 @@ import br.com.pessoasaqui.ui.theme.*
 fun EntreNaSuaRecoveryScreen(
     pinSecurityManager: PinSecurityManager,
     onFindAuthorization: (String) -> RecoveryAuthorization?,
+    onClaimRecovery: (suspend (recoveryKey: String, pin: String) -> Result<String>)? = null,
     onRecoverySuccess: (String) -> Unit,
     onBack: () -> Unit
 ) {
     val clipboardManager = LocalClipboardManager.current
+    val coroutineScope = rememberCoroutineScope()
     val recoverySessionId = remember { "session-device-new" }
 
     var recoveryKeyInput by remember { mutableStateOf("") }
     var validatedAuth by remember { mutableStateOf<RecoveryAuthorization?>(null) }
     var pinInput by remember { mutableStateOf("") }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
     var isSuccess by remember { mutableStateOf(false) }
 
     val lockoutState = pinSecurityManager.getLockoutState(recoverySessionId)
@@ -201,10 +205,19 @@ fun EntreNaSuaRecoveryScreen(
 
                         Button(
                             onClick = {
-                                val auth = onFindAuthorization(recoveryKeyInput)
+                                val key = recoveryKeyInput.trim().uppercase()
+                                val auth = onFindAuthorization(key)
                                 if (auth != null) {
                                     validatedAuth = auth
                                     statusMessage = "Autorização de ${auth.authorizedByFamilyName} validada!"
+                                } else if (key.startsWith("PA-REC-") || key.length >= 6) {
+                                    validatedAuth = RecoveryAuthorization(
+                                        targetIdentityHash = "REMOTE",
+                                        authorizedByFamilyName = "Familiar Autorizado",
+                                        recoveryKey = key,
+                                        expiresAtEpochMs = System.currentTimeMillis() + 15 * 60 * 1000
+                                    )
+                                    statusMessage = "Chave de autorização identificada. Prossiga para o PIN."
                                 } else {
                                     statusMessage = "Chave inválida ou expirada. Verifique se o familiar gerou a chave recentemente."
                                 }
@@ -266,7 +279,7 @@ fun EntreNaSuaRecoveryScreen(
                         OutlinedTextField(
                             value = pinInput,
                             onValueChange = { pinInput = it },
-                            label = { Text("Seu PIN Pessoal (Ex: 2B5C)") },
+                            label = { Text("Seu PIN Pessoal") },
                             singleLine = true,
                             enabled = !lockoutState.isLocked,
                             modifier = Modifier.fillMaxWidth(),
@@ -278,15 +291,29 @@ fun EntreNaSuaRecoveryScreen(
 
                         Button(
                             onClick = {
-                                val result = pinSecurityManager.verifyPinForRecovery(recoverySessionId, pinInput)
-                                if (result.isSuccess) {
-                                    isSuccess = true
-                                    onRecoverySuccess(validatedAuth!!.targetIdentityHash)
+                                if (onClaimRecovery != null) {
+                                    isLoading = true
+                                    coroutineScope.launch {
+                                        val result = onClaimRecovery(recoveryKeyInput, pinInput)
+                                        isLoading = false
+                                        if (result.isSuccess) {
+                                            isSuccess = true
+                                            onRecoverySuccess(result.getOrThrow())
+                                        } else {
+                                            statusMessage = result.exceptionOrNull()?.message
+                                        }
+                                    }
                                 } else {
-                                    statusMessage = result.exceptionOrNull()?.message
+                                    val result = pinSecurityManager.verifyPinForRecovery(recoverySessionId, pinInput)
+                                    if (result.isSuccess) {
+                                        isSuccess = true
+                                        onRecoverySuccess(validatedAuth!!.targetIdentityHash)
+                                    } else {
+                                        statusMessage = result.exceptionOrNull()?.message
+                                    }
                                 }
                             },
-                            enabled = pinInput.isNotBlank() && !lockoutState.isLocked,
+                            enabled = pinInput.isNotBlank() && !lockoutState.isLocked && !isLoading,
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -294,7 +321,17 @@ fun EntreNaSuaRecoveryScreen(
                                 contentColor = DeepBlack
                             )
                         ) {
-                            Text("Confirmar PIN e Restaurar Identidade", fontWeight = FontWeight.Bold)
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = DeepBlack,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Restaurando...", fontWeight = FontWeight.Bold)
+                            } else {
+                                Text("Confirmar PIN e Restaurar Identidade", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -319,7 +356,7 @@ fun EntreNaSuaRecoveryScreen(
                 }
             }
 
-            // Regra Crítica da Seção 24 (Alerta de Garantia de Isolamento)
+            // Alerta de Garantia de Isolamento de Dispositivo
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = DarkCard,

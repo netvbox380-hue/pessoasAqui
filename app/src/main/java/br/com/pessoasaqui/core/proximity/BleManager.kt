@@ -180,7 +180,7 @@ class BleManager(
         val rssi = result.rssi
         val distance = distanceEstimator.estimateDistanceMeters(rssi)
 
-        // REGRA DE OURO (Seção 3 do Prompt):
+        // Regra de Proximidade Física Estrita (10 metros):
         // Se a distância estimada ultrapassar 10 metros, descarta imediatamente!
         if (!distanceEstimator.isWithin10Meters(distance)) {
             return

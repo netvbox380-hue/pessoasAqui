@@ -5,18 +5,17 @@ import java.security.MessageDigest
 
 /**
  * Gerencia a segurança do PIN do usuário e a proteção estrita contra força bruta
- * durante o processo de recuperação ("🔐 Entre na sua").
+ * durante o processo de recuperação de identidade.
  *
- * Em conformidade com a Seção 23 e 24 do Prompt-Mestre:
- * - Escada progressiva de bloqueio: 1-2 livre, 3ª=5h, 4ª=10h, 5ª=24h, 6ª=48h, 7ª=7d, 8ª=15d, 9ª=30d, 10ª=cancelada.
- * - Regra Crítica: Falhas no novo aparelho NÃO afetam nem desconectam a sessão ativa no aparelho antigo!
+ * Escada progressiva de bloqueio: 1-2 livre, 3ª=5h, 4ª=10h, 5ª=24h, 6ª=48h, 7ª=7d, 8ª=15d, 9ª=30d, 10ª=cancelada.
+ * Regra Crítica: Falhas no novo aparelho NÃO afetam nem desconectam a sessão ativa no aparelho antigo.
  */
 class PinSecurityManager {
 
     private val recoveryAttempts = mutableMapOf<String, RecoveryAttemptTracker>()
     
     // Hash do PIN configurado pelo usuário para sua identidade (salgado e com SHA-256)
-    private var registeredPinHash: String = hashPin("2B5C") // Exemplo padrão do prompt
+    private var registeredPinHash: String = hashPin("0000")
 
     data class RecoveryAttemptTracker(
         var failedAttempts: Int = 0,
@@ -118,7 +117,7 @@ class PinSecurityManager {
     }
 
     /**
-     * Duração do bloqueio em segundos conforme Seção 23 do Prompt:
+     * Duração do bloqueio progressivo em segundos:
      * 1ª e 2ª: 0s
      * 3ª: 5h (18.000s)
      * 4ª: 10h (36.000s)

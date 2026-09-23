@@ -149,6 +149,9 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
                 onFindAuthorization = { key ->
                     repository.proximitySimulator.findActiveRecoveryAuthorization(key)
                 },
+                onClaimRecovery = { key, pin ->
+                    repository.claimRecovery(key, pin)
+                },
                 onRecoverySuccess = { recoveredHash ->
                     repository.transferIdentityToThisDevice(recoveredHash)
                 },

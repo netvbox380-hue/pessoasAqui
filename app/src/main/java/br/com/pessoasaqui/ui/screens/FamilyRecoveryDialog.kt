@@ -29,7 +29,7 @@ import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.ui.theme.*
 
 /**
- * Diálogo gerado pelo familiar autorizado (Seções 19, 20, 21 e 22 do Prompt).
+ * Diálogo gerado pelo familiar autorizado para recuperação de identidade.
  * Exibe o QR Code real gerado com ZXing e chave temporária criptográfica de uso único para recuperação.
  */
 @Composable

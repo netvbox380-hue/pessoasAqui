@@ -6,7 +6,7 @@ object BleConstants {
     // UUID customizado para o serviço de presença PessoasAqui
     val SERVICE_UUID: UUID = UUID.fromString("0000PA01-0000-1000-8000-00805F9B34FB")
     
-    // Limite estrito de descoberta física (Seção 3 do Prompt)
+    // Limite estrito de descoberta física de proximidade (10 metros)
     const val MAX_DISCOVERY_DISTANCE_METERS = 10.0
 
     // Constantes do modelo de perda de propagação (Log-Distance Path Loss)

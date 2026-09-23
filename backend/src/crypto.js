@@ -14,7 +14,7 @@ function generateNonce() {
 }
 
 /**
- * Escada progressiva de bloqueio por tentativas de PIN (Seção 23 do Prompt)
+ * Escada progressiva de bloqueio por tentativas de PIN
  */
 function calculateLockoutDurationSeconds(attempts) {
   switch (attempts) {

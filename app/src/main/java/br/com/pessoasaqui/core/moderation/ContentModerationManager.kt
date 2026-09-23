@@ -3,7 +3,7 @@ package br.com.pessoasaqui.core.moderation
 import java.security.MessageDigest
 
 /**
- * Motor de Moderação de Conteúdo e Proteção da Comunidade (Seções 29 a 34 do Prompt):
+ * Motor de Moderação de Conteúdo e Proteção da Comunidade:
  * "Liberdade para entrar. Consequências para abuso."
  *
  * Bloqueia conteúdos impróprios, assédio, spam, fraudes e possui tolerância zero
