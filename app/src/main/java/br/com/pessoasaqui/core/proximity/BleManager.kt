@@ -41,7 +41,13 @@ class BleManager(
     private var scanCallback: ScanCallback? = null
 
     val isBluetoothSupported: Boolean get() = bluetoothAdapter != null
-    val isBluetoothEnabled: Boolean get() = bluetoothAdapter?.isEnabled == true
+    val isBluetoothEnabled: Boolean
+        get() = try {
+            bluetoothAdapter?.isEnabled == true
+        } catch (e: Throwable) {
+            Log.w(tag, "Não foi possível verificar status do Bluetooth: ${e.message}")
+            false
+        }
 
     /**
      * Inicia a transmissão (Advertising) deste aparelho para que outros aparelhos a até 10m o vejam.
@@ -53,7 +59,12 @@ class BleManager(
         myIntent: UserIntent
     ) {
         if (!isBluetoothEnabled) return
-        advertiser = bluetoothAdapter?.bluetoothLeAdvertiser ?: return
+        advertiser = try {
+            bluetoothAdapter?.bluetoothLeAdvertiser
+        } catch (e: Throwable) {
+            Log.w(tag, "Não foi possível obter advertiser BLE: ${e.message}")
+            null
+        } ?: return
 
         stopAdvertising()
 
@@ -112,7 +123,12 @@ class BleManager(
     @SuppressLint("MissingPermission")
     fun startScanning(onPeerDiscovered: (NearbyPerson) -> Unit) {
         if (!isBluetoothEnabled) return
-        scanner = bluetoothAdapter?.bluetoothLeScanner ?: return
+        scanner = try {
+            bluetoothAdapter?.bluetoothLeScanner
+        } catch (e: Throwable) {
+            Log.w(tag, "Não foi possível obter scanner BLE: ${e.message}")
+            null
+        } ?: return
 
         stopScanning()
 

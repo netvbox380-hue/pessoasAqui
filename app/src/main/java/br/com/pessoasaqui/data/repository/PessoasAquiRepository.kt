@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import br.com.pessoasaqui.core.proximity.BleManager
 import kotlinx.coroutines.flow.combine
 
+import android.content.Context
 import br.com.pessoasaqui.data.remote.PessoasAquiNetworkClient
 
 /**
@@ -24,6 +25,7 @@ import br.com.pessoasaqui.data.remote.PessoasAquiNetworkClient
  * identidade técnica, radar de proximidade de 10 metros e fluxos de recuperação.
  */
 class PessoasAquiRepository(
+    val context: Context? = null,
     val cryptoIdentityManager: CryptoIdentityManager = CryptoIdentityManager(),
     val pinSecurityManager: PinSecurityManager = PinSecurityManager(),
     val deviceSessionManager: DeviceSessionManager = DeviceSessionManager(),
@@ -32,12 +34,13 @@ class PessoasAquiRepository(
     val bleManager: BleManager? = null,
     val networkClient: PessoasAquiNetworkClient = PessoasAquiNetworkClient()
 ) {
+    private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
 
-    // Estado do usuário atual neste aparelho
-    private val _isAgeVerified = MutableStateFlow(false)
+    // Estado do usuário atual neste aparelho persistido com SharedPreferences
+    private val _isAgeVerified = MutableStateFlow(prefs?.getBoolean("is_age_verified", false) ?: false)
     val isAgeVerified: StateFlow<Boolean> = _isAgeVerified.asStateFlow()
 
-    private val _hasGrantedPermissions = MutableStateFlow(false)
+    private val _hasGrantedPermissions = MutableStateFlow(prefs?.getBoolean("has_granted_permissions", false) ?: false)
     val hasGrantedPermissions: StateFlow<Boolean> = _hasGrantedPermissions.asStateFlow()
 
     private val _currentAlias = MutableStateFlow("Eu")
@@ -64,6 +67,10 @@ class PessoasAquiRepository(
                 deviceSessionManager.revokeCurrentDeviceSession()
             }
         )
+
+        if (_hasGrantedPermissions.value) {
+            startNativeBleHardware()
+        }
     }
 
     val localOffers: StateFlow<List<OfferItem>> = proximitySimulator.localOffers
@@ -72,16 +79,19 @@ class PessoasAquiRepository(
 
     fun completeAgeVerification() {
         _isAgeVerified.value = true
+        prefs?.edit()?.putBoolean("is_age_verified", true)?.apply()
     }
 
     fun completePermissions() {
         _hasGrantedPermissions.value = true
+        prefs?.edit()?.putBoolean("has_granted_permissions", true)?.apply()
         startNativeBleHardware()
     }
 
     private fun startNativeBleHardware() {
-        bleManager?.let { ble ->
-            if (ble.isBluetoothEnabled) {
+        try {
+            bleManager?.let { ble ->
+                if (ble.isBluetoothEnabled) {
                 ble.startAdvertising(
                     myIdentityHash = cryptoIdentityManager.getTechnicalIdentity(),
                     myAlias = _currentAlias.value,
@@ -99,7 +109,10 @@ class PessoasAquiRepository(
                 }
             }
         }
+    } catch (e: Throwable) {
+        android.util.Log.e("PessoasAqui", "BLE não disponível ou permissão ausente: ${e.message}")
     }
+}
 
     fun setAlias(newAlias: String) {
         if (newAlias.isNotBlank()) {

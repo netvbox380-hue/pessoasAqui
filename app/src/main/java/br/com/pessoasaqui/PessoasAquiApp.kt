@@ -14,6 +14,6 @@ class PessoasAquiApp : Application() {
     override fun onCreate() {
         super.onCreate()
         val ble = BleManager(this)
-        repository = PessoasAquiRepository(bleManager = ble)
+        repository = PessoasAquiRepository(context = this, bleManager = ble)
     }
 }
