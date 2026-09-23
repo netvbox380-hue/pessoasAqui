@@ -199,6 +199,23 @@ class ProximitySimulator(
     }
 
     /**
+     * Vincula um contato como familiar autorizado
+     */
+    fun setFamilyRole(personId: String, role: FamilyRole) {
+        val index = allSimulatedPeers.indexOfFirst { it.id == personId }
+        if (index != -1) {
+            val current = allSimulatedPeers[index]
+            allSimulatedPeers[index] = current.copy(
+                isFamily = true,
+                familyRole = role,
+                isPhotoVisible = true,
+                isMutualConnection = true
+            )
+            refreshDiscoveredList()
+        }
+    }
+
+    /**
      * Altera a distância simulada de um contato para testar o limite de 10 metros.
      */
     fun updateSimulatedDistance(personId: String, newDistance: Double) {

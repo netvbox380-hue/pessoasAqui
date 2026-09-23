@@ -115,6 +115,9 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
                 onSendMessage = { text ->
                     repository.sendPrivateMessage(screen.person.id, text)
                 },
+                onSetFamilyRole = { targetPerson, role ->
+                    repository.setFamilyRole(targetPerson.id, role)
+                },
                 onGenerateFamilyRecovery = { targetPerson ->
                     val auth = repository.generateFamilyRecovery(
                         targetIdentityHash = targetPerson.technicalIdentityHash,

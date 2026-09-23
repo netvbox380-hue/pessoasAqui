@@ -1,6 +1,7 @@
 package br.com.pessoasaqui.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -18,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import br.com.pessoasaqui.domain.model.ChatMessage
+import br.com.pessoasaqui.domain.model.FamilyRole
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.ui.theme.*
 
@@ -28,12 +30,15 @@ fun ChatDetailScreen(
     messages: List<ChatMessage>,
     onBack: () -> Unit,
     onSendMessage: (String) -> Unit,
+    onSetFamilyRole: (NearbyPerson, FamilyRole) -> Unit = { _, _ -> },
     onGenerateFamilyRecovery: (NearbyPerson) -> Unit,
     onBlockUser: (String) -> Unit,
     onReportUser: (String) -> Unit
 ) {
     var inputText by remember { mutableStateOf("") }
     var menuExpanded by remember { mutableStateOf(false) }
+    var showFamilyRoleDialog by remember { mutableStateOf(false) }
+    var callNoticeMessage by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
         topBar = {
@@ -65,7 +70,7 @@ fun ChatDetailScreen(
                                 )
                             )
                             Text(
-                                text = if (person.isFamily) "Família • Vínculo Seguro" else "Conexão Mútua • Ponto a Ponto",
+                                text = if (person.isFamily) "Família • ${person.familyRole?.label ?: "Vínculo Seguro"}" else "Conexão Mútua • Ponto a Ponto",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = if (person.isFamily) FamilyPurple else EmeraldGreen
                                 )
@@ -83,6 +88,29 @@ fun ChatDetailScreen(
                     }
                 },
                 actions = {
+                    // Ícone de Chamada de Voz
+                    IconButton(onClick = {
+                        callNoticeMessage = "Chamada de Voz: o recurso de chamadas WebRTC P2P será ativado no próximo update. Mensagens criptografadas E2EE estão 100% ativas!"
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Call,
+                            contentDescription = "Chamada de Voz",
+                            tint = RadarCyan
+                        )
+                    }
+
+                    // Ícone de Chamada de Vídeo
+                    IconButton(onClick = {
+                        callNoticeMessage = "Chamada de Vídeo: o streaming de vídeo P2P direto será ativado no próximo update. Mensagens criptografadas E2EE estão 100% ativas!"
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Videocam,
+                            contentDescription = "Chamada de Vídeo",
+                            tint = RadarCyan
+                        )
+                    }
+
+                    // Menu Mais Opções
                     IconButton(onClick = { menuExpanded = true }) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
@@ -96,8 +124,21 @@ fun ChatDetailScreen(
                         onDismissRequest = { menuExpanded = false },
                         modifier = Modifier.background(DarkSurface)
                     ) {
-                        // Seção 15 e 22: Familiar gera autorização de recuperação para a identidade
-                        if (person.isFamily) {
+                        if (!person.isFamily) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "👨‍👩‍👧 Vincular como Familiar",
+                                        color = FamilyPurple,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    showFamilyRoleDialog = true
+                                }
+                            )
+                        } else {
                             DropdownMenuItem(
                                 text = {
                                     Text(
@@ -114,7 +155,7 @@ fun ChatDetailScreen(
                         }
 
                         DropdownMenuItem(
-                            text = { Text("Bloquear", color = TextPrimary) },
+                            text = { Text("Bloquear contato", color = TextPrimary) },
                             onClick = {
                                 menuExpanded = false
                                 onBlockUser(person.id)
@@ -142,30 +183,35 @@ fun ChatDetailScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Faixa de segurança criptográfica
+            // Aviso de Criptografia de Ponta a Ponta
             Surface(
+                shape = RoundedCornerShape(0.dp),
                 color = DarkCard,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Lock,
                         contentDescription = null,
-                        tint = RadarCyan,
+                        tint = EmeraldGreen,
                         modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Criptografia de ponta a ponta ativa. Comunicação autorizada à distância.",
-                        style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary)
+                        text = "Conversa Cifrada Ponta a Ponta (E2EE)",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = EmeraldGreen,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     )
                 }
             }
 
-            // Lista de mensagens
+            // Lista de Mensagens
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
@@ -180,64 +226,154 @@ fun ChatDetailScreen(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(
-                                topStart = 14.dp,
-                                topEnd = 14.dp,
-                                bottomStart = if (isMe) 14.dp else 2.dp,
-                                bottomEnd = if (isMe) 2.dp else 14.dp
+                                topStart = 16.dp,
+                                topEnd = 16.dp,
+                                bottomStart = if (isMe) 16.dp else 4.dp,
+                                bottomEnd = if (isMe) 4.dp else 16.dp
                             ),
-                            color = if (isMe) RadarCyan else DarkCardElevated,
+                            color = if (isMe) RadarCyan else DarkSurface,
                             modifier = Modifier.widthIn(max = 280.dp)
                         ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
+                            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                                 Text(
                                     text = msg.text,
                                     style = MaterialTheme.typography.bodyMedium.copy(
-                                        color = if (isMe) DeepBlack else TextPrimary
+                                        color = if (isMe) DeepBlack else TextPrimary,
+                                        fontWeight = FontWeight.Medium
                                     )
                                 )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Row(
+                                    modifier = Modifier.align(Alignment.End),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = null,
+                                        tint = if (isMe) DeepBlack.copy(alpha = 0.6f) else TextSecondary,
+                                        modifier = Modifier.size(10.dp)
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Barra inferior de envio
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(DarkSurface)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // Barra Inferior de Entrada de Texto
+            Surface(
+                color = DarkSurface,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                OutlinedTextField(
-                    value = inputText,
-                    onValueChange = { inputText = it },
-                    placeholder = { Text("Mensagem privada...") },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = RadarCyan,
-                        unfocusedBorderColor = DarkCardElevated
-                    ),
-                    singleLine = true
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                IconButton(
-                    onClick = {
-                        if (inputText.isNotBlank()) {
-                            onSendMessage(inputText)
-                            inputText = ""
-                        }
-                    },
-                    colors = IconButtonDefaults.iconButtonColors(containerColor = RadarCyan)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Send,
-                        contentDescription = "Enviar",
-                        tint = DeepBlack
+                    OutlinedTextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        placeholder = { Text("Mensagem cifrada...") },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(24.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = RadarCyan,
+                            unfocusedBorderColor = DarkCardElevated
+                        ),
+                        singleLine = true
                     )
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    IconButton(
+                        onClick = {
+                            if (inputText.isNotBlank()) {
+                                onSendMessage(inputText)
+                                inputText = ""
+                            }
+                        },
+                        colors = IconButtonDefaults.iconButtonColors(containerColor = RadarCyan)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Send,
+                            contentDescription = "Enviar",
+                            tint = DeepBlack
+                        )
+                    }
                 }
             }
+        }
+
+        // Diálogo para vincular papel de familiar
+        if (showFamilyRoleDialog) {
+            AlertDialog(
+                onDismissRequest = { showFamilyRoleDialog = false },
+                title = { Text("Vincular ${person.alias} como Familiar", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Familiares têm acesso a recuperação mútua de identidade e foto de perfil.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        )
+                        FamilyRole.values().forEach { role ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = DarkCard,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onSetFamilyRole(person, role)
+                                        showFamilyRoleDialog = false
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = role.label,
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showFamilyRoleDialog = false }) {
+                        Text("Cancelar", color = TextSecondary)
+                    }
+                },
+                containerColor = DarkSurface
+            )
+        }
+
+        // Aviso Informativo de Chamadas de Voz/Vídeo
+        callNoticeMessage?.let { notice ->
+            AlertDialog(
+                onDismissRequest = { callNoticeMessage = null },
+                title = { Text("Chamada Criptografada", fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        text = notice,
+                        style = MaterialTheme.typography.bodyMedium.copy(color = TextSecondary)
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { callNoticeMessage = null },
+                        colors = ButtonDefaults.buttonColors(containerColor = RadarCyan, contentColor = DeepBlack)
+                    ) {
+                        Text("Entendido", fontWeight = FontWeight.Bold)
+                    }
+                },
+                containerColor = DarkSurface
+            )
         }
     }
 }

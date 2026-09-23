@@ -340,6 +340,24 @@ class PessoasAquiRepository(
         return mod
     }
 
+    fun setFamilyRole(personId: String, role: br.com.pessoasaqui.domain.model.FamilyRole) {
+        val currentReal = _realDiscoveredPeople.value.toMutableList()
+        val idx = currentReal.indexOfFirst { it.id == personId || it.technicalIdentityHash == personId }
+        if (idx != -1) {
+            val p = currentReal[idx]
+            currentReal[idx] = p.copy(
+                isFamily = true,
+                familyRole = role,
+                isPhotoVisible = true,
+                isMutualConnection = true
+            )
+            _realDiscoveredPeople.value = currentReal
+            updateUnifiedData()
+        }
+        proximitySimulator.setFamilyRole(personId, role)
+        updateUnifiedData()
+    }
+
     fun generateFamilyRecovery(targetIdentityHash: String, familyName: String): RecoveryAuthorization {
         return proximitySimulator.generateFamilyRecoveryAuthorization(targetIdentityHash, familyName)
     }
