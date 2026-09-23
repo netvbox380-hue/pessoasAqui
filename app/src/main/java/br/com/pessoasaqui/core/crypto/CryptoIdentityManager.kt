@@ -42,6 +42,10 @@ class CryptoIdentityManager {
         return technicalIdentityHash
     }
 
+    fun getPublicKeyBase64(): String {
+        return activeKeyPair?.public?.encoded?.let { Base64.getEncoder().encodeToString(it) } ?: technicalIdentityHash
+    }
+
     fun signChallenge(data: ByteArray): String {
         return try {
             val privateKey = activeKeyPair?.private ?: return "mock-sig"

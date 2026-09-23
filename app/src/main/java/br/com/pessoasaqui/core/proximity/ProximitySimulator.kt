@@ -214,6 +214,13 @@ class ProximitySimulator(
     }
 
     /**
+     * Adiciona nova oferta local (10 metros)
+     */
+    fun addLocalOffer(offer: OfferItem) {
+        _localOffers.value = listOf(offer) + _localOffers.value
+    }
+
+    /**
      * Envia mensagem no chat local (10 metros)
      */
     fun sendLocalMessage(text: String, myAlias: String) {

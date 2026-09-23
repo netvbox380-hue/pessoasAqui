@@ -38,6 +38,7 @@ class MainActivity : ComponentActivity() {
 
 sealed class Screen {
     object AgeGate : Screen()
+    object ProfileSetup : Screen()
     object Permissions : Screen()
     object Main : Screen()
     data class Chat(val person: NearbyPerson) : Screen()
@@ -47,19 +48,24 @@ sealed class Screen {
 @Composable
 fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
     val isAgeVerified by repository.isAgeVerified.collectAsState()
+    val hasCompletedProfile by repository.hasCompletedProfile.collectAsState()
     val hasGrantedPermissions by repository.hasGrantedPermissions.collectAsState()
+    val currentAlias by repository.currentAlias.collectAsState()
     val privateChats by repository.privateChats.collectAsState()
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
 
-    // Sincroniza estado de onboarding inicial
-    LaunchedEffect(isAgeVerified, hasGrantedPermissions) {
+    // Sincroniza estado de onboarding inicial em ordem lógica de produção:
+    // 1. Barreira +18 -> 2. Perfil (Nome & Intenção) -> 3. Permissões de Rádio -> 4. Radar Ativo
+    LaunchedEffect(isAgeVerified, hasCompletedProfile, hasGrantedPermissions) {
         if (!isAgeVerified) {
             currentScreen = Screen.AgeGate
+        } else if (!hasCompletedProfile) {
+            currentScreen = Screen.ProfileSetup
         } else if (!hasGrantedPermissions) {
             currentScreen = Screen.Permissions
-        } else if (currentScreen is Screen.AgeGate || currentScreen is Screen.Permissions) {
+        } else if (currentScreen is Screen.AgeGate || currentScreen is Screen.ProfileSetup || currentScreen is Screen.Permissions) {
             currentScreen = Screen.Main
         }
     }
@@ -69,6 +75,15 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
             AgeGateScreen(
                 onAgeVerified = {
                     repository.completeAgeVerification()
+                }
+            )
+        }
+
+        is Screen.ProfileSetup -> {
+            ProfileSetupScreen(
+                initialAlias = currentAlias,
+                onProfileCompleted = { alias, intent ->
+                    repository.completeProfile(alias, intent)
                 }
             )
         }

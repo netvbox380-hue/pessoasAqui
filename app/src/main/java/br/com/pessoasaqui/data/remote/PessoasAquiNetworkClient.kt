@@ -163,12 +163,17 @@ class PessoasAquiNetworkClient(
     }
 
     /**
-     * Inicia conexão WebSocket em tempo real para Relay E2EE e Notificações de Revogação de Sessão
+     * Inicia conexão WebSocket em tempo real para Relay E2EE, Presença e Notificações de Revogação
      */
     fun startRealtimeSocket(
         myIdentityHash: String,
+        myAlias: String = "Eu",
+        myIntent: String = "QUERO_CONVERSAR",
         onE2eeMessageReceived: (senderHash: String, payload: String, iv: String) -> Unit,
-        onSessionRevoked: (notice: String) -> Unit
+        onSessionRevoked: (notice: String) -> Unit,
+        onPresenceSync: ((List<RemotePeer>) -> Unit)? = null,
+        onPeerOnline: ((RemotePeer) -> Unit)? = null,
+        onPeerOffline: ((String) -> Unit)? = null
     ) {
         disconnectSocket()
 
@@ -176,10 +181,12 @@ class PessoasAquiNetworkClient(
         activeWebSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 isWsConnected = true
-                // Autentica este dispositivo no socket com sua identidade
+                // Autentica este dispositivo no socket com sua identidade, alias e intenção
                 val authMsg = JSONObject().apply {
                     put("type", "AUTH")
                     put("identityHash", myIdentityHash)
+                    put("alias", myAlias)
+                    put("intent", myIntent)
                 }
                 webSocket.send(authMsg.toString())
             }
@@ -197,6 +204,40 @@ class PessoasAquiNetworkClient(
                         "SESSION_REVOKED" -> {
                             val msg = obj.optString("message", "Sessão revogada: sua identidade foi resgatada em outro aparelho.")
                             onSessionRevoked(msg)
+                        }
+                        "PRESENCE_SYNC" -> {
+                            val peersArray = obj.optJSONArray("peers")
+                            val peersList = mutableListOf<RemotePeer>()
+                            if (peersArray != null) {
+                                for (i in 0 until peersArray.length()) {
+                                    val p = peersArray.getJSONObject(i)
+                                    peersList.add(
+                                        RemotePeer(
+                                            identityHash = p.getString("identityHash"),
+                                            alias = p.optString("alias", "Pessoa Próxima"),
+                                            intent = p.optString("intent", "QUERO_CONVERSAR")
+                                        )
+                                    )
+                                }
+                            }
+                            onPresenceSync?.invoke(peersList)
+                        }
+                        "PEER_ONLINE" -> {
+                            val p = obj.optJSONObject("peer")
+                            if (p != null) {
+                                val peer = RemotePeer(
+                                    identityHash = p.getString("identityHash"),
+                                    alias = p.optString("alias", "Pessoa Próxima"),
+                                    intent = p.optString("intent", "QUERO_CONVERSAR")
+                                )
+                                onPeerOnline?.invoke(peer)
+                            }
+                        }
+                        "PEER_OFFLINE" -> {
+                            val offHash = obj.optString("identityHash")
+                            if (offHash.isNotBlank()) {
+                                onPeerOffline?.invoke(offHash)
+                            }
                         }
                     }
                 } catch (e: Exception) {
@@ -228,6 +269,63 @@ class PessoasAquiNetworkClient(
         return ws.send(envelope.toString())
     }
 
+    /**
+     * Envia heartbeat de presença HTTP para o backend
+     */
+    suspend fun sendPresenceHeartbeat(identityHash: String, alias: String, intent: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("identityHash", identityHash)
+                put("alias", alias)
+                put("intent", intent)
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/presence/heartbeat")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                Result.success(response.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Busca usuários ativos recentemente no radar via API REST
+     */
+    suspend fun fetchNearbyPresence(myIdentity: String): Result<List<RemotePeer>> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$baseUrl/api/presence/nearby?myIdentity=$myIdentity")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string() ?: "{}"
+                val obj = JSONObject(bodyStr)
+                val peersArray = obj.optJSONArray("people")
+                val peersList = mutableListOf<RemotePeer>()
+                if (peersArray != null) {
+                    for (i in 0 until peersArray.length()) {
+                        val p = peersArray.getJSONObject(i)
+                        peersList.add(
+                            RemotePeer(
+                                identityHash = p.getString("identityHash"),
+                                alias = p.optString("alias", "Pessoa Próxima"),
+                                intent = p.optString("intent", "QUERO_CONVERSAR")
+                            )
+                        )
+                    }
+                }
+                Result.success(peersList)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun disconnectSocket() {
         try {
             activeWebSocket?.close(1000, "App closed")
@@ -236,3 +334,9 @@ class PessoasAquiNetworkClient(
         isWsConnected = false
     }
 }
+
+data class RemotePeer(
+    val identityHash: String,
+    val alias: String,
+    val intent: String
+)

@@ -1,6 +1,7 @@
 package br.com.pessoasaqui.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,12 +29,17 @@ fun MainScreen(
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var showIntentSelector by remember { mutableStateOf(false) }
     var showPlayground by remember { mutableStateOf(false) }
+    var showTopMenu by remember { mutableStateOf(false) }
+    var showEditProfileDialog by remember { mutableStateOf(false) }
+    var tempAliasInput by remember { mutableStateOf("") }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
 
     val people by repository.discoveredPeople.collectAsState()
     val offers by repository.localOffers.collectAsState()
     val localMessages by repository.localChatMessages.collectAsState()
     val currentIntent by repository.currentIntent.collectAsState()
+    val currentAlias by repository.currentAlias.collectAsState()
+    val isDemoMode by repository.isDemoMode.collectAsState()
     val isSessionRevoked by repository.deviceSessionManager.isSessionRevoked.collectAsState()
     val revocationNotice by repository.deviceSessionManager.revocationNotice.collectAsState()
 
@@ -61,30 +67,95 @@ fun MainScreen(
                     }
                 },
                 actions = {
-                    // Botão Playground de Testes
-                    IconButton(onClick = { showPlayground = true }) {
-                        Icon(
-                            imageVector = Icons.Default.Science,
-                            contentDescription = "Playground de Proximidade",
-                            tint = TextSecondary
-                        )
+                    // Chip com o perfil do usuário ativo neste aparelho
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = RadarCyan.copy(alpha = 0.12f),
+                        modifier = Modifier
+                            .clickable {
+                                tempAliasInput = currentAlias
+                                showEditProfileDialog = true
+                            }
+                            .padding(end = 4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AccountCircle,
+                                contentDescription = null,
+                                tint = RadarCyan,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = currentAlias,
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = RadarCyan
+                                ),
+                                maxLines = 1
+                            )
+                        }
                     }
 
-                    // Botão "🔐 Entre na sua" (Seção 16 do Prompt)
-                    Button(
-                        onClick = onOpenEntreNaSua,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = DarkCardElevated,
-                            contentColor = RadarCyan
-                        ),
-                        shape = RoundedCornerShape(20.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier.padding(end = 8.dp)
-                    ) {
-                        Text(
-                            text = "🔐 Entre na sua",
-                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                        )
+                    // Menu dropdown com opções de restauração e demonstração
+                    Box {
+                        IconButton(onClick = { showTopMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "Mais opções",
+                                tint = TextSecondary
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showTopMenu,
+                            onDismissRequest = { showTopMenu = false },
+                            modifier = Modifier.background(DarkSurface)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Editar Meu Apelido", color = TextPrimary) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Edit, contentDescription = null, tint = RadarCyan)
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    tempAliasInput = currentAlias
+                                    showEditProfileDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Restaurar em Outro Celular", color = TextPrimary) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.VpnKey, contentDescription = null, tint = RadarCyan)
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    onOpenEntreNaSua()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (isDemoMode) "Desativar Modo Demonstração" else "Ativar Modo Demonstração",
+                                        color = if (isDemoMode) WarningAmber else TextPrimary
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Science,
+                                        contentDescription = null,
+                                        tint = if (isDemoMode) WarningAmber else TextSecondary
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    repository.toggleDemoMode()
+                                }
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkSurface)
@@ -208,6 +279,8 @@ fun MainScreen(
                     0 -> PeopleRadarTab(
                         people = people,
                         currentIntent = currentIntent,
+                        isDemoMode = isDemoMode,
+                        onToggleDemoMode = { repository.toggleDemoMode() },
                         onOpenIntentSelector = { showIntentSelector = true },
                         onToggleMark = { personId ->
                             repository.toggleMarkPerson(personId)
@@ -228,6 +301,9 @@ fun MainScreen(
                         offers = offers,
                         onToggleMarkAuthor = { authorId ->
                             repository.toggleMarkPerson(authorId)
+                        },
+                        onPostOffer = { prof, desc ->
+                            repository.postLocalOffer(prof, desc)
                         }
                     )
                 }
@@ -249,6 +325,59 @@ fun MainScreen(
                 NearbyPlaygroundSheet(
                     simulator = repository.proximitySimulator,
                     onDismiss = { showPlayground = false }
+                )
+            }
+
+            // Diálogo de Edição de Apelido
+            if (showEditProfileDialog) {
+                AlertDialog(
+                    onDismissRequest = { showEditProfileDialog = false },
+                    title = { Text("Meu Perfil de Presença", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                text = "Este é o nome visível para pessoas a até 10 metros.",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                            )
+                            OutlinedTextField(
+                                value = tempAliasInput,
+                                onValueChange = { tempAliasInput = it },
+                                label = { Text("Seu Nome / Apelido") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = DarkCard,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "ID Criptográfico: #${repository.cryptoIdentityManager.getTechnicalIdentity().take(8)}",
+                                    style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary),
+                                    modifier = Modifier.padding(8.dp)
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                if (tempAliasInput.isNotBlank()) {
+                                    repository.setAlias(tempAliasInput)
+                                    showEditProfileDialog = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = RadarCyan, contentColor = DeepBlack)
+                        ) {
+                            Text("Salvar", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showEditProfileDialog = false }) {
+                            Text("Cancelar", color = TextSecondary)
+                        }
+                    },
+                    containerColor = DarkSurface
                 )
             }
 

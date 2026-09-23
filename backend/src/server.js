@@ -20,6 +20,8 @@ initDatabase();
 
 // Mapa de conexões WebSocket ativas: identityHash -> Set de WebSockets
 const activeSockets = new Map();
+// Mapa de presença ativa em tempo real: identityHash -> { identityHash, alias, intent, lastSeen }
+const activePresence = new Map();
 
 wss.on('connection', (ws, req) => {
   let authenticatedIdentity = null;
@@ -34,8 +36,40 @@ wss.on('connection', (ws, req) => {
           activeSockets.set(authenticatedIdentity, new Set());
         }
         activeSockets.get(authenticatedIdentity).add(ws);
+
+        activePresence.set(authenticatedIdentity, {
+          identityHash: authenticatedIdentity,
+          alias: msg.alias || 'Usuário PessoasAqui',
+          intent: msg.intent || 'QUERO_CONVERSAR',
+          lastSeen: Date.now()
+        });
+
         ws.send(JSON.stringify({ type: 'AUTH_SUCCESS', identityHash: authenticatedIdentity }));
-        console.log(`[WS] Dispositivo conectado para identidade: ${authenticatedIdentity}`);
+        console.log(`[WS] Dispositivo conectado para identidade: ${authenticatedIdentity} (${msg.alias || 'Anônimo'})`);
+
+        // Envia lista atual de usuários presentes no radar para o novo cliente
+        const now = Date.now();
+        const existingPeers = Array.from(activePresence.values())
+          .filter(p => p.identityHash !== authenticatedIdentity && (now - p.lastSeen < 120000));
+        ws.send(JSON.stringify({ type: 'PRESENCE_SYNC', peers: existingPeers }));
+
+        // Transmite anúncio de presença para os demais aparelhos conectados
+        const peerData = activePresence.get(authenticatedIdentity);
+        wss.clients.forEach((client) => {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: 'PEER_ONLINE', peer: peerData }));
+          }
+        });
+      }
+
+      // Heartbeat periódico pelo WebSocket
+      if (msg.type === 'HEARTBEAT' && authenticatedIdentity) {
+        if (activePresence.has(authenticatedIdentity)) {
+          const current = activePresence.get(authenticatedIdentity);
+          current.lastSeen = Date.now();
+          if (msg.alias) current.alias = msg.alias;
+          if (msg.intent) current.intent = msg.intent;
+        }
       }
 
       // Relay Cego de Mensagem Cifrada Ponta a Ponta (E2EE)
@@ -65,6 +99,20 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     if (authenticatedIdentity && activeSockets.has(authenticatedIdentity)) {
       activeSockets.get(authenticatedIdentity).delete(ws);
+      if (activeSockets.get(authenticatedIdentity).size === 0) {
+        activeSockets.delete(authenticatedIdentity);
+        activePresence.delete(authenticatedIdentity);
+
+        // Notifica aos outros que o usuário saiu do radar
+        wss.clients.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+              type: 'PEER_OFFLINE',
+              identityHash: authenticatedIdentity
+            }));
+          }
+        });
+      }
     }
   });
 });
@@ -79,8 +127,40 @@ app.get('/', (req, res) => {
     slogan: 'PessoasAqui — converse com quem está perto.',
     version: '1.0.0',
     mode: isPostgres() ? 'Produção (Supabase / Render)' : 'Desenvolvimento Local',
-    activeConnections: wss.clients.size
+    activeConnections: wss.clients.size,
+    activePresenceCount: activePresence.size
   });
+});
+
+/**
+ * Heartbeat de Presença (Dispositivos ativos no radar)
+ */
+app.post('/api/presence/heartbeat', (req, res) => {
+  const { identityHash, alias, intent } = req.body;
+  if (!identityHash) {
+    return res.status(400).json({ error: 'identityHash obrigatório.' });
+  }
+
+  activePresence.set(identityHash, {
+    identityHash,
+    alias: alias || 'Usuário PessoasAqui',
+    intent: intent || 'QUERO_CONVERSAR',
+    lastSeen: Date.now()
+  });
+
+  res.json({ success: true, activePresenceCount: activePresence.size });
+});
+
+/**
+ * Listagem de Pessoas Online no Radar de Proximidade
+ */
+app.get('/api/presence/nearby', (req, res) => {
+  const myHash = req.query.myIdentity;
+  const now = Date.now();
+  const peers = Array.from(activePresence.values())
+    .filter(p => p.identityHash !== myHash && (now - p.lastSeen < 120000));
+
+  res.json({ success: true, count: peers.length, people: peers });
 });
 
 /**
