@@ -1,9 +1,14 @@
 package br.com.pessoasaqui
 
+import android.app.Activity
+import android.bluetooth.BluetoothAdapter
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
@@ -56,6 +61,14 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
 
+    val enableBluetoothLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            repository.restartBleHardware()
+        }
+    }
+
     // Sincroniza estado de onboarding inicial em ordem lógica de produção:
     // 1. Barreira +18 -> 2. Perfil (Nome & Intenção) -> 3. Permissões de Rádio -> 4. Radar Ativo
     LaunchedEffect(isAgeVerified, hasCompletedProfile, hasGrantedPermissions) {
@@ -100,7 +113,11 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
             MainScreen(
                 repository = repository,
                 onOpenEntreNaSua = { currentScreen = Screen.EntreNaSua },
-                onOpenChat = { person -> currentScreen = Screen.Chat(person) }
+                onOpenChat = { person -> currentScreen = Screen.Chat(person) },
+                onEnableBluetooth = {
+                    val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                    enableBluetoothLauncher.launch(enableBtIntent)
+                }
             )
         }
 

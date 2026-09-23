@@ -82,6 +82,8 @@ class PessoasAquiRepository(
     val localChatMessages: StateFlow<List<ChatMessage>> = proximitySimulator.localChatMessages
     val privateChats: StateFlow<Map<String, List<ChatMessage>>> = proximitySimulator.privateChats
 
+    val isBluetoothEnabled: StateFlow<Boolean> = bleManager?.isBluetoothEnabledFlow ?: MutableStateFlow(true)
+
     init {
         updateUnifiedData()
 
@@ -277,6 +279,10 @@ class PessoasAquiRepository(
         } catch (e: Throwable) {
             Log.e("PessoasAqui", "BLE não disponível ou permissão ausente: ${e.message}")
         }
+    }
+
+    fun restartBleHardware() {
+        startNativeBleHardware()
     }
 
     fun setAlias(newAlias: String) {

@@ -36,7 +36,9 @@ fun PeopleRadarTab(
     people: List<NearbyPerson>,
     currentIntent: UserIntent,
     isDemoMode: Boolean = false,
+    isBluetoothEnabled: Boolean = true,
     onToggleDemoMode: () -> Unit = {},
+    onEnableBluetooth: () -> Unit = {},
     onOpenIntentSelector: () -> Unit,
     onToggleMark: (String) -> Unit,
     onOpenChat: (NearbyPerson) -> Unit
@@ -58,6 +60,62 @@ fun PeopleRadarTab(
             .background(DeepBlack)
             .padding(horizontal = 16.dp)
     ) {
+        if (!isBluetoothEnabled) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = WarningAmber.copy(alpha = 0.15f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bluetooth,
+                            contentDescription = null,
+                            tint = WarningAmber,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Bluetooth Desligado",
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            )
+                            Text(
+                                text = "Ative para achar pessoas no raio de 10m",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                            )
+                        }
+                    }
+                    Button(
+                        onClick = onEnableBluetooth,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = WarningAmber,
+                            contentColor = DeepBlack
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "Ativar",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                }
+            }
+        }
+
         if (isDemoMode) {
             Surface(
                 shape = RoundedCornerShape(10.dp),

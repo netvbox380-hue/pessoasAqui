@@ -24,7 +24,8 @@ import br.com.pessoasaqui.ui.theme.*
 fun MainScreen(
     repository: PessoasAquiRepository,
     onOpenEntreNaSua: () -> Unit,
-    onOpenChat: (NearbyPerson) -> Unit
+    onOpenChat: (NearbyPerson) -> Unit,
+    onEnableBluetooth: () -> Unit = {}
 ) {
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var showIntentSelector by remember { mutableStateOf(false) }
@@ -40,6 +41,7 @@ fun MainScreen(
     val currentIntent by repository.currentIntent.collectAsState()
     val currentAlias by repository.currentAlias.collectAsState()
     val isDemoMode by repository.isDemoMode.collectAsState()
+    val isBluetoothEnabled by repository.isBluetoothEnabled.collectAsState()
     val isSessionRevoked by repository.deviceSessionManager.isSessionRevoked.collectAsState()
     val revocationNotice by repository.deviceSessionManager.revocationNotice.collectAsState()
 
@@ -280,7 +282,9 @@ fun MainScreen(
                         people = people,
                         currentIntent = currentIntent,
                         isDemoMode = isDemoMode,
+                        isBluetoothEnabled = isBluetoothEnabled,
                         onToggleDemoMode = { repository.toggleDemoMode() },
+                        onEnableBluetooth = onEnableBluetooth,
                         onOpenIntentSelector = { showIntentSelector = true },
                         onToggleMark = { personId ->
                             repository.toggleMarkPerson(personId)

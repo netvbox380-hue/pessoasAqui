@@ -4,7 +4,10 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.*
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.ParcelUuid
 import android.util.Log
 import br.com.pessoasaqui.domain.model.NearbyPerson
@@ -40,6 +43,11 @@ class BleManager(
     private var advertiseCallback: AdvertiseCallback? = null
     private var scanCallback: ScanCallback? = null
 
+    private var lastIdentityHash: String? = null
+    private var lastAlias: String? = null
+    private var lastIntent: UserIntent? = null
+    private var lastScanCallback: ((NearbyPerson) -> Unit)? = null
+
     val isBluetoothSupported: Boolean get() = bluetoothAdapter != null
     val isBluetoothEnabled: Boolean
         get() = try {
@@ -48,6 +56,36 @@ class BleManager(
             Log.w(tag, "Não foi possível verificar status do Bluetooth: ${e.message}")
             false
         }
+
+    private val _isBluetoothEnabledFlow = MutableStateFlow(isBluetoothEnabled)
+    val isBluetoothEnabledFlow: StateFlow<Boolean> = _isBluetoothEnabledFlow.asStateFlow()
+
+    init {
+        try {
+            val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+            context.registerReceiver(object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: Intent?) {
+                    if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                        val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                        val enabled = (state == BluetoothAdapter.STATE_ON)
+                        _isBluetoothEnabledFlow.value = enabled
+                        if (enabled) {
+                            lastIdentityHash?.let { hash ->
+                                val alias = lastAlias ?: ""
+                                val userIntent = lastIntent ?: UserIntent.QUERO_CONVERSAR
+                                startAdvertising(hash, alias, userIntent)
+                            }
+                            lastScanCallback?.let { cb ->
+                                startScanning(cb)
+                            }
+                        }
+                    }
+                }
+            }, filter)
+        } catch (e: Exception) {
+            Log.w(tag, "Não foi possível registrar receiver de estado Bluetooth: ${e.message}")
+        }
+    }
 
     /**
      * Inicia a transmissão (Advertising) deste aparelho para que outros aparelhos a até 10m o vejam.
@@ -58,6 +96,9 @@ class BleManager(
         myAlias: String,
         myIntent: UserIntent
     ) {
+        lastIdentityHash = myIdentityHash
+        lastAlias = myAlias
+        lastIntent = myIntent
         if (!isBluetoothEnabled) return
         advertiser = try {
             bluetoothAdapter?.bluetoothLeAdvertiser
@@ -122,6 +163,7 @@ class BleManager(
      */
     @SuppressLint("MissingPermission")
     fun startScanning(onPeerDiscovered: (NearbyPerson) -> Unit) {
+        lastScanCallback = onPeerDiscovered
         if (!isBluetoothEnabled) return
         scanner = try {
             bluetoothAdapter?.bluetoothLeScanner
