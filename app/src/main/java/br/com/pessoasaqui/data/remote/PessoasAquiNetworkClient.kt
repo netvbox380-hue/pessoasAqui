@@ -15,8 +15,8 @@ import java.util.concurrent.TimeUnit
  * Conecta o aplicativo ao servidor backend (seja local ou hospedado no Render / Supabase).
  */
 class PessoasAquiNetworkClient(
-    var baseUrl: String = "http://10.0.2.2:3000",
-    var wsUrl: String = "ws://10.0.2.2:3000"
+    var baseUrl: String = "https://pessoasaqui.onrender.com",
+    var wsUrl: String = "wss://pessoasaqui.onrender.com"
 ) {
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
