@@ -1,0 +1,11 @@
+{
+  "name": "pessoasaqui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PessoasAqui — converse com quem está perto.",
+  "scripts": {
+    "postinstall": "npm --prefix backend install",
+    "build": "npm --prefix backend install",
+    "start": "node backend/src/server.js"
+  }
+}
