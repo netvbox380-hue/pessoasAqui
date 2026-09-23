@@ -1,0 +1,12 @@
+<resources>
+    <color name="primary">#00E5FF</color>
+    <color name="primary_variant">#00B0FF</color>
+    <color name="on_primary">#002025</color>
+    <color name="secondary">#00E676</color>
+    <color name="secondary_variant">#00C853</color>
+    <color name="on_secondary">#00220D</color>
+    <color name="background_dark">#0D1117</color>
+    <color name="surface_dark">#161B22</color>
+    <color name="surface_card">#21262D</color>
+    <color name="radar_pulse">#1F6FEB</color>
+</resources>

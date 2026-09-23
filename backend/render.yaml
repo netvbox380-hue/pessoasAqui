@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: pessoasaqui-backend
+    env: node
+    plan: free
+    region: ohio
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node src/server.js
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
