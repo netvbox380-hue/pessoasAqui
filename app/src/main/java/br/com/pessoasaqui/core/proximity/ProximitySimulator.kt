@@ -263,9 +263,32 @@ class ProximitySimulator(
             isEncrypted = true,
             isFromMe = true
         )
-        val currentList = _privateChats.value[recipientId] ?: emptyList()
+        val cleanId = recipientId.removePrefix("peer-")
+        val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: emptyList()
         val updatedMap = _privateChats.value.toMutableMap()
         updatedMap[recipientId] = currentList + msg
+        updatedMap[cleanId] = currentList + msg
+        updatedMap["peer-$cleanId"] = currentList + msg
+        _privateChats.value = updatedMap
+    }
+
+    /**
+     * Recebe mensagem privada entregue de outro dispositivo
+     */
+    fun receivePrivateMessage(senderId: String, senderAlias: String, text: String) {
+        val cleanId = senderId.removePrefix("peer-")
+        val msg = ChatMessage(
+            senderId = cleanId,
+            senderAlias = senderAlias,
+            text = text,
+            isLocalOnly = false,
+            isEncrypted = true,
+            isFromMe = false
+        )
+        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[cleanId] = currentList + msg
+        updatedMap["peer-$cleanId"] = currentList + msg
         _privateChats.value = updatedMap
     }
 

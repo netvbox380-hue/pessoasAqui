@@ -117,14 +117,23 @@ class PessoasAquiRepository(
                         handleRemotePresenceSync(remotePeers)
                     }
 
-                    // 3. Garante que o WebSocket esteja ativo para sincronização instantânea
+                    // 3. Busca mensagens pendentes na fila do servidor
+                    val pendingResult = networkClient.fetchPendingMessages(myId)
+                    pendingResult.getOrNull()?.forEach { pm ->
+                        val cleanSender = pm.senderHash.removePrefix("peer-")
+                        proximitySimulator.receivePrivateMessage(cleanSender, pm.senderAlias, pm.ciphertext)
+                    }
+
+                    // 4. Garante que o WebSocket esteja ativo para sincronização instantânea
                     if (!networkClient.isWebSocketConnected) {
                         networkClient.startRealtimeSocket(
                             myIdentityHash = myId,
                             myAlias = myAlias,
                             myIntent = myIntent,
                             onE2eeMessageReceived = { sender, payload, _ ->
-                                proximitySimulator.sendPrivateMessage(sender, payload, sender)
+                                val cleanSender = sender.removePrefix("peer-")
+                                val senderAlias = _realDiscoveredPeople.value.find { it.id == cleanSender || it.technicalIdentityHash == cleanSender }?.alias ?: "Pessoa Próxima"
+                                proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload)
                             },
                             onSessionRevoked = { _ ->
                                 deviceSessionManager.revokeCurrentDeviceSession()
@@ -143,7 +152,7 @@ class PessoasAquiRepository(
                 } catch (e: Throwable) {
                     Log.w("PessoasAqui", "Polling de presença: ${e.message}")
                 }
-                delay(6000)
+                delay(4000)
             }
         }
     }
@@ -171,7 +180,7 @@ class PessoasAquiRepository(
             .map { p ->
                 val safeIntent = try { UserIntent.valueOf(p.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
                 NearbyPerson(
-                    id = "peer-${p.identityHash}",
+                    id = p.identityHash,
                     technicalIdentityHash = p.identityHash,
                     alias = p.alias,
                     estimatedDistanceMeters = 3.2,
@@ -202,7 +211,7 @@ class PessoasAquiRepository(
         if (peer.identityHash == myId) return
         val safeIntent = try { UserIntent.valueOf(peer.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
         val newPeer = NearbyPerson(
-            id = "peer-${peer.identityHash}",
+            id = peer.identityHash,
             technicalIdentityHash = peer.identityHash,
             alias = peer.alias,
             estimatedDistanceMeters = 2.0,
@@ -375,7 +384,32 @@ class PessoasAquiRepository(
     fun sendPrivateMessage(recipientId: String, text: String): ContentModerationManager.ModerationResult {
         val mod = moderationManager.evaluateContent(deviceSessionManager.getDeviceId(), text)
         if (mod.isAllowed) {
-            proximitySimulator.sendPrivateMessage(recipientId, text, _currentAlias.value)
+            val cleanRecipient = recipientId.removePrefix("peer-")
+            proximitySimulator.sendPrivateMessage(cleanRecipient, text, _currentAlias.value)
+
+            val myId = cryptoIdentityManager.getTechnicalIdentity()
+            val iv = UUID.randomUUID().toString().take(12)
+
+            // 1. Envia em tempo real pelo WebSocket
+            networkClient.sendE2eeEnvelope(
+                recipientHash = cleanRecipient,
+                ciphertext = text,
+                ivNonce = iv
+            )
+
+            // 2. Envio redundante via REST HTTP (garante entrega caso o WebSocket esteja reconectando)
+            scope.launch {
+                try {
+                    networkClient.sendHttpMessage(
+                        senderHash = myId,
+                        recipientHash = cleanRecipient,
+                        ciphertext = text,
+                        senderAlias = _currentAlias.value
+                    )
+                } catch (e: Exception) {
+                    Log.w("PessoasAqui", "Falha no envio HTTP da mensagem: ${e.message}")
+                }
+            }
         }
         return mod
     }

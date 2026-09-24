@@ -374,6 +374,71 @@ class PessoasAquiNetworkClient(
         }
     }
 
+    /**
+     * Envia mensagem via REST HTTP (Fallback redundante para WebSockets)
+     */
+    suspend fun sendHttpMessage(
+        senderHash: String,
+        recipientHash: String,
+        ciphertext: String,
+        senderAlias: String
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("senderHash", senderHash)
+                put("recipientHash", recipientHash)
+                put("ciphertextPayload", ciphertext)
+                put("senderAlias", senderAlias)
+                put("ivNonce", java.util.UUID.randomUUID().toString().take(12))
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/messages/send")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                Result.success(response.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Busca mensagens pendentes na fila do servidor
+     */
+    suspend fun fetchPendingMessages(identityHash: String): Result<List<PendingMessage>> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$baseUrl/api/messages/pending?identityHash=$identityHash")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string() ?: "{}"
+                val obj = JSONObject(bodyStr)
+                val msgsArray = obj.optJSONArray("messages")
+                val list = mutableListOf<PendingMessage>()
+                if (msgsArray != null) {
+                    for (i in 0 until msgsArray.length()) {
+                        val m = msgsArray.getJSONObject(i)
+                        list.add(
+                            PendingMessage(
+                                senderHash = m.getString("senderHash"),
+                                senderAlias = m.optString("senderAlias", "Usuário"),
+                                ciphertext = m.getString("ciphertextPayload"),
+                                ivNonce = m.optString("ivNonce", "")
+                            )
+                        )
+                    }
+                }
+                Result.success(list)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun disconnectSocket() {
         try {
             activeWebSocket?.close(1000, "App closed")
@@ -387,4 +452,11 @@ data class RemotePeer(
     val identityHash: String,
     val alias: String,
     val intent: String
+)
+
+data class PendingMessage(
+    val senderHash: String,
+    val senderAlias: String,
+    val ciphertext: String,
+    val ivNonce: String
 )

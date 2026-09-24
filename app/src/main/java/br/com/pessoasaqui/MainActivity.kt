@@ -123,7 +123,11 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
 
         is Screen.Chat -> {
             BackHandler { currentScreen = Screen.Main }
-            val messages = privateChats[screen.person.id] ?: emptyList()
+            val cleanTargetId = screen.person.id.removePrefix("peer-")
+            val messages = privateChats[screen.person.id] 
+                ?: privateChats[cleanTargetId] 
+                ?: privateChats[screen.person.technicalIdentityHash] 
+                ?: emptyList()
 
             ChatDetailScreen(
                 person = screen.person,

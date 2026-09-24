@@ -22,6 +22,8 @@ initDatabase();
 const activeSockets = new Map();
 // Mapa de presença ativa em tempo real: identityHash -> { identityHash, alias, intent, lastSeen }
 const activePresence = new Map();
+// Fila de mensagens pendentes para entrega garantida: recipientHash -> [messages]
+const pendingMessages = new Map();
 
 wss.on('connection', (ws, req) => {
   let authenticatedIdentity = null;
@@ -31,7 +33,7 @@ wss.on('connection', (ws, req) => {
       const msg = JSON.parse(data.toString());
 
       if (msg.type === 'AUTH') {
-        authenticatedIdentity = msg.identityHash;
+        authenticatedIdentity = (msg.identityHash || '').replace('peer-', '').trim();
         if (!activeSockets.has(authenticatedIdentity)) {
           activeSockets.set(authenticatedIdentity, new Set());
         }
@@ -46,6 +48,15 @@ wss.on('connection', (ws, req) => {
 
         ws.send(JSON.stringify({ type: 'AUTH_SUCCESS', identityHash: authenticatedIdentity }));
         console.log(`[WS] Dispositivo conectado para identidade: ${authenticatedIdentity} (${msg.alias || 'Anônimo'})`);
+
+        // Entrega mensagens pendentes para este dispositivo
+        if (pendingMessages.has(authenticatedIdentity)) {
+          const pending = pendingMessages.get(authenticatedIdentity) || [];
+          pending.forEach((pm) => {
+            ws.send(JSON.stringify(pm));
+          });
+          pendingMessages.delete(authenticatedIdentity);
+        }
 
         // Envia lista atual de usuários presentes no radar para o novo cliente
         const now = Date.now();
@@ -75,20 +86,35 @@ wss.on('connection', (ws, req) => {
       // Relay Cego de Mensagem Cifrada Ponta a Ponta (E2EE)
       if (msg.type === 'E2EE_MESSAGE' && authenticatedIdentity) {
         const { recipientHash, ciphertextPayload, ivNonce } = msg;
-        const recipientSockets = activeSockets.get(recipientHash);
+        const cleanRecipient = (recipientHash || '').replace('peer-', '').trim();
+        const senderAlias = activePresence.get(authenticatedIdentity)?.alias || 'Usuário';
+
+        const msgObj = {
+          type: 'E2EE_MESSAGE_RECEIVED',
+          senderHash: authenticatedIdentity,
+          senderAlias: senderAlias,
+          ciphertextPayload,
+          ivNonce: ivNonce || '',
+          timestamp: Date.now()
+        };
+
+        let delivered = false;
+        const recipientSockets = activeSockets.get(cleanRecipient);
 
         if (recipientSockets && recipientSockets.size > 0) {
           recipientSockets.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'E2EE_MESSAGE_RECEIVED',
-                senderHash: authenticatedIdentity,
-                ciphertextPayload,
-                ivNonce,
-                timestamp: Date.now()
-              }));
+              client.send(JSON.stringify(msgObj));
+              delivered = true;
             }
           });
+        }
+
+        if (!delivered) {
+          if (!pendingMessages.has(cleanRecipient)) {
+            pendingMessages.set(cleanRecipient, []);
+          }
+          pendingMessages.get(cleanRecipient).push(msgObj);
         }
       }
     } catch (e) {
@@ -161,6 +187,63 @@ app.get('/api/presence/nearby', (req, res) => {
     .filter(p => p.identityHash !== myHash && (now - p.lastSeen < 120000));
 
   res.json({ success: true, count: peers.length, people: peers });
+});
+
+/**
+ * Envio de Mensagem Cifrada via HTTP (Fallback redundante para WebSockets)
+ */
+app.post('/api/messages/send', (req, res) => {
+  const { senderHash, recipientHash, ciphertextPayload, ivNonce, senderAlias } = req.body;
+  if (!recipientHash || !ciphertextPayload) {
+    return res.status(400).json({ error: 'recipientHash e ciphertextPayload são obrigatórios.' });
+  }
+
+  const cleanRecipient = (recipientHash || '').replace('peer-', '').trim();
+  const cleanSender = (senderHash || '').replace('peer-', '').trim();
+
+  const msgObj = {
+    type: 'E2EE_MESSAGE_RECEIVED',
+    senderHash: cleanSender,
+    senderAlias: senderAlias || activePresence.get(cleanSender)?.alias || 'Usuário',
+    ciphertextPayload,
+    ivNonce: ivNonce || '',
+    timestamp: Date.now()
+  };
+
+  let delivered = false;
+  const recipientSockets = activeSockets.get(cleanRecipient);
+
+  if (recipientSockets && recipientSockets.size > 0) {
+    recipientSockets.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify(msgObj));
+        delivered = true;
+      }
+    });
+  }
+
+  if (!delivered) {
+    if (!pendingMessages.has(cleanRecipient)) {
+      pendingMessages.set(cleanRecipient, []);
+    }
+    pendingMessages.get(cleanRecipient).push(msgObj);
+  }
+
+  res.json({ success: true, delivered });
+});
+
+/**
+ * Consulta de Mensagens Pendentes via HTTP
+ */
+app.get('/api/messages/pending', (req, res) => {
+  const rawId = req.query.identityHash;
+  if (!rawId) {
+    return res.status(400).json({ error: 'identityHash obrigatório.' });
+  }
+  const cleanId = rawId.replace('peer-', '').trim();
+  const pending = pendingMessages.get(cleanId) || [];
+  pendingMessages.delete(cleanId);
+  res.json({ success: true, messages: pending });
 });
 
 /**
