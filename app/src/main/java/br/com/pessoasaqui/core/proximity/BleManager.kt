@@ -110,8 +110,8 @@ class BleManager(
         stopAdvertising()
 
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(false)
             .setTimeout(0)
             .build()
@@ -119,10 +119,15 @@ class BleManager(
         // Monta carga de dados: Hash de identidade (8 chars) + ordinal de intenção (1 byte)
         val payload = "$myIdentityHash:${myIntent.ordinal}".toByteArray(StandardCharsets.UTF_8)
 
+        // Pacote Principal de Anúncio (<= 31 bytes)
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
-            .setIncludeTxPowerLevel(true)
+            .setIncludeTxPowerLevel(false)
             .addServiceUuid(ParcelUuid(BleConstants.SERVICE_UUID))
+            .build()
+
+        // Pacote de Resposta de Varredura (Scan Response) com os dados de presença
+        val scanResponse = AdvertiseData.Builder()
             .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), payload)
             .build()
 
@@ -137,7 +142,7 @@ class BleManager(
         }
 
         try {
-            advertiser?.startAdvertising(settings, data, advertiseCallback)
+            advertiser?.startAdvertising(settings, data, scanResponse, advertiseCallback)
         } catch (e: Exception) {
             Log.e(tag, "Erro ao iniciar advertising BLE: ${e.message}")
         }
@@ -174,12 +179,8 @@ class BleManager(
 
         stopScanning()
 
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(BleConstants.SERVICE_UUID))
-            .build()
-
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setReportDelay(0)
             .build()
 
@@ -199,7 +200,8 @@ class BleManager(
         }
 
         try {
-            scanner?.startScan(listOf(filter), settings, scanCallback)
+            // Escaneia de forma abrangente para contornar limitações de chipsets em filtros de hardware
+            scanner?.startScan(null, settings, scanCallback)
             Log.d(tag, "BLE Scanner ativado para filtro de 10m.")
         } catch (e: Exception) {
             Log.e(tag, "Erro ao iniciar scanner BLE: ${e.message}")
@@ -219,6 +221,13 @@ class BleManager(
     }
 
     private fun processScanResult(result: ScanResult, onPeerDiscovered: (NearbyPerson) -> Unit) {
+        val record = result.scanRecord ?: return
+        val serviceData = record.getServiceData(ParcelUuid(BleConstants.SERVICE_UUID))
+        val hasServiceUuid = record.serviceUuids?.contains(ParcelUuid(BleConstants.SERVICE_UUID)) == true
+        if (serviceData == null && !hasServiceUuid) {
+            return
+        }
+
         val rssi = result.rssi
         val distance = distanceEstimator.estimateDistanceMeters(rssi)
 
@@ -228,8 +237,6 @@ class BleManager(
             return
         }
 
-        val record = result.scanRecord ?: return
-        val serviceData = record.getServiceData(ParcelUuid(BleConstants.SERVICE_UUID))
         var identityHash = result.device.address.replace(":", "").take(8)
         var intent = UserIntent.QUERO_CONVERSAR
 
@@ -237,7 +244,7 @@ class BleManager(
             try {
                 val str = String(serviceData, StandardCharsets.UTF_8)
                 val parts = str.split(":")
-                if (parts.isNotEmpty()) identityHash = parts[0]
+                if (parts.isNotEmpty() && parts[0].isNotBlank()) identityHash = parts[0]
                 if (parts.size > 1) {
                     val intentIdx = parts[1].toIntOrNull() ?: 0
                     intent = UserIntent.values().getOrElse(intentIdx) { UserIntent.QUERO_CONVERSAR }
@@ -245,6 +252,11 @@ class BleManager(
             } catch (e: Exception) {
                 // Fallback gracioso
             }
+        }
+
+        // Não adiciona o próprio aparelho
+        if (identityHash.isNotBlank() && identityHash.equals(lastIdentityHash, ignoreCase = true)) {
+            return
         }
 
         val peer = NearbyPerson(

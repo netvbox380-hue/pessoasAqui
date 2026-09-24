@@ -1,7 +1,10 @@
 package br.com.pessoasaqui.data.remote
 
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -28,6 +31,37 @@ class PessoasAquiNetworkClient(
 
     private var activeWebSocket: WebSocket? = null
     private var isWsConnected = false
+    val isWebSocketConnected: Boolean get() = isWsConnected
+
+    private var shouldReconnect = true
+    private var lastIdentityHash: String? = null
+    private var lastAlias: String? = null
+    private var lastIntent: String? = null
+    private var lastOnE2ee: ((String, String, String) -> Unit)? = null
+    private var lastOnRevoked: ((String) -> Unit)? = null
+    private var lastOnPresenceSync: ((List<RemotePeer>) -> Unit)? = null
+    private var lastOnPeerOnline: ((RemotePeer) -> Unit)? = null
+    private var lastOnPeerOffline: ((String) -> Unit)? = null
+
+    private fun scheduleReconnect() {
+        if (!shouldReconnect) return
+        CoroutineScope(Dispatchers.IO).launch {
+            delay(4000)
+            if (!isWsConnected && shouldReconnect) {
+                val id = lastIdentityHash ?: return@launch
+                startRealtimeSocket(
+                    myIdentityHash = id,
+                    myAlias = lastAlias ?: "Eu",
+                    myIntent = lastIntent ?: "QUERO_CONVERSAR",
+                    onE2eeMessageReceived = lastOnE2ee ?: { _, _, _ -> },
+                    onSessionRevoked = lastOnRevoked ?: {},
+                    onPresenceSync = lastOnPresenceSync,
+                    onPeerOnline = lastOnPeerOnline,
+                    onPeerOffline = lastOnPeerOffline
+                )
+            }
+        }
+    }
 
     /**
      * Registra a identidade técnica criptográfica no servidor
@@ -177,6 +211,16 @@ class PessoasAquiNetworkClient(
     ) {
         disconnectSocket()
 
+        shouldReconnect = true
+        lastIdentityHash = myIdentityHash
+        lastAlias = myAlias
+        lastIntent = myIntent
+        lastOnE2ee = onE2eeMessageReceived
+        lastOnRevoked = onSessionRevoked
+        lastOnPresenceSync = onPresenceSync
+        lastOnPeerOnline = onPeerOnline
+        lastOnPeerOffline = onPeerOffline
+
         val request = Request.Builder().url(wsUrl).build()
         activeWebSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -247,10 +291,14 @@ class PessoasAquiNetworkClient(
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 isWsConnected = false
+                if (code != 1000) {
+                    scheduleReconnect()
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 isWsConnected = false
+                scheduleReconnect()
             }
         })
     }

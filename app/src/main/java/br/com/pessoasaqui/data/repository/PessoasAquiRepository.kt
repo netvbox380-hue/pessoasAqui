@@ -17,6 +17,7 @@ import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.domain.model.UserIntent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -87,27 +88,7 @@ class PessoasAquiRepository(
     init {
         updateUnifiedData()
 
-        // Inicia conexão WebSocket em tempo real para Relay E2EE, Presença e Revogação
-        networkClient.startRealtimeSocket(
-            myIdentityHash = cryptoIdentityManager.getTechnicalIdentity(),
-            myAlias = _currentAlias.value,
-            myIntent = _currentIntent.value.name,
-            onE2eeMessageReceived = { sender, payload, _ ->
-                proximitySimulator.sendPrivateMessage(sender, payload, sender)
-            },
-            onSessionRevoked = { _ ->
-                deviceSessionManager.revokeCurrentDeviceSession()
-            },
-            onPresenceSync = { remotePeers ->
-                handleRemotePresenceSync(remotePeers)
-            },
-            onPeerOnline = { peer ->
-                handlePeerOnline(peer)
-            },
-            onPeerOffline = { peerHash ->
-                handlePeerOffline(peerHash)
-            }
-        )
+        startPresencePollingLoop()
 
         // Se o perfil já estiver configurado, registra identidade no Supabase / Render
         if (_hasCompletedProfile.value) {
@@ -116,6 +97,54 @@ class PessoasAquiRepository(
 
         if (_hasGrantedPermissions.value) {
             startNativeBleHardware()
+        }
+    }
+
+    private fun startPresencePollingLoop() {
+        scope.launch {
+            while (true) {
+                try {
+                    val myId = cryptoIdentityManager.getTechnicalIdentity()
+                    val myAlias = _currentAlias.value
+                    val myIntent = _currentIntent.value.name
+
+                    // 1. Envia Heartbeat HTTP para manter a presença viva no Render / Supabase
+                    networkClient.sendPresenceHeartbeat(myId, myAlias, myIntent)
+
+                    // 2. Busca pessoas próximas registradas no backend
+                    val nearbyResult = networkClient.fetchNearbyPresence(myId)
+                    nearbyResult.getOrNull()?.let { remotePeers ->
+                        handleRemotePresenceSync(remotePeers)
+                    }
+
+                    // 3. Garante que o WebSocket esteja ativo para sincronização instantânea
+                    if (!networkClient.isWebSocketConnected) {
+                        networkClient.startRealtimeSocket(
+                            myIdentityHash = myId,
+                            myAlias = myAlias,
+                            myIntent = myIntent,
+                            onE2eeMessageReceived = { sender, payload, _ ->
+                                proximitySimulator.sendPrivateMessage(sender, payload, sender)
+                            },
+                            onSessionRevoked = { _ ->
+                                deviceSessionManager.revokeCurrentDeviceSession()
+                            },
+                            onPresenceSync = { remotePeers ->
+                                handleRemotePresenceSync(remotePeers)
+                            },
+                            onPeerOnline = { peer ->
+                                handlePeerOnline(peer)
+                            },
+                            onPeerOffline = { peerHash ->
+                                handlePeerOffline(peerHash)
+                            }
+                        )
+                    }
+                } catch (e: Throwable) {
+                    Log.w("PessoasAqui", "Polling de presença: ${e.message}")
+                }
+                delay(6000)
+            }
         }
     }
 
@@ -136,22 +165,25 @@ class PessoasAquiRepository(
     }
 
     private fun handleRemotePresenceSync(remotePeers: List<RemotePeer>) {
-        val mapped = remotePeers.map { p ->
-            val safeIntent = try { UserIntent.valueOf(p.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
-            NearbyPerson(
-                id = "peer-${p.identityHash}",
-                technicalIdentityHash = p.identityHash,
-                alias = p.alias,
-                estimatedDistanceMeters = 3.2,
-                proximityLabel = "Dentro do alcance (~3m)",
-                intent = safeIntent,
-                isMarkedByMe = false,
-                isMarkingMe = false,
-                isMutualConnection = false,
-                isFamily = false,
-                avatarColorHex = 0xFF00E5FF
-            )
-        }
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        val mapped = remotePeers
+            .filter { it.identityHash != myId }
+            .map { p ->
+                val safeIntent = try { UserIntent.valueOf(p.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
+                NearbyPerson(
+                    id = "peer-${p.identityHash}",
+                    technicalIdentityHash = p.identityHash,
+                    alias = p.alias,
+                    estimatedDistanceMeters = 3.2,
+                    proximityLabel = "Dentro do alcance (~3m)",
+                    intent = safeIntent,
+                    isMarkedByMe = false,
+                    isMarkingMe = false,
+                    isMutualConnection = false,
+                    isFamily = false,
+                    avatarColorHex = 0xFF00E5FF
+                )
+            }
         val current = _realDiscoveredPeople.value.toMutableList()
         mapped.forEach { newPeer ->
             val idx = current.indexOfFirst { it.technicalIdentityHash == newPeer.technicalIdentityHash }
@@ -166,6 +198,8 @@ class PessoasAquiRepository(
     }
 
     private fun handlePeerOnline(peer: RemotePeer) {
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        if (peer.identityHash == myId) return
         val safeIntent = try { UserIntent.valueOf(peer.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
         val newPeer = NearbyPerson(
             id = "peer-${peer.identityHash}",

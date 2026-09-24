@@ -3,8 +3,8 @@ package br.com.pessoasaqui.core.proximity
 import java.util.UUID
 
 object BleConstants {
-    // UUID customizado para o serviço de presença PessoasAqui
-    val SERVICE_UUID: UUID = UUID.fromString("0000PA01-0000-1000-8000-00805F9B34FB")
+    // UUID customizado para o serviço de presença PessoasAqui (Base 16-bit 0xFA01)
+    val SERVICE_UUID: UUID = UUID.fromString("0000FA01-0000-1000-8000-00805F9B34FB")
     
     // Limite estrito de descoberta física de proximidade (10 metros)
     const val MAX_DISCOVERY_DISTANCE_METERS = 10.0
