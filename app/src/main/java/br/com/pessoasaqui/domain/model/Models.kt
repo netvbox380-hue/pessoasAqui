@@ -30,6 +30,12 @@ enum class FamilyRole(val label: String) {
     OUTRO("Familiar")
 }
 
+enum class MessageType {
+    TEXT,
+    AUDIO,
+    SYSTEM
+}
+
 /**
  * Representa uma pessoa detectada dentro do raio de proximidade de 10 metros ou conexão existente.
  */
@@ -47,7 +53,9 @@ data class NearbyPerson(
     val familyRole: FamilyRole? = null,
     val isPhotoVisible: Boolean = false, // Foto oculta por padrão para desconhecidos
     val avatarColorHex: Long = 0xFF00E5FF,
-    val lastSeenEpochMs: Long = System.currentTimeMillis()
+    val lastSeenEpochMs: Long = System.currentTimeMillis(),
+    val hasPendingFamilyRequest: Boolean = false,
+    val pendingFamilyRole: FamilyRole? = null
 )
 
 /**
@@ -61,7 +69,23 @@ data class ChatMessage(
     val timestampMs: Long = System.currentTimeMillis(),
     val isLocalOnly: Boolean = false, // True se restrita ao raio de 10m
     val isEncrypted: Boolean = true,
-    val isFromMe: Boolean = false
+    val isFromMe: Boolean = false,
+    val messageType: MessageType = MessageType.TEXT,
+    val audioDurationSeconds: Int = 0
+)
+
+/**
+ * Estado de Chamada Criptografada Ativa (Áudio / Vídeo)
+ */
+data class ActiveCallState(
+    val isIncoming: Boolean,
+    val peerHash: String,
+    val peerAlias: String,
+    val isVideo: Boolean,
+    val isConnected: Boolean = false,
+    val durationSeconds: Int = 0,
+    val isMuted: Boolean = false,
+    val isCameraOn: Boolean = true
 )
 
 /**

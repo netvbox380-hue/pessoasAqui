@@ -2,6 +2,7 @@ package br.com.pessoasaqui.core.proximity
 
 import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.FamilyRole
+import br.com.pessoasaqui.domain.model.MessageType
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.OfferItem
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
@@ -277,16 +278,43 @@ class ProximitySimulator(
      */
     fun receivePrivateMessage(senderId: String, senderAlias: String, text: String) {
         val cleanId = senderId.removePrefix("peer-")
+        val isAudio = text.startsWith("[AUDIO:")
+        val duration = if (isAudio) {
+            text.substringAfter("[AUDIO:").substringBefore("]").toIntOrNull() ?: 3
+        } else 0
+
         val msg = ChatMessage(
             senderId = cleanId,
             senderAlias = senderAlias,
-            text = text,
+            text = if (isAudio) "Mensagem de Áudio (${duration}s)" else text,
             isLocalOnly = false,
             isEncrypted = true,
-            isFromMe = false
+            isFromMe = false,
+            messageType = if (isAudio) MessageType.AUDIO else MessageType.TEXT,
+            audioDurationSeconds = duration
         )
         val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
         val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[cleanId] = currentList + msg
+        updatedMap["peer-$cleanId"] = currentList + msg
+        _privateChats.value = updatedMap
+    }
+
+    fun sendAudioMessage(recipientId: String, durationSeconds: Int, myAlias: String) {
+        val msg = ChatMessage(
+            senderId = "me",
+            senderAlias = myAlias,
+            text = "Mensagem de Áudio (${durationSeconds}s)",
+            isLocalOnly = false,
+            isEncrypted = true,
+            isFromMe = true,
+            messageType = MessageType.AUDIO,
+            audioDurationSeconds = durationSeconds
+        )
+        val cleanId = recipientId.removePrefix("peer-")
+        val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: emptyList()
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[recipientId] = currentList + msg
         updatedMap[cleanId] = currentList + msg
         updatedMap["peer-$cleanId"] = currentList + msg
         _privateChats.value = updatedMap

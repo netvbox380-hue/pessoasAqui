@@ -57,6 +57,9 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
     val hasGrantedPermissions by repository.hasGrantedPermissions.collectAsState()
     val currentAlias by repository.currentAlias.collectAsState()
     val privateChats by repository.privateChats.collectAsState()
+    val discoveredPeople by repository.discoveredPeople.collectAsState()
+    val activeCallState by repository.activeCallState.collectAsState()
+    val pendingFamilyRequest by repository.pendingFamilyRequest.collectAsState()
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
@@ -123,21 +126,34 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
 
         is Screen.Chat -> {
             BackHandler { currentScreen = Screen.Main }
-            val cleanTargetId = screen.person.id.removePrefix("peer-")
-            val messages = privateChats[screen.person.id] 
+            val livePerson = discoveredPeople.find {
+                it.id == screen.person.id || it.technicalIdentityHash == screen.person.technicalIdentityHash
+            } ?: screen.person
+
+            val cleanTargetId = livePerson.id.removePrefix("peer-")
+            val messages = privateChats[livePerson.id] 
                 ?: privateChats[cleanTargetId] 
-                ?: privateChats[screen.person.technicalIdentityHash] 
+                ?: privateChats[livePerson.technicalIdentityHash] 
                 ?: emptyList()
 
             ChatDetailScreen(
-                person = screen.person,
+                person = livePerson,
                 messages = messages,
                 onBack = { currentScreen = Screen.Main },
                 onSendMessage = { text ->
-                    repository.sendPrivateMessage(screen.person.id, text)
+                    repository.sendPrivateMessage(livePerson.technicalIdentityHash, text)
                 },
-                onSetFamilyRole = { targetPerson, role ->
-                    repository.setFamilyRole(targetPerson.id, role)
+                onStartCall = { targetPerson, isVideo ->
+                    repository.startCall(targetPerson, isVideo)
+                },
+                onSendAudioMessage = { targetPerson, duration ->
+                    repository.sendAudioMessage(targetPerson.technicalIdentityHash, duration)
+                },
+                onToggleMarkPerson = { targetPerson ->
+                    repository.toggleMarkPerson(targetPerson.id)
+                },
+                onRequestFamilyRole = { targetPerson, role ->
+                    repository.requestFamilyRole(targetPerson, role)
                 },
                 onGenerateFamilyRecovery = { targetPerson ->
                     val auth = repository.generateFamilyRecovery(
@@ -182,5 +198,25 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
                 onBack = { currentScreen = Screen.Main }
             )
         }
+    }
+
+    // Sobreposição de Chamada Ativa (Voz ou Vídeo)
+    activeCallState?.let { call ->
+        CallOverlayDialog(
+            callState = call,
+            onAnswer = { repository.answerCall() },
+            onEnd = { repository.endCall() },
+            onToggleMute = { repository.toggleCallMute() },
+            onToggleCamera = { repository.toggleCallCamera() }
+        )
+    }
+
+    // Diálogo de Solicitação Familiar Recebida com Confirmação Mútua
+    pendingFamilyRequest?.let { req ->
+        FamilyIncomingRequestDialog(
+            request = req,
+            onAccept = { person, role -> repository.acceptFamilyRole(person, role) },
+            onReject = { repository.rejectFamilyRequest() }
+        )
     }
 }

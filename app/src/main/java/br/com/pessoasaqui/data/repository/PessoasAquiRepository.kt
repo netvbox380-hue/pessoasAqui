@@ -10,7 +10,10 @@ import br.com.pessoasaqui.core.proximity.BleManager
 import br.com.pessoasaqui.core.proximity.ProximitySimulator
 import br.com.pessoasaqui.data.remote.PessoasAquiNetworkClient
 import br.com.pessoasaqui.data.remote.RemotePeer
+import br.com.pessoasaqui.domain.model.ActiveCallState
 import br.com.pessoasaqui.domain.model.ChatMessage
+import br.com.pessoasaqui.domain.model.FamilyRole
+import br.com.pessoasaqui.domain.model.MessageType
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.OfferItem
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
@@ -85,6 +88,12 @@ class PessoasAquiRepository(
 
     val isBluetoothEnabled: StateFlow<Boolean> = bleManager?.isBluetoothEnabledFlow ?: MutableStateFlow(true)
 
+    private val _activeCallState = MutableStateFlow<ActiveCallState?>(null)
+    val activeCallState: StateFlow<ActiveCallState?> = _activeCallState.asStateFlow()
+
+    private val _pendingFamilyRequest = MutableStateFlow<Pair<NearbyPerson, FamilyRole>?>(null)
+    val pendingFamilyRequest: StateFlow<Pair<NearbyPerson, FamilyRole>?> = _pendingFamilyRequest.asStateFlow()
+
     init {
         updateUnifiedData()
 
@@ -97,6 +106,59 @@ class PessoasAquiRepository(
 
         if (_hasGrantedPermissions.value) {
             startNativeBleHardware()
+        }
+    }
+
+    private fun processIncomingPayload(senderHash: String, senderAlias: String, payload: String) {
+        val cleanSender = senderHash.removePrefix("peer-")
+        when {
+            payload.startsWith("[CALL_INIT:") -> {
+                val parts = payload.removePrefix("[CALL_INIT:").removeSuffix("]").split(":")
+                val isVideo = parts.getOrNull(0)?.toBoolean() ?: false
+                val callerAlias = parts.getOrNull(1) ?: senderAlias
+                _activeCallState.value = ActiveCallState(
+                    isIncoming = true,
+                    peerHash = cleanSender,
+                    peerAlias = callerAlias,
+                    isVideo = isVideo,
+                    isConnected = false
+                )
+            }
+            payload == "[CALL_ACCEPT]" -> {
+                _activeCallState.value = _activeCallState.value?.copy(isConnected = true)
+            }
+            payload == "[CALL_END]" -> {
+                _activeCallState.value = null
+            }
+            payload.startsWith("[FAMILY_REQ:") -> {
+                val parts = payload.removePrefix("[FAMILY_REQ:").removeSuffix("]").split(":")
+                val roleName = parts.getOrNull(0) ?: FamilyRole.OUTRO.name
+                val reqAlias = parts.getOrNull(1) ?: senderAlias
+                val role = try { FamilyRole.valueOf(roleName) } catch (_: Exception) { FamilyRole.OUTRO }
+                val person = _realDiscoveredPeople.value.find { it.id == cleanSender || it.technicalIdentityHash == cleanSender }
+                    ?: NearbyPerson(
+                        id = cleanSender,
+                        technicalIdentityHash = cleanSender,
+                        alias = reqAlias,
+                        estimatedDistanceMeters = 3.0,
+                        proximityLabel = "Familiar"
+                    )
+                _pendingFamilyRequest.value = Pair(person, role)
+            }
+            payload.startsWith("[FAMILY_ACCEPT:") -> {
+                val parts = payload.removePrefix("[FAMILY_ACCEPT:").removeSuffix("]").split(":")
+                val roleName = parts.getOrNull(0) ?: FamilyRole.OUTRO.name
+                val role = try { FamilyRole.valueOf(roleName) } catch (_: Exception) { FamilyRole.OUTRO }
+                setFamilyRole(cleanSender, role)
+                proximitySimulator.receivePrivateMessage(
+                    cleanSender,
+                    senderAlias,
+                    "✨ Vínculo Familiar (${role.label}) confirmado mutuamente! Chamadas e áudios liberados."
+                )
+            }
+            else -> {
+                proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload)
+            }
         }
     }
 
@@ -120,8 +182,7 @@ class PessoasAquiRepository(
                     // 3. Busca mensagens pendentes na fila do servidor
                     val pendingResult = networkClient.fetchPendingMessages(myId)
                     pendingResult.getOrNull()?.forEach { pm ->
-                        val cleanSender = pm.senderHash.removePrefix("peer-")
-                        proximitySimulator.receivePrivateMessage(cleanSender, pm.senderAlias, pm.ciphertext)
+                        processIncomingPayload(pm.senderHash, pm.senderAlias, pm.ciphertext)
                     }
 
                     // 4. Garante que o WebSocket esteja ativo para sincronização instantânea
@@ -133,7 +194,7 @@ class PessoasAquiRepository(
                             onE2eeMessageReceived = { sender, payload, _ ->
                                 val cleanSender = sender.removePrefix("peer-")
                                 val senderAlias = _realDiscoveredPeople.value.find { it.id == cleanSender || it.technicalIdentityHash == cleanSender }?.alias ?: "Pessoa Próxima"
-                                proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload)
+                                processIncomingPayload(cleanSender, senderAlias, payload)
                             },
                             onSessionRevoked = { _ ->
                                 deviceSessionManager.revokeCurrentDeviceSession()
@@ -382,36 +443,102 @@ class PessoasAquiRepository(
     }
 
     fun sendPrivateMessage(recipientId: String, text: String): ContentModerationManager.ModerationResult {
-        val mod = moderationManager.evaluateContent(deviceSessionManager.getDeviceId(), text)
-        if (mod.isAllowed) {
-            val cleanRecipient = recipientId.removePrefix("peer-")
+        val cleanRecipient = recipientId.removePrefix("peer-")
+        val isSignaling = text.startsWith("[CALL_") || text.startsWith("[FAMILY_")
+        val isAudio = text.startsWith("[AUDIO:")
+
+        if (!isSignaling && !isAudio) {
+            val mod = moderationManager.evaluateContent(deviceSessionManager.getDeviceId(), text)
+            if (!mod.isAllowed) return mod
             proximitySimulator.sendPrivateMessage(cleanRecipient, text, _currentAlias.value)
+        } else if (isAudio) {
+            val dur = text.substringAfter("[AUDIO:").substringBefore("]").toIntOrNull() ?: 3
+            proximitySimulator.sendAudioMessage(cleanRecipient, dur, _currentAlias.value)
+        }
 
-            val myId = cryptoIdentityManager.getTechnicalIdentity()
-            val iv = UUID.randomUUID().toString().take(12)
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        val iv = UUID.randomUUID().toString().take(12)
 
-            // 1. Envia em tempo real pelo WebSocket
-            networkClient.sendE2eeEnvelope(
-                recipientHash = cleanRecipient,
-                ciphertext = text,
-                ivNonce = iv
-            )
+        // 1. Envia em tempo real pelo WebSocket
+        networkClient.sendE2eeEnvelope(
+            recipientHash = cleanRecipient,
+            ciphertext = text,
+            ivNonce = iv
+        )
 
-            // 2. Envio redundante via REST HTTP (garante entrega caso o WebSocket esteja reconectando)
-            scope.launch {
-                try {
-                    networkClient.sendHttpMessage(
-                        senderHash = myId,
-                        recipientHash = cleanRecipient,
-                        ciphertext = text,
-                        senderAlias = _currentAlias.value
-                    )
-                } catch (e: Exception) {
-                    Log.w("PessoasAqui", "Falha no envio HTTP da mensagem: ${e.message}")
-                }
+        // 2. Envio redundante via REST HTTP (garante entrega caso o WebSocket esteja reconectando)
+        scope.launch {
+            try {
+                networkClient.sendHttpMessage(
+                    senderHash = myId,
+                    recipientHash = cleanRecipient,
+                    ciphertext = text,
+                    senderAlias = _currentAlias.value
+                )
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Falha no envio HTTP da mensagem: ${e.message}")
             }
         }
-        return mod
+        return ContentModerationManager.ModerationResult(isAllowed = true)
+    }
+
+    fun startCall(person: NearbyPerson, isVideo: Boolean) {
+        val cleanHash = person.technicalIdentityHash.removePrefix("peer-")
+        _activeCallState.value = ActiveCallState(
+            isIncoming = false,
+            peerHash = cleanHash,
+            peerAlias = person.alias,
+            isVideo = isVideo,
+            isConnected = false
+        )
+        sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
+    }
+
+    fun answerCall() {
+        val current = _activeCallState.value ?: return
+        _activeCallState.value = current.copy(isConnected = true)
+        sendPrivateMessage(current.peerHash, "[CALL_ACCEPT]")
+    }
+
+    fun endCall() {
+        val current = _activeCallState.value ?: return
+        val peer = current.peerHash
+        _activeCallState.value = null
+        sendPrivateMessage(peer, "[CALL_END]")
+    }
+
+    fun toggleCallMute() {
+        _activeCallState.value = _activeCallState.value?.let { it.copy(isMuted = !it.isMuted) }
+    }
+
+    fun toggleCallCamera() {
+        _activeCallState.value = _activeCallState.value?.let { it.copy(isCameraOn = !it.isCameraOn) }
+    }
+
+    fun sendAudioMessage(recipientId: String, durationSeconds: Int) {
+        val cleanRecipient = recipientId.removePrefix("peer-")
+        sendPrivateMessage(cleanRecipient, "[AUDIO:$durationSeconds]")
+    }
+
+    fun requestFamilyRole(person: NearbyPerson, role: FamilyRole) {
+        val cleanRecipient = person.technicalIdentityHash.removePrefix("peer-")
+        sendPrivateMessage(cleanRecipient, "[FAMILY_REQ:${role.name}:${_currentAlias.value}]")
+        proximitySimulator.receivePrivateMessage(
+            cleanRecipient,
+            "Sistema",
+            "Convite de vínculo familiar (${role.label}) enviado para ${person.alias}. Aguardando confirmação mútua..."
+        )
+    }
+
+    fun acceptFamilyRole(person: NearbyPerson, role: FamilyRole) {
+        val cleanRecipient = person.technicalIdentityHash.removePrefix("peer-")
+        setFamilyRole(cleanRecipient, role)
+        sendPrivateMessage(cleanRecipient, "[FAMILY_ACCEPT:${role.name}:${_currentAlias.value}]")
+        _pendingFamilyRequest.value = null
+    }
+
+    fun rejectFamilyRequest() {
+        _pendingFamilyRequest.value = null
     }
 
     fun setFamilyRole(personId: String, role: br.com.pessoasaqui.domain.model.FamilyRole) {
