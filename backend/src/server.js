@@ -51,6 +51,8 @@ wss.on('connection', (ws, req) => {
 
       if (msg.type === 'AUTH') {
         authenticatedIdentity = (msg.identityHash || '').replace('peer-', '').trim();
+        const incomingAlias = (msg.alias || 'Usuário PessoasAqui').trim();
+
         // Regra 18: 1 Identidade = 1 Dispositivo Ativo. Fecha socket anterior se houver
         if (activeSockets.has(authenticatedIdentity)) {
           const oldWs = activeSockets.get(authenticatedIdentity);
@@ -60,15 +62,28 @@ wss.on('connection', (ws, req) => {
         }
         activeSockets.set(authenticatedIdentity, ws);
 
+        // Remove qualquer presença antiga/duplicada que compartilhe o mesmo apelido
+        for (const [id, peer] of activePresence.entries()) {
+          if (id !== authenticatedIdentity && peer.alias && incomingAlias && peer.alias.toLowerCase() === incomingAlias.toLowerCase()) {
+            console.log(`[WS] Removendo presença fantasma para o apelido "${incomingAlias}" (id antigo: ${id})`);
+            activePresence.delete(id);
+            wss.clients.forEach((client) => {
+              if (client !== ws && client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify({ type: 'PEER_OFFLINE', identityHash: id }));
+              }
+            });
+          }
+        }
+
         activePresence.set(authenticatedIdentity, {
           identityHash: authenticatedIdentity,
-          alias: msg.alias || 'Usuário PessoasAqui',
+          alias: incomingAlias,
           intent: msg.intent || 'QUERO_CONVERSAR',
           lastSeen: Date.now()
         });
 
         ws.send(JSON.stringify({ type: 'AUTH_SUCCESS', identityHash: authenticatedIdentity }));
-        console.log(`[WS] Dispositivo conectado para identidade: ${authenticatedIdentity} (${msg.alias || 'Anônimo'})`);
+        console.log(`[WS] Dispositivo conectado para identidade: ${authenticatedIdentity} (${incomingAlias})`);
 
         // Entrega mensagens pendentes para este dispositivo
         if (pendingMessages.has(authenticatedIdentity)) {
@@ -79,10 +94,12 @@ wss.on('connection', (ws, req) => {
           pendingMessages.delete(authenticatedIdentity);
         }
 
-        // Envia lista atual de usuários presentes no radar para o novo cliente
+        // Envia lista atual de usuários presentes no radar para o novo cliente (excluindo a si mesmo por id e por apelido)
         const now = Date.now();
         const existingPeers = Array.from(activePresence.values())
-          .filter(p => p.identityHash !== authenticatedIdentity && (now - p.lastSeen < 120000));
+          .filter(p => p.identityHash !== authenticatedIdentity &&
+                       (!p.alias || !incomingAlias || p.alias.toLowerCase() !== incomingAlias.toLowerCase()) &&
+                       (now - p.lastSeen < 120000));
         ws.send(JSON.stringify({ type: 'PRESENCE_SYNC', peers: existingPeers }));
 
         // Transmite anúncio de presença para os demais aparelhos conectados
@@ -183,9 +200,19 @@ app.post('/api/presence/heartbeat', (req, res) => {
     return res.status(400).json({ error: 'identityHash obrigatório.' });
   }
 
-  activePresence.set(identityHash, {
-    identityHash,
-    alias: alias || 'Usuário PessoasAqui',
+  const cleanIdentity = identityHash.replace('peer-', '').trim();
+  const cleanAlias = (alias || 'Usuário PessoasAqui').trim();
+
+  // Remove qualquer presença fantasma com o mesmo apelido
+  for (const [id, peer] of activePresence.entries()) {
+    if (id !== cleanIdentity && peer.alias && cleanAlias && peer.alias.toLowerCase() === cleanAlias.toLowerCase()) {
+      activePresence.delete(id);
+    }
+  }
+
+  activePresence.set(cleanIdentity, {
+    identityHash: cleanIdentity,
+    alias: cleanAlias,
     intent: intent || 'QUERO_CONVERSAR',
     lastSeen: Date.now()
   });
@@ -197,10 +224,13 @@ app.post('/api/presence/heartbeat', (req, res) => {
  * Listagem de Pessoas Online no Radar de Proximidade
  */
 app.get('/api/presence/nearby', (req, res) => {
-  const myHash = req.query.myIdentity;
+  const myHash = (req.query.myIdentity || '').replace('peer-', '').trim();
+  const myAlias = (req.query.myAlias || '').trim().toLowerCase();
   const now = Date.now();
   const peers = Array.from(activePresence.values())
-    .filter(p => p.identityHash !== myHash && (now - p.lastSeen < 120000));
+    .filter(p => p.identityHash !== myHash &&
+                 (!myAlias || !p.alias || p.alias.trim().toLowerCase() !== myAlias) &&
+                 (now - p.lastSeen < 120000));
 
   res.json({ success: true, count: peers.length, people: peers });
 });

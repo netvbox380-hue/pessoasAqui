@@ -116,8 +116,9 @@ class BleManager(
             .setTimeout(0)
             .build()
 
-        // Monta carga de dados: Hash de identidade (8 chars) + ordinal de intenção (1 byte)
-        val payload = "$myIdentityHash:${myIntent.ordinal}".toByteArray(StandardCharsets.UTF_8)
+        // Monta carga de dados: Hash de identidade (8 chars) + ordinal de intenção (1 byte) + apelido (até 10 chars)
+        val cleanAlias = myAlias.trim().take(10)
+        val payload = "$myIdentityHash:${myIntent.ordinal}:$cleanAlias".toByteArray(StandardCharsets.UTF_8)
 
         // Pacote Principal de Anúncio (<= 31 bytes)
         val data = AdvertiseData.Builder()
@@ -137,7 +138,23 @@ class BleManager(
             }
 
             override fun onStartFailure(errorCode: Int) {
-                Log.e(tag, "Falha ao iniciar BLE Advertising. Código: $errorCode")
+                Log.w(tag, "Falha ao iniciar BLE Advertising. Código: $errorCode")
+                if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
+                    // Fallback para carga compacta de 10 bytes sem o apelido caso o hardware tenha limite estrito
+                    try {
+                        val compactPayload = "$myIdentityHash:${myIntent.ordinal}".toByteArray(StandardCharsets.UTF_8)
+                        val compactResponse = AdvertiseData.Builder()
+                            .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), compactPayload)
+                            .build()
+                        advertiser?.startAdvertising(settings, data, compactResponse, object : AdvertiseCallback() {
+                            override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+                                Log.d(tag, "BLE Advertising compacto iniciado com sucesso.")
+                            }
+                        })
+                    } catch (e: Exception) {
+                        Log.e(tag, "Erro no fallback de BLE advertising: ${e.message}")
+                    }
+                }
             }
         }
 
@@ -223,8 +240,8 @@ class BleManager(
     private fun processScanResult(result: ScanResult, onPeerDiscovered: (NearbyPerson) -> Unit) {
         val record = result.scanRecord ?: return
         val serviceData = record.getServiceData(ParcelUuid(BleConstants.SERVICE_UUID))
-        val hasServiceUuid = record.serviceUuids?.contains(ParcelUuid(BleConstants.SERVICE_UUID)) == true
-        if (serviceData == null && !hasServiceUuid) {
+        // Rejeita qualquer pacote que não possua a carga de dados de serviço legítima do PessoasAqui
+        if (serviceData == null || serviceData.isEmpty()) {
             return
         }
 
@@ -237,32 +254,41 @@ class BleManager(
             return
         }
 
-        var identityHash = result.device.address.replace(":", "").take(8)
+        var identityHash = ""
         var intent = UserIntent.QUERO_CONVERSAR
+        var peerAlias: String? = null
 
-        if (serviceData != null) {
-            try {
-                val str = String(serviceData, StandardCharsets.UTF_8)
-                val parts = str.split(":")
-                if (parts.isNotEmpty() && parts[0].isNotBlank()) identityHash = parts[0]
-                if (parts.size > 1) {
-                    val intentIdx = parts[1].toIntOrNull() ?: 0
-                    intent = UserIntent.values().getOrElse(intentIdx) { UserIntent.QUERO_CONVERSAR }
-                }
-            } catch (e: Exception) {
-                // Fallback gracioso
+        try {
+            val str = String(serviceData, StandardCharsets.UTF_8)
+            val parts = str.split(":")
+            if (parts.isNotEmpty() && parts[0].isNotBlank()) identityHash = parts[0].trim()
+            if (parts.size > 1) {
+                val intentIdx = parts[1].toIntOrNull() ?: 0
+                intent = UserIntent.values().getOrElse(intentIdx) { UserIntent.QUERO_CONVERSAR }
             }
-        }
-
-        // Não adiciona o próprio aparelho
-        if (identityHash.isNotBlank() && identityHash.equals(lastIdentityHash, ignoreCase = true)) {
+            if (parts.size > 2 && parts[2].isNotBlank()) {
+                peerAlias = parts[2].trim()
+            }
+        } catch (e: Exception) {
             return
         }
+
+        if (identityHash.isBlank()) return
+
+        // Não adiciona o próprio aparelho (compara com hash técnico e apelido)
+        if (identityHash.equals(lastIdentityHash, ignoreCase = true)) {
+            return
+        }
+        if (!peerAlias.isNullOrBlank() && !lastAlias.isNullOrBlank() && peerAlias.equals(lastAlias, ignoreCase = true)) {
+            return
+        }
+
+        val finalAlias = if (!peerAlias.isNullOrBlank()) peerAlias else "Pessoa Próxima #${identityHash.take(4)}"
 
         val peer = NearbyPerson(
             id = identityHash,
             technicalIdentityHash = identityHash,
-            alias = "Pessoa Próxima #${identityHash.take(4)}",
+            alias = finalAlias,
             estimatedDistanceMeters = distance,
             proximityLabel = distanceEstimator.getProximityLabel(distance),
             intent = intent,

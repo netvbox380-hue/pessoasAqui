@@ -345,10 +345,11 @@ class PessoasAquiNetworkClient(
     /**
      * Busca usuários ativos recentemente no radar via API REST
      */
-    suspend fun fetchNearbyPresence(myIdentity: String): Result<List<RemotePeer>> = withContext(Dispatchers.IO) {
+    suspend fun fetchNearbyPresence(myIdentity: String, myAlias: String = ""): Result<List<RemotePeer>> = withContext(Dispatchers.IO) {
         try {
+            val encodedAlias = java.net.URLEncoder.encode(myAlias, "UTF-8")
             val request = Request.Builder()
-                .url("$baseUrl/api/presence/nearby?myIdentity=$myIdentity")
+                .url("$baseUrl/api/presence/nearby?myIdentity=$myIdentity&myAlias=$encodedAlias")
                 .get()
                 .build()
 
