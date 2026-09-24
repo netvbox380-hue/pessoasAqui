@@ -13,17 +13,34 @@ const wss = new WebSocket.Server({ server });
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 // Inicia conexão com banco (Supabase PostgreSQL ou local)
 initDatabase();
 
-// Mapa de conexões WebSocket ativas: identityHash -> Set de WebSockets
+// Mapa de conexões WebSocket ativas: identityHash -> WebSocket (1 dispositivo ativo por identidade)
 const activeSockets = new Map();
 // Mapa de presença ativa em tempo real: identityHash -> { identityHash, alias, intent, lastSeen }
 const activePresence = new Map();
 // Fila de mensagens pendentes para entrega garantida: recipientHash -> [messages]
 const pendingMessages = new Map();
+// Cache de deduplicação de mensagens (evita mensagens repetidas/duplicadas)
+const recentMessageIds = new Map();
+
+function isDuplicateMessage(msgId) {
+  if (!msgId) return false;
+  const now = Date.now();
+  if (recentMessageIds.has(msgId)) return true;
+  recentMessageIds.set(msgId, now);
+  // Limpeza de mensagens com mais de 5 minutos
+  if (recentMessageIds.size > 5000) {
+    for (const [id, ts] of recentMessageIds.entries()) {
+      if (now - ts > 300000) recentMessageIds.delete(id);
+    }
+  }
+  return false;
+}
 
 wss.on('connection', (ws, req) => {
   let authenticatedIdentity = null;
@@ -34,10 +51,14 @@ wss.on('connection', (ws, req) => {
 
       if (msg.type === 'AUTH') {
         authenticatedIdentity = (msg.identityHash || '').replace('peer-', '').trim();
-        if (!activeSockets.has(authenticatedIdentity)) {
-          activeSockets.set(authenticatedIdentity, new Set());
+        // Regra 18: 1 Identidade = 1 Dispositivo Ativo. Fecha socket anterior se houver
+        if (activeSockets.has(authenticatedIdentity)) {
+          const oldWs = activeSockets.get(authenticatedIdentity);
+          if (oldWs && oldWs !== ws) {
+            try { oldWs.close(1000, "Replaced by active device connection"); } catch (_) {}
+          }
         }
-        activeSockets.get(authenticatedIdentity).add(ws);
+        activeSockets.set(authenticatedIdentity, ws);
 
         activePresence.set(authenticatedIdentity, {
           identityHash: authenticatedIdentity,
@@ -85,12 +106,19 @@ wss.on('connection', (ws, req) => {
 
       // Relay Cego de Mensagem Cifrada Ponta a Ponta (E2EE)
       if (msg.type === 'E2EE_MESSAGE' && authenticatedIdentity) {
-        const { recipientHash, ciphertextPayload, ivNonce } = msg;
+        const { recipientHash, ciphertextPayload, ivNonce, messageId } = msg;
         const cleanRecipient = (recipientHash || '').replace('peer-', '').trim();
+        const msgId = messageId || `${authenticatedIdentity}_${Date.now()}_${Math.random()}`;
+
+        if (isDuplicateMessage(msgId)) {
+          return;
+        }
+
         const senderAlias = activePresence.get(authenticatedIdentity)?.alias || 'Usuário';
 
         const msgObj = {
           type: 'E2EE_MESSAGE_RECEIVED',
+          messageId: msgId,
           senderHash: authenticatedIdentity,
           senderAlias: senderAlias,
           ciphertextPayload,
@@ -98,19 +126,10 @@ wss.on('connection', (ws, req) => {
           timestamp: Date.now()
         };
 
-        let delivered = false;
-        const recipientSockets = activeSockets.get(cleanRecipient);
-
-        if (recipientSockets && recipientSockets.size > 0) {
-          recipientSockets.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify(msgObj));
-              delivered = true;
-            }
-          });
-        }
-
-        if (!delivered) {
+        const targetWs = activeSockets.get(cleanRecipient);
+        if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+          targetWs.send(JSON.stringify(msgObj));
+        } else {
           if (!pendingMessages.has(cleanRecipient)) {
             pendingMessages.set(cleanRecipient, []);
           }
@@ -123,22 +142,19 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
-    if (authenticatedIdentity && activeSockets.has(authenticatedIdentity)) {
-      activeSockets.get(authenticatedIdentity).delete(ws);
-      if (activeSockets.get(authenticatedIdentity).size === 0) {
-        activeSockets.delete(authenticatedIdentity);
-        activePresence.delete(authenticatedIdentity);
+    if (authenticatedIdentity && activeSockets.get(authenticatedIdentity) === ws) {
+      activeSockets.delete(authenticatedIdentity);
+      activePresence.delete(authenticatedIdentity);
 
-        // Notifica aos outros que o usuário saiu do radar
-        wss.clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: 'PEER_OFFLINE',
-              identityHash: authenticatedIdentity
-            }));
-          }
-        });
-      }
+      // Notifica aos outros que o usuário saiu do radar
+      wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            type: 'PEER_OFFLINE',
+            identityHash: authenticatedIdentity
+          }));
+        }
+      });
     }
   });
 });
@@ -193,16 +209,22 @@ app.get('/api/presence/nearby', (req, res) => {
  * Envio de Mensagem Cifrada via HTTP (Fallback redundante para WebSockets)
  */
 app.post('/api/messages/send', (req, res) => {
-  const { senderHash, recipientHash, ciphertextPayload, ivNonce, senderAlias } = req.body;
+  const { senderHash, recipientHash, ciphertextPayload, ivNonce, senderAlias, messageId } = req.body;
   if (!recipientHash || !ciphertextPayload) {
     return res.status(400).json({ error: 'recipientHash e ciphertextPayload são obrigatórios.' });
   }
 
   const cleanRecipient = (recipientHash || '').replace('peer-', '').trim();
   const cleanSender = (senderHash || '').replace('peer-', '').trim();
+  const msgId = messageId || `${cleanSender}_${Date.now()}_${Math.random()}`;
+
+  if (isDuplicateMessage(msgId)) {
+    return res.json({ success: true, delivered: true, duplicate: true });
+  }
 
   const msgObj = {
     type: 'E2EE_MESSAGE_RECEIVED',
+    messageId: msgId,
     senderHash: cleanSender,
     senderAlias: senderAlias || activePresence.get(cleanSender)?.alias || 'Usuário',
     ciphertextPayload,
@@ -211,18 +233,12 @@ app.post('/api/messages/send', (req, res) => {
   };
 
   let delivered = false;
-  const recipientSockets = activeSockets.get(cleanRecipient);
+  const targetWs = activeSockets.get(cleanRecipient);
 
-  if (recipientSockets && recipientSockets.size > 0) {
-    recipientSockets.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify(msgObj));
-        delivered = true;
-      }
-    });
-  }
-
-  if (!delivered) {
+  if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+    targetWs.send(JSON.stringify(msgObj));
+    delivered = true;
+  } else {
     if (!pendingMessages.has(cleanRecipient)) {
       pendingMessages.set(cleanRecipient, []);
     }

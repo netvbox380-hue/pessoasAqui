@@ -1,7 +1,14 @@
 package br.com.pessoasaqui.ui.screens
 
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -18,6 +25,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -26,8 +36,59 @@ import br.com.pessoasaqui.domain.model.FamilyRole
 import br.com.pessoasaqui.domain.model.MessageType
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
+
+fun uriToBase64Image(context: android.content.Context, uri: Uri): String? {
+    return try {
+        val inputStream = context.contentResolver.openInputStream(uri)
+        val originalBitmap = BitmapFactory.decodeStream(inputStream) ?: return null
+        inputStream?.close()
+
+        val maxDim = 800
+        val width = originalBitmap.width
+        val height = originalBitmap.height
+        val scaledBitmap = if (width > maxDim || height > maxDim) {
+            val ratio = width.toFloat() / height.toFloat()
+            if (width > height) {
+                android.graphics.Bitmap.createScaledBitmap(originalBitmap, maxDim, (maxDim / ratio).toInt(), true)
+            } else {
+                android.graphics.Bitmap.createScaledBitmap(originalBitmap, (maxDim * ratio).toInt(), maxDim, true)
+            }
+        } else {
+            originalBitmap
+        }
+
+        val outputStream = ByteArrayOutputStream()
+        scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
+        val byteArray = outputStream.toByteArray()
+        Base64.encodeToString(byteArray, Base64.NO_WRAP)
+    } catch (_: Exception) {
+        null
+    }
+}
+
+fun uriToBase64Doc(context: android.content.Context, uri: Uri): Pair<String, Long>? {
+    return try {
+        var fileName = "documento.pdf"
+        var fileSize = 0L
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (cursor.moveToFirst()) {
+                if (nameIndex != -1) fileName = cursor.getString(nameIndex) ?: "documento.pdf"
+                if (sizeIndex != -1) fileSize = cursor.getLong(sizeIndex)
+            }
+        }
+        val bytes = context.contentResolver.openInputStream(uri)?.readBytes() ?: return null
+        val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        Pair("$fileName:${if (fileSize > 0) fileSize else bytes.size.toLong()}:$b64", bytes.size.toLong())
+    } catch (_: Exception) {
+        null
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,15 +99,19 @@ fun ChatDetailScreen(
     onSendMessage: (String) -> Unit,
     onStartCall: (NearbyPerson, Boolean) -> Unit = { _, _ -> },
     onSendAudioMessage: (NearbyPerson, Int) -> Unit = { _, _ -> },
+    onSendImageMessage: (NearbyPerson, String) -> Unit = { _, _ -> },
+    onSendDocumentMessage: (NearbyPerson, String, String, Long) -> Unit = { _, _, _, _ -> },
     onToggleMarkPerson: (NearbyPerson) -> Unit = { _ -> },
     onRequestFamilyRole: (NearbyPerson, FamilyRole) -> Unit = { _, _ -> },
     onGenerateFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
     onBlockUser: (String) -> Unit = { _ -> },
     onReportUser: (String) -> Unit = { _ -> }
 ) {
+    val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
     var menuExpanded by remember { mutableStateOf(false) }
     var showFamilyRoleDialog by remember { mutableStateOf(false) }
+    var showAttachmentOptions by remember { mutableStateOf(false) }
     var restrictedFeatureDialog by remember { mutableStateOf<String?>(null) }
     var isRecordingAudio by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableStateOf(0) }
@@ -55,6 +120,35 @@ fun ChatDetailScreen(
     val isMutualOrFamily = person.isMutualConnection || person.isFamily
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            scope.launch(Dispatchers.IO) {
+                val base64 = uriToBase64Image(context, it)
+                if (base64 != null) {
+                    onSendImageMessage(person, base64)
+                }
+            }
+        }
+    }
+
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            scope.launch(Dispatchers.IO) {
+                val res = uriToBase64Doc(context, it)
+                if (res != null) {
+                    val parts = res.first.split(":", limit = 3)
+                    val name = parts.getOrNull(0) ?: "documento.pdf"
+                    val b64 = parts.getOrNull(2) ?: ""
+                    onSendDocumentMessage(person, name, b64, res.second)
+                }
+            }
+        }
+    }
 
     // Timer de gravação de áudio
     LaunchedEffect(isRecordingAudio) {
@@ -130,7 +224,7 @@ fun ChatDetailScreen(
                     }
                 },
                 actions = {
-                    // Ícone de Chamada de Voz (desbloqueado somente para Mútuo ou Familiar)
+                    // Ícone de Chamada de Voz
                     IconButton(onClick = {
                         if (isMutualOrFamily) {
                             onStartCall(person, false)
@@ -157,7 +251,7 @@ fun ChatDetailScreen(
                         }
                     }
 
-                    // Ícone de Chamada de Vídeo (desbloqueado somente para Mútuo ou Familiar)
+                    // Ícone de Chamada de Vídeo
                     IconButton(onClick = {
                         if (isMutualOrFamily) {
                             onStartCall(person, true)
@@ -301,7 +395,7 @@ fun ChatDetailScreen(
                         }
                         Spacer(modifier = Modifier.height(3.dp))
                         Text(
-                            text = "Chamadas de voz, vídeo e áudios são liberados quando ambos se marcam mutuamente ou confirmam parentesco.",
+                            text = "Chamadas de voz, vídeo, áudios e envio de fotos/documentos são liberados quando ambos se marcam mutuamente ou confirmam parentesco.",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = TextSecondary,
                                 fontSize = 11.sp
@@ -355,9 +449,9 @@ fun ChatDetailScreen(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (person.isFamily)
-                                "🛡️ Familiar Conectado • Chamadas, vídeos e áudios ilimitados (E2EE)"
+                                "🛡️ Familiar Conectado • Chamadas, vídeos, áudios e arquivos liberados (E2EE)"
                             else
-                                "🤝 Conexão Mútua Confirmada • Chamadas, vídeos e áudios liberados (E2EE)",
+                                "🤝 Conexão Mútua Confirmada • Chamadas, vídeos, áudios e arquivos liberados (E2EE)",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = if (person.isFamily) FamilyPurple else EmeraldGreen,
                                 fontWeight = FontWeight.SemiBold,
@@ -393,88 +487,163 @@ fun ChatDetailScreen(
                             modifier = Modifier.widthIn(max = 290.dp)
                         ) {
                             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                if (msg.messageType == MessageType.AUDIO) {
-                                    // Player de Áudio Criptografado
-                                    val isPlaying = playingAudioId == msg.id
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(vertical = 4.dp)
-                                    ) {
-                                        IconButton(
-                                            onClick = {
-                                                if (isPlaying) {
-                                                    playingAudioId = null
-                                                } else {
-                                                    playingAudioId = msg.id
-                                                    scope.launch {
-                                                        delay((msg.audioDurationSeconds.coerceAtLeast(2) * 1000).toLong())
-                                                        if (playingAudioId == msg.id) {
-                                                            playingAudioId = null
+                                when (msg.messageType) {
+                                    MessageType.AUDIO -> {
+                                        // Player de Áudio Criptografado
+                                        val isPlaying = playingAudioId == msg.id
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(vertical = 4.dp)
+                                        ) {
+                                            IconButton(
+                                                onClick = {
+                                                    if (isPlaying) {
+                                                        playingAudioId = null
+                                                    } else {
+                                                        playingAudioId = msg.id
+                                                        scope.launch {
+                                                            delay((msg.audioDurationSeconds.coerceAtLeast(2) * 1000).toLong())
+                                                            if (playingAudioId == msg.id) {
+                                                                playingAudioId = null
+                                                            }
                                                         }
                                                     }
-                                                }
-                                            },
-                                            modifier = Modifier
-                                                .size(36.dp)
-                                                .clip(CircleShape)
-                                                .background(if (isMe) DeepBlack.copy(alpha = 0.2f) else DarkCardElevated)
-                                        ) {
-                                            Icon(
-                                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                                contentDescription = if (isPlaying) "Pausar" else "Reproduzir",
-                                                tint = if (isMe) DeepBlack else RadarCyan,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
-
-                                        Spacer(modifier = Modifier.width(8.dp))
-
-                                        Column {
-                                            // Barras de visualização de áudio
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                                modifier = Modifier.height(18.dp)
+                                                },
+                                                modifier = Modifier
+                                                    .size(36.dp)
+                                                    .clip(CircleShape)
+                                                    .background(if (isMe) DeepBlack.copy(alpha = 0.2f) else DarkCardElevated)
                                             ) {
-                                                val heights = listOf(8, 14, 10, 18, 12, 16, 10, 14, 6, 12, 18, 14, 8)
-                                                heights.forEachIndexed { index, barH ->
-                                                    val activeHeight = if (isPlaying) {
-                                                        (barH + (index * 2) % 6).dp
-                                                    } else {
-                                                        barH.dp
-                                                    }
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .width(3.dp)
-                                                            .height(activeHeight)
-                                                            .clip(RoundedCornerShape(2.dp))
-                                                            .background(
-                                                                if (isMe) DeepBlack.copy(alpha = 0.7f) else RadarCyan.copy(alpha = 0.8f)
-                                                            )
-                                                    )
-                                                }
+                                                Icon(
+                                                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                                    contentDescription = if (isPlaying) "Pausar" else "Reproduzir",
+                                                    tint = if (isMe) DeepBlack else RadarCyan,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
                                             }
 
-                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Spacer(modifier = Modifier.width(8.dp))
 
+                                            Column {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                                    modifier = Modifier.height(18.dp)
+                                                ) {
+                                                    val heights = listOf(8, 14, 10, 18, 12, 16, 10, 14, 6, 12, 18, 14, 8)
+                                                    heights.forEachIndexed { index, barH ->
+                                                        val activeHeight = if (isPlaying) {
+                                                            (barH + (index * 2) % 6).dp
+                                                        } else {
+                                                            barH.dp
+                                                        }
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .width(3.dp)
+                                                                .height(activeHeight)
+                                                                .clip(RoundedCornerShape(2.dp))
+                                                                .background(
+                                                                    if (isMe) DeepBlack.copy(alpha = 0.7f) else RadarCyan.copy(alpha = 0.8f)
+                                                                )
+                                                        )
+                                                    }
+                                                }
+
+                                                Spacer(modifier = Modifier.height(2.dp))
+
+                                                Text(
+                                                    text = if (isPlaying) "Reproduzindo áudio..." else "Áudio Cifrado • 0:${String.format("%02d", msg.audioDurationSeconds.coerceAtLeast(3))}",
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        color = if (isMe) DeepBlack.copy(alpha = 0.8f) else TextSecondary,
+                                                        fontSize = 10.sp
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    MessageType.IMAGE -> {
+                                        // Foto / Imagem Cifrada
+                                        val bitmap = remember(msg.mediaBase64) {
+                                            try {
+                                                if (!msg.mediaBase64.isNullOrBlank()) {
+                                                    val decoded = Base64.decode(msg.mediaBase64, Base64.DEFAULT)
+                                                    BitmapFactory.decodeByteArray(decoded, 0, decoded.size)?.asImageBitmap()
+                                                } else null
+                                            } catch (_: Exception) { null }
+                                        }
+
+                                        if (bitmap != null) {
+                                            Image(
+                                                bitmap = bitmap,
+                                                contentDescription = "Foto Cifrada",
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .heightIn(max = 220.dp)
+                                                    .clip(RoundedCornerShape(10.dp)),
+                                                contentScale = ContentScale.Crop
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
                                             Text(
-                                                text = if (isPlaying) "Reproduzindo áudio..." else "Áudio Cifrado • 0:${String.format("%02d", msg.audioDurationSeconds.coerceAtLeast(3))}",
+                                                text = "📷 Foto Cifrada Ponta a Ponta",
                                                 style = MaterialTheme.typography.labelSmall.copy(
-                                                    color = if (isMe) DeepBlack.copy(alpha = 0.8f) else TextSecondary,
+                                                    color = if (isMe) DeepBlack.copy(alpha = 0.8f) else EmeraldGreen,
                                                     fontSize = 10.sp
+                                                )
+                                            )
+                                        } else {
+                                            Text(
+                                                text = "📷 [Imagem Cifrada Recebida]",
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    color = if (isMe) DeepBlack else TextPrimary
                                                 )
                                             )
                                         }
                                     }
-                                } else {
-                                    // Mensagem de Texto Normal
-                                    Text(
-                                        text = msg.text,
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            color = if (isMe) DeepBlack else TextPrimary,
-                                            fontWeight = FontWeight.Medium
+
+                                    MessageType.DOCUMENT -> {
+                                        // Documento / Arquivo Cifrado
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(vertical = 4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Description,
+                                                contentDescription = null,
+                                                tint = if (isMe) DeepBlack else RadarCyan,
+                                                modifier = Modifier.size(30.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Column {
+                                                Text(
+                                                    text = msg.fileName ?: "Documento",
+                                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isMe) DeepBlack else TextPrimary
+                                                    )
+                                                )
+                                                val sizeLabel = if (msg.fileSizeBytes > 0) "${msg.fileSizeBytes / 1024} KB" else "Arquivo anexado"
+                                                Text(
+                                                    text = "$sizeLabel • Cifrado E2EE",
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        color = if (isMe) DeepBlack.copy(alpha = 0.7f) else TextSecondary,
+                                                        fontSize = 10.sp
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    else -> {
+                                        // Mensagem de Texto Padrão
+                                        Text(
+                                            text = msg.text,
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                color = if (isMe) DeepBlack else TextPrimary,
+                                                fontWeight = FontWeight.Medium
+                                            )
                                         )
-                                    )
+                                    }
                                 }
 
                                 Spacer(modifier = Modifier.height(2.dp))
@@ -528,7 +697,6 @@ fun ChatDetailScreen(
                         }
 
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            // Cancelar Gravação
                             TextButton(
                                 onClick = {
                                     isRecordingAudio = false
@@ -538,7 +706,6 @@ fun ChatDetailScreen(
                                 Text("Cancelar", color = AlertRed)
                             }
 
-                            // Enviar Áudio Gravado
                             Button(
                                 onClick = {
                                     val finalDur = recordingSeconds.coerceAtLeast(2)
@@ -571,9 +738,26 @@ fun ChatDetailScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Botão de Anexo (Fotos e Documentos)
+                        IconButton(
+                            onClick = {
+                                if (isMutualOrFamily) {
+                                    showAttachmentOptions = true
+                                } else {
+                                    restrictedFeatureDialog = "Envio de Fotos e Documentos"
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AttachFile,
+                                contentDescription = "Anexar Foto ou Documento",
+                                tint = if (isMutualOrFamily) RadarCyan else TextSecondary.copy(alpha = 0.6f)
+                            )
+                        }
+
                         OutlinedTextField(
                             value = inputText,
                             onValueChange = { inputText = it },
@@ -587,10 +771,9 @@ fun ChatDetailScreen(
                             singleLine = true
                         )
 
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
 
                         if (inputText.isNotBlank()) {
-                            // Botão de Enviar Texto
                             IconButton(
                                 onClick = {
                                     onSendMessage(inputText)
@@ -605,7 +788,6 @@ fun ChatDetailScreen(
                                 )
                             }
                         } else {
-                            // Botão de Gravar Áudio (Microfone)
                             IconButton(
                                 onClick = {
                                     if (isMutualOrFamily) {
@@ -628,6 +810,70 @@ fun ChatDetailScreen(
                     }
                 }
             }
+        }
+
+        // Diálogo para escolha de anexo (Foto ou Documento)
+        if (showAttachmentOptions) {
+            AlertDialog(
+                onDismissRequest = { showAttachmentOptions = false },
+                title = { Text("Anexar à Conversa Cifrada", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showAttachmentOptions = false
+                                    imagePickerLauncher.launch("image/*")
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, tint = RadarCyan)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("Enviar Foto / Imagem", fontWeight = FontWeight.Bold, color = TextPrimary)
+                                    Text("Galeria de fotos com cifragem ponta a ponta", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary))
+                                }
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showAttachmentOptions = false
+                                    documentPickerLauncher.launch("*/*")
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Description, contentDescription = null, tint = EmeraldGreen)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("Enviar Documento", fontWeight = FontWeight.Bold, color = TextPrimary)
+                                    Text("PDFs e arquivos com transmissão protegida", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary))
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showAttachmentOptions = false }) {
+                        Text("Cancelar", color = TextSecondary)
+                    }
+                },
+                containerColor = DarkSurface
+            )
         }
 
         // Diálogo para convidar/vincular papel de familiar com confirmação mútua
@@ -699,18 +945,18 @@ fun ChatDetailScreen(
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "Chamadas de voz, vídeo e áudios gravados são exclusivos para Familiares ou Contatos Marcados Mutuamente.",
+                            text = "Chamadas de voz, vídeo, áudios e envio de fotos/documentos são exclusivos para Familiares ou Contatos Marcados Mutuamente.",
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 color = TextPrimary,
                                 fontWeight = FontWeight.Medium
                             )
                         )
                         Text(
-                            text = "Para sua privacidade, estranhos no radar local possuem acesso restrito apenas a mensagens de texto criptografadas.",
+                            text = "Para sua privacidade e segurança, estranhos no radar local possuem acesso restrito apenas a mensagens de texto criptografadas.",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
                         Text(
-                            text = "Assim que ambos se marcarem ou confirmarem parentesco, todos os recursos são liberados a qualquer distância!",
+                            text = "Assim que ambos se marcarem ou confirmarem parentesco, todos os recursos multimídia são liberados a qualquer distância!",
                             style = MaterialTheme.typography.bodySmall.copy(color = EmeraldGreen)
                         )
                     }

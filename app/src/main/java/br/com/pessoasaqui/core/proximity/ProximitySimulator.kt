@@ -276,32 +276,82 @@ class ProximitySimulator(
     /**
      * Recebe mensagem privada entregue de outro dispositivo
      */
-    fun receivePrivateMessage(senderId: String, senderAlias: String, text: String) {
+    fun receivePrivateMessage(senderId: String, senderAlias: String, text: String, messageId: String = "") {
         val cleanId = senderId.removePrefix("peer-")
+        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+
+        // Deduplicação 1: Checa por ID único da mensagem
+        if (messageId.isNotBlank() && currentList.any { it.id == messageId }) {
+            return
+        }
+
+        // Deduplicação 2: Se a última mensagem for idêntica e tiver chegado em menos de 4 segundos
+        val lastMsg = currentList.lastOrNull()
+        if (lastMsg != null && lastMsg.senderId == cleanId && lastMsg.text == text && (System.currentTimeMillis() - lastMsg.timestampMs < 4000)) {
+            return
+        }
+
         val isAudio = text.startsWith("[AUDIO:")
+        val isImage = text.startsWith("[IMAGE:")
+        val isDoc = text.startsWith("[DOC:")
+
         val duration = if (isAudio) {
             text.substringAfter("[AUDIO:").substringBefore("]").toIntOrNull() ?: 3
         } else 0
 
+        val (docName, docSize, docBase64) = if (isDoc) {
+            val parts = text.removePrefix("[DOC:").removeSuffix("]").split(":", limit = 3)
+            Triple(parts.getOrNull(0) ?: "documento.pdf", parts.getOrNull(1)?.toLongOrNull() ?: 0L, parts.getOrNull(2) ?: "")
+        } else {
+            Triple(null, 0L, null)
+        }
+
+        val imageBase64 = if (isImage) {
+            text.removePrefix("[IMAGE:").removeSuffix("]")
+        } else null
+
+        val finalType = when {
+            isAudio -> MessageType.AUDIO
+            isImage -> MessageType.IMAGE
+            isDoc -> MessageType.DOCUMENT
+            else -> MessageType.TEXT
+        }
+
+        val displayText = when {
+            isAudio -> "Mensagem de Áudio (${duration}s)"
+            isImage -> "📷 Foto/Imagem"
+            isDoc -> "📄 ${docName ?: "Documento"}"
+            else -> text
+        }
+
         val msg = ChatMessage(
+            id = if (messageId.isNotBlank()) messageId else UUID.randomUUID().toString(),
             senderId = cleanId,
             senderAlias = senderAlias,
-            text = if (isAudio) "Mensagem de Áudio (${duration}s)" else text,
+            text = displayText,
             isLocalOnly = false,
             isEncrypted = true,
             isFromMe = false,
-            messageType = if (isAudio) MessageType.AUDIO else MessageType.TEXT,
-            audioDurationSeconds = duration
+            messageType = finalType,
+            audioDurationSeconds = duration,
+            mediaBase64 = imageBase64 ?: docBase64,
+            fileName = docName,
+            fileSizeBytes = docSize
         )
-        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+
         val updatedMap = _privateChats.value.toMutableMap()
         updatedMap[cleanId] = currentList + msg
         updatedMap["peer-$cleanId"] = currentList + msg
         _privateChats.value = updatedMap
     }
 
-    fun sendAudioMessage(recipientId: String, durationSeconds: Int, myAlias: String) {
+    fun sendAudioMessage(recipientId: String, durationSeconds: Int, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
+        val cleanId = recipientId.removePrefix("peer-")
+        val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: emptyList()
+        if (currentList.any { it.id == messageId }) return
+
         val msg = ChatMessage(
+            id = messageId,
             senderId = "me",
             senderAlias = myAlias,
             text = "Mensagem de Áudio (${durationSeconds}s)",
@@ -311,8 +361,57 @@ class ProximitySimulator(
             messageType = MessageType.AUDIO,
             audioDurationSeconds = durationSeconds
         )
+
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[recipientId] = currentList + msg
+        updatedMap[cleanId] = currentList + msg
+        updatedMap["peer-$cleanId"] = currentList + msg
+        _privateChats.value = updatedMap
+    }
+
+    fun sendImageMessage(recipientId: String, base64: String, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
         val cleanId = recipientId.removePrefix("peer-")
         val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: emptyList()
+        if (currentList.any { it.id == messageId }) return
+
+        val msg = ChatMessage(
+            id = messageId,
+            senderId = "me",
+            senderAlias = myAlias,
+            text = "📷 Foto/Imagem",
+            isLocalOnly = false,
+            isEncrypted = true,
+            isFromMe = true,
+            messageType = MessageType.IMAGE,
+            mediaBase64 = base64
+        )
+
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[recipientId] = currentList + msg
+        updatedMap[cleanId] = currentList + msg
+        updatedMap["peer-$cleanId"] = currentList + msg
+        _privateChats.value = updatedMap
+    }
+
+    fun sendDocumentMessage(recipientId: String, fileName: String, base64: String, sizeBytes: Long, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
+        val cleanId = recipientId.removePrefix("peer-")
+        val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: emptyList()
+        if (currentList.any { it.id == messageId }) return
+
+        val msg = ChatMessage(
+            id = messageId,
+            senderId = "me",
+            senderAlias = myAlias,
+            text = "📄 $fileName",
+            isLocalOnly = false,
+            isEncrypted = true,
+            isFromMe = true,
+            messageType = MessageType.DOCUMENT,
+            fileName = fileName,
+            fileSizeBytes = sizeBytes,
+            mediaBase64 = base64
+        )
+
         val updatedMap = _privateChats.value.toMutableMap()
         updatedMap[recipientId] = currentList + msg
         updatedMap[cleanId] = currentList + msg

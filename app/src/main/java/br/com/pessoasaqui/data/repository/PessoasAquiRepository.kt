@@ -109,7 +109,17 @@ class PessoasAquiRepository(
         }
     }
 
-    private fun processIncomingPayload(senderHash: String, senderAlias: String, payload: String) {
+    private val processedMessageIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    private fun processIncomingPayload(senderHash: String, senderAlias: String, payload: String, messageId: String = "") {
+        if (messageId.isNotBlank()) {
+            if (processedMessageIds.contains(messageId)) return
+            processedMessageIds.add(messageId)
+            if (processedMessageIds.size > 2000) {
+                processedMessageIds.clear()
+            }
+        }
+
         val cleanSender = senderHash.removePrefix("peer-")
         when {
             payload.startsWith("[CALL_INIT:") -> {
@@ -153,11 +163,12 @@ class PessoasAquiRepository(
                 proximitySimulator.receivePrivateMessage(
                     cleanSender,
                     senderAlias,
-                    "✨ Vínculo Familiar (${role.label}) confirmado mutuamente! Chamadas e áudios liberados."
+                    "✨ Vínculo Familiar (${role.label}) confirmado mutuamente! Chamadas e áudios liberados.",
+                    messageId
                 )
             }
             else -> {
-                proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload)
+                proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload, messageId)
             }
         }
     }
@@ -182,7 +193,7 @@ class PessoasAquiRepository(
                     // 3. Busca mensagens pendentes na fila do servidor
                     val pendingResult = networkClient.fetchPendingMessages(myId)
                     pendingResult.getOrNull()?.forEach { pm ->
-                        processIncomingPayload(pm.senderHash, pm.senderAlias, pm.ciphertext)
+                        processIncomingPayload(pm.senderHash, pm.senderAlias, pm.ciphertext, pm.messageId)
                     }
 
                     // 4. Garante que o WebSocket esteja ativo para sincronização instantânea
@@ -191,10 +202,10 @@ class PessoasAquiRepository(
                             myIdentityHash = myId,
                             myAlias = myAlias,
                             myIntent = myIntent,
-                            onE2eeMessageReceived = { sender, payload, _ ->
+                            onE2eeMessageReceived = { sender, payload, _, msgId ->
                                 val cleanSender = sender.removePrefix("peer-")
                                 val senderAlias = _realDiscoveredPeople.value.find { it.id == cleanSender || it.technicalIdentityHash == cleanSender }?.alias ?: "Pessoa Próxima"
-                                processIncomingPayload(cleanSender, senderAlias, payload)
+                                processIncomingPayload(cleanSender, senderAlias, payload, msgId)
                             },
                             onSessionRevoked = { _ ->
                                 deviceSessionManager.revokeCurrentDeviceSession()
@@ -446,40 +457,66 @@ class PessoasAquiRepository(
         val cleanRecipient = recipientId.removePrefix("peer-")
         val isSignaling = text.startsWith("[CALL_") || text.startsWith("[FAMILY_")
         val isAudio = text.startsWith("[AUDIO:")
+        val isImage = text.startsWith("[IMAGE:")
+        val isDoc = text.startsWith("[DOC:")
+        val msgId = UUID.randomUUID().toString()
 
-        if (!isSignaling && !isAudio) {
+        if (!isSignaling && !isAudio && !isImage && !isDoc) {
             val mod = moderationManager.evaluateContent(deviceSessionManager.getDeviceId(), text)
             if (!mod.isAllowed) return mod
             proximitySimulator.sendPrivateMessage(cleanRecipient, text, _currentAlias.value)
         } else if (isAudio) {
             val dur = text.substringAfter("[AUDIO:").substringBefore("]").toIntOrNull() ?: 3
-            proximitySimulator.sendAudioMessage(cleanRecipient, dur, _currentAlias.value)
+            proximitySimulator.sendAudioMessage(cleanRecipient, dur, _currentAlias.value, msgId)
+        } else if (isImage) {
+            val base64 = text.removePrefix("[IMAGE:").removeSuffix("]")
+            proximitySimulator.sendImageMessage(cleanRecipient, base64, _currentAlias.value, msgId)
+        } else if (isDoc) {
+            val parts = text.removePrefix("[DOC:").removeSuffix("]").split(":", limit = 3)
+            val fileName = parts.getOrNull(0) ?: "documento.pdf"
+            val size = parts.getOrNull(1)?.toLongOrNull() ?: 0L
+            val base64 = parts.getOrNull(2) ?: ""
+            proximitySimulator.sendDocumentMessage(cleanRecipient, fileName, base64, size, _currentAlias.value, msgId)
         }
 
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         val iv = UUID.randomUUID().toString().take(12)
 
-        // 1. Envia em tempo real pelo WebSocket
-        networkClient.sendE2eeEnvelope(
+        // 1. Tenta envio instantâneo prioritário via WebSocket
+        val sentViaWs = networkClient.sendE2eeEnvelope(
             recipientHash = cleanRecipient,
             ciphertext = text,
-            ivNonce = iv
+            ivNonce = iv,
+            messageId = msgId
         )
 
-        // 2. Envio redundante via REST HTTP (garante entrega caso o WebSocket esteja reconectando)
-        scope.launch {
-            try {
-                networkClient.sendHttpMessage(
-                    senderHash = myId,
-                    recipientHash = cleanRecipient,
-                    ciphertext = text,
-                    senderAlias = _currentAlias.value
-                )
-            } catch (e: Exception) {
-                Log.w("PessoasAqui", "Falha no envio HTTP da mensagem: ${e.message}")
+        // 2. Se o WebSocket não estiver conectado ou falhar, envia imediatamente por REST HTTP (Fallback)
+        if (!sentViaWs) {
+            scope.launch {
+                try {
+                    networkClient.sendHttpMessage(
+                        senderHash = myId,
+                        recipientHash = cleanRecipient,
+                        ciphertext = text,
+                        senderAlias = _currentAlias.value,
+                        messageId = msgId
+                    )
+                } catch (e: Exception) {
+                    Log.w("PessoasAqui", "Falha no envio HTTP da mensagem: ${e.message}")
+                }
             }
         }
         return ContentModerationManager.ModerationResult(isAllowed = true)
+    }
+
+    fun sendImageMessage(recipientId: String, base64: String) {
+        val cleanRecipient = recipientId.removePrefix("peer-")
+        sendPrivateMessage(cleanRecipient, "[IMAGE:$base64]")
+    }
+
+    fun sendDocumentMessage(recipientId: String, fileName: String, base64: String, sizeBytes: Long) {
+        val cleanRecipient = recipientId.removePrefix("peer-")
+        sendPrivateMessage(cleanRecipient, "[DOC:$fileName:$sizeBytes:$base64]")
     }
 
     fun startCall(person: NearbyPerson, isVideo: Boolean) {

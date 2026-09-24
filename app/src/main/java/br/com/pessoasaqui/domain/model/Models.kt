@@ -33,6 +33,8 @@ enum class FamilyRole(val label: String) {
 enum class MessageType {
     TEXT,
     AUDIO,
+    IMAGE,
+    DOCUMENT,
     SYSTEM
 }
 
@@ -71,7 +73,10 @@ data class ChatMessage(
     val isEncrypted: Boolean = true,
     val isFromMe: Boolean = false,
     val messageType: MessageType = MessageType.TEXT,
-    val audioDurationSeconds: Int = 0
+    val audioDurationSeconds: Int = 0,
+    val mediaBase64: String? = null,
+    val fileName: String? = null,
+    val fileSizeBytes: Long = 0
 )
 
 /**

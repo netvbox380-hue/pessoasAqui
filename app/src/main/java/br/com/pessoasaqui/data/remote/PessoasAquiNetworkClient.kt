@@ -37,7 +37,7 @@ class PessoasAquiNetworkClient(
     private var lastIdentityHash: String? = null
     private var lastAlias: String? = null
     private var lastIntent: String? = null
-    private var lastOnE2ee: ((String, String, String) -> Unit)? = null
+    private var lastOnE2ee: ((String, String, String, String) -> Unit)? = null
     private var lastOnRevoked: ((String) -> Unit)? = null
     private var lastOnPresenceSync: ((List<RemotePeer>) -> Unit)? = null
     private var lastOnPeerOnline: ((RemotePeer) -> Unit)? = null
@@ -53,7 +53,7 @@ class PessoasAquiNetworkClient(
                     myIdentityHash = id,
                     myAlias = lastAlias ?: "Eu",
                     myIntent = lastIntent ?: "QUERO_CONVERSAR",
-                    onE2eeMessageReceived = lastOnE2ee ?: { _, _, _ -> },
+                    onE2eeMessageReceived = lastOnE2ee ?: { _, _, _, _ -> },
                     onSessionRevoked = lastOnRevoked ?: {},
                     onPresenceSync = lastOnPresenceSync,
                     onPeerOnline = lastOnPeerOnline,
@@ -203,7 +203,7 @@ class PessoasAquiNetworkClient(
         myIdentityHash: String,
         myAlias: String = "Eu",
         myIntent: String = "QUERO_CONVERSAR",
-        onE2eeMessageReceived: (senderHash: String, payload: String, iv: String) -> Unit,
+        onE2eeMessageReceived: (senderHash: String, payload: String, iv: String, messageId: String) -> Unit,
         onSessionRevoked: (notice: String) -> Unit,
         onPresenceSync: ((List<RemotePeer>) -> Unit)? = null,
         onPeerOnline: ((RemotePeer) -> Unit)? = null,
@@ -243,7 +243,8 @@ class PessoasAquiNetworkClient(
                             val sender = obj.getString("senderHash")
                             val payload = obj.getString("ciphertextPayload")
                             val iv = obj.getString("ivNonce")
-                            onE2eeMessageReceived(sender, payload, iv)
+                            val msgId = obj.optString("messageId", "")
+                            onE2eeMessageReceived(sender, payload, iv, msgId)
                         }
                         "SESSION_REVOKED" -> {
                             val msg = obj.optString("message", "Sessão revogada: sua identidade foi resgatada em outro aparelho.")
@@ -306,13 +307,14 @@ class PessoasAquiNetworkClient(
     /**
      * Envia envelope cifrado E2EE pelo WebSocket
      */
-    fun sendE2eeEnvelope(recipientHash: String, ciphertext: String, ivNonce: String): Boolean {
+    fun sendE2eeEnvelope(recipientHash: String, ciphertext: String, ivNonce: String, messageId: String = java.util.UUID.randomUUID().toString()): Boolean {
         val ws = activeWebSocket ?: return false
         val envelope = JSONObject().apply {
             put("type", "E2EE_MESSAGE")
             put("recipientHash", recipientHash)
             put("ciphertextPayload", ciphertext)
             put("ivNonce", ivNonce)
+            put("messageId", messageId)
         }
         return ws.send(envelope.toString())
     }
@@ -381,7 +383,8 @@ class PessoasAquiNetworkClient(
         senderHash: String,
         recipientHash: String,
         ciphertext: String,
-        senderAlias: String
+        senderAlias: String,
+        messageId: String = java.util.UUID.randomUUID().toString()
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
@@ -390,6 +393,7 @@ class PessoasAquiNetworkClient(
                 put("ciphertextPayload", ciphertext)
                 put("senderAlias", senderAlias)
                 put("ivNonce", java.util.UUID.randomUUID().toString().take(12))
+                put("messageId", messageId)
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/messages/send")
@@ -427,7 +431,8 @@ class PessoasAquiNetworkClient(
                                 senderHash = m.getString("senderHash"),
                                 senderAlias = m.optString("senderAlias", "Usuário"),
                                 ciphertext = m.getString("ciphertextPayload"),
-                                ivNonce = m.optString("ivNonce", "")
+                                ivNonce = m.optString("ivNonce", ""),
+                                messageId = m.optString("messageId", "")
                             )
                         )
                     }
@@ -458,5 +463,6 @@ data class PendingMessage(
     val senderHash: String,
     val senderAlias: String,
     val ciphertext: String,
-    val ivNonce: String
+    val ivNonce: String,
+    val messageId: String = ""
 )

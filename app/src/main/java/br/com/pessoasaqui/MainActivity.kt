@@ -149,6 +149,12 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
                 onSendAudioMessage = { targetPerson, duration ->
                     repository.sendAudioMessage(targetPerson.technicalIdentityHash, duration)
                 },
+                onSendImageMessage = { targetPerson, base64 ->
+                    repository.sendImageMessage(targetPerson.technicalIdentityHash, base64)
+                },
+                onSendDocumentMessage = { targetPerson, fileName, base64, size ->
+                    repository.sendDocumentMessage(targetPerson.technicalIdentityHash, fileName, base64, size)
+                },
                 onToggleMarkPerson = { targetPerson ->
                     repository.toggleMarkPerson(targetPerson.id)
                 },
