@@ -40,10 +40,23 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableLockscreenWakeupFlags()
         parseDeepLink(intent)
 
         val app = application as? PessoasAquiApp
         val repository = app?.repository ?: PessoasAquiRepository()
+        handleIncomingCallIntent(intent, repository)
+
+        // Solicita POST_NOTIFICATIONS em aparelhos Android 13+ que já haviam passado pelo onboarding
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (androidx.core.content.ContextCompat.checkSelfPermission(
+                    this,
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 905)
+            }
+        }
 
         setContent {
             PessoasAquiTheme {
@@ -61,10 +74,53 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        (application as? PessoasAquiApp)?.repository?.callRingtoneWakeManager?.isAppInForeground = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        (application as? PessoasAquiApp)?.repository?.callRingtoneWakeManager?.isAppInForeground = false
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        enableLockscreenWakeupFlags()
         parseDeepLink(intent)
+        val repository = (application as? PessoasAquiApp)?.repository
+        if (repository != null) {
+            handleIncomingCallIntent(intent, repository)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun enableLockscreenWakeupFlags() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+            }
+            window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                        android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                        android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+            )
+        } catch (_: Exception) {}
+    }
+
+    private fun handleIncomingCallIntent(intent: Intent?, repository: PessoasAquiRepository) {
+        val action = intent?.action ?: return
+        when (action) {
+            br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_ANSWER_CALL -> {
+                repository.answerCall()
+            }
+            br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_DECLINE_CALL -> {
+                repository.endCall()
+            }
+        }
     }
 
     private fun parseDeepLink(intent: Intent?) {

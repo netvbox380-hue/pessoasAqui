@@ -55,6 +55,10 @@ class PessoasAquiRepository(
 
     val voiceNoteManager = VoiceNoteManager()
 
+    val callRingtoneWakeManager: br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager? = context?.let { ctx ->
+        br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager(ctx)
+    }
+
     val callMediaEngine: CallMediaEngine? = context?.let { ctx ->
         CallMediaEngine(
             context = ctx,
@@ -392,6 +396,7 @@ class PessoasAquiRepository(
 
         if (_hasGrantedPermissions.value) {
             startNativeBleHardware()
+            context?.let { br.com.pessoasaqui.core.service.PessoasAquiForegroundService.startServiceSafely(it) }
         }
     }
 
@@ -431,8 +436,15 @@ class PessoasAquiRepository(
                     isVideo = isVideo,
                     isConnected = false
                 )
+                callRingtoneWakeManager?.onIncomingCallReceived(
+                    callerHash = cleanSender,
+                    callerAlias = callerAlias,
+                    isVideo = isVideo,
+                    onAutoTimeout = { endCall() }
+                )
             }
             payload == "[CALL_ACCEPT]" -> {
+                callRingtoneWakeManager?.stopAllCallAlerts()
                 val current = _activeCallState.value
                 if (current != null) {
                     _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
@@ -440,6 +452,7 @@ class PessoasAquiRepository(
                 }
             }
             payload == "[CALL_END]" -> {
+                callRingtoneWakeManager?.stopAllCallAlerts()
                 callMediaEngine?.stopCallMedia()
                 _activeCallState.value = null
             }
@@ -656,6 +669,7 @@ class PessoasAquiRepository(
             }
             else -> {
                 proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload, messageId)
+                callRingtoneWakeManager?.notifyIncomingMessageIfBackground(senderAlias, payload)
             }
         }
     }
@@ -1068,6 +1082,7 @@ class PessoasAquiRepository(
         _hasGrantedPermissions.value = true
         prefs?.edit()?.putBoolean("has_granted_permissions", true)?.apply()
         startNativeBleHardware()
+        context?.let { br.com.pessoasaqui.core.service.PessoasAquiForegroundService.startServiceSafely(it) }
     }
 
     fun setDemoMode(enabled: Boolean) {
@@ -1638,17 +1653,20 @@ class PessoasAquiRepository(
             isConnected = false,
             isSpeakerphoneOn = isVideo
         )
+        callRingtoneWakeManager?.startOutgoingRingbackTone()
         sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
     }
 
     fun answerCall() {
         val current = _activeCallState.value ?: return
+        callRingtoneWakeManager?.stopAllCallAlerts()
         _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
         callMediaEngine?.startCallMedia(current.isVideo)
         sendPrivateMessage(current.peerHash, "[CALL_ACCEPT]")
     }
 
     fun endCall() {
+        callRingtoneWakeManager?.stopAllCallAlerts()
         val current = _activeCallState.value ?: return
         val peer = current.peerHash
         callMediaEngine?.stopCallMedia()
