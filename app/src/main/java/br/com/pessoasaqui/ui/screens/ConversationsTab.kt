@@ -572,7 +572,7 @@ fun ConversationsTab(
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = EmeraldGreen,
-                                        unfocusedBorderColor = DarkSurfaceLight,
+                                        unfocusedBorderColor = DarkCard,
                                         focusedTextColor = TextPrimary,
                                         unfocusedTextColor = TextPrimary
                                     )
