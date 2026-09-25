@@ -102,6 +102,7 @@ fun ChatDetailScreen(
     onSendImageMessage: (NearbyPerson, String) -> Unit = { _, _ -> },
     onSendDocumentMessage: (NearbyPerson, String, String, Long) -> Unit = { _, _, _, _ -> },
     onToggleMarkPerson: (NearbyPerson) -> Unit = { _ -> },
+    onAcceptMutualConnection: (NearbyPerson) -> Unit = { _ -> },
     onRequestFamilyRole: (NearbyPerson, FamilyRole) -> Unit = { _, _ -> },
     onGenerateFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
     onBlockUser: (String) -> Unit = { _ -> },
@@ -201,7 +202,7 @@ fun ChatDetailScreen(
                                 text = when {
                                     person.isFamily -> "Família • ${person.familyRole?.label ?: "Vínculo Seguro"}"
                                     person.isMutualConnection -> "Conexão Mútua • Qualquer distância"
-                                    else -> "Radar Local • ~${person.estimatedDistanceMeters}m"
+                                    else -> "Pessoas no local • ~${person.estimatedDistanceMeters}m"
                                 },
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = when {
@@ -325,13 +326,27 @@ fun ChatDetailScreen(
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    text = if (person.isMarkedByMe) "★ Desmarcar Conexão" else "☆ Marcar Conexão Mútua",
-                                    color = RadarCyan
+                                    text = when {
+                                        person.isMutualConnection -> "★ Desfazer Conexão Mútua"
+                                        person.isMarkingMe && !person.isMarkedByMe -> "★ Aceitar Conexão Mútua"
+                                        person.isMarkedByMe -> "★ Desmarcar Conexão"
+                                        else -> "☆ Marcar Conexão Mútua"
+                                    },
+                                    color = when {
+                                        person.isMutualConnection -> EmeraldGreen
+                                        person.isMarkingMe && !person.isMarkedByMe -> EmeraldGreen
+                                        else -> RadarCyan
+                                    },
+                                    fontWeight = if (person.isMarkingMe || person.isMutualConnection) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
                             onClick = {
                                 menuExpanded = false
-                                onToggleMarkPerson(person)
+                                if (person.isMarkingMe && !person.isMarkedByMe) {
+                                    onAcceptMutualConnection(person)
+                                } else {
+                                    onToggleMarkPerson(person)
+                                }
                             }
                         )
 
@@ -386,7 +401,7 @@ fun ChatDetailScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Radar Local • Somente Texto Criptografado",
+                                text = "Pessoas no local • Somente Texto Criptografado",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = WarningAmber,
                                     fontWeight = FontWeight.Bold
@@ -403,16 +418,32 @@ fun ChatDetailScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = { onToggleMarkPerson(person) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                                modifier = Modifier.height(28.dp)
-                            ) {
-                                Text(
-                                    text = if (person.isMarkedByMe) "★ Marcado por você" else "☆ Marcar Conexão",
-                                    fontSize = 11.sp,
-                                    color = RadarCyan
-                                )
+                            if (person.isMarkingMe && !person.isMarkedByMe) {
+                                Button(
+                                    onClick = { onAcceptMutualConnection(person) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(28.dp)
+                                ) {
+                                    Text(
+                                        text = "★ Aceitar Conexão Mútua",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextPrimary
+                                    )
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { onToggleMarkPerson(person) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(28.dp)
+                                ) {
+                                    Text(
+                                        text = if (person.isMarkedByMe) "★ Marcado por você (Aguardando)" else "☆ Marcar Conexão",
+                                        fontSize = 11.sp,
+                                        color = RadarCyan
+                                    )
+                                }
                             }
                             Button(
                                 onClick = { showFamilyRoleDialog = true },
@@ -952,7 +983,7 @@ fun ChatDetailScreen(
                             )
                         )
                         Text(
-                            text = "Para sua privacidade e segurança, estranhos no radar local possuem acesso restrito apenas a mensagens de texto criptografadas.",
+                            text = "Para sua privacidade e segurança, pessoas no local possuem acesso restrito apenas a mensagens de texto criptografadas.",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
                         Text(
@@ -962,17 +993,25 @@ fun ChatDetailScreen(
                     }
                 },
                 confirmButton = {
+                    val canAccept = person.isMarkingMe && !person.isMarkedByMe
                     Button(
                         onClick = {
                             restrictedFeatureDialog = null
-                            onToggleMarkPerson(person)
+                            if (canAccept) {
+                                onAcceptMutualConnection(person)
+                            } else {
+                                onToggleMarkPerson(person)
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = RadarCyan,
-                            contentColor = DeepBlack
+                            containerColor = if (canAccept) EmeraldGreen else RadarCyan,
+                            contentColor = if (canAccept) TextPrimary else DeepBlack
                         )
                     ) {
-                        Text("Marcar Conexão", fontWeight = FontWeight.Bold)
+                        Text(
+                            text = if (canAccept) "★ Aceitar Conexão Mútua" else "Marcar Conexão",
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 },
                 dismissButton = {

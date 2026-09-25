@@ -41,6 +41,7 @@ fun PeopleRadarTab(
     onEnableBluetooth: () -> Unit = {},
     onOpenIntentSelector: () -> Unit,
     onToggleMark: (String) -> Unit,
+    onAcceptMutual: (String) -> Unit = onToggleMark,
     onOpenChat: (NearbyPerson) -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "radarPulse")
@@ -194,14 +195,14 @@ fun PeopleRadarTab(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                text = "Radar Hiperlocal",
+                                text = "Pessoas por perto",
                                 style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = TextPrimary
                                 )
                             )
                             Text(
-                                text = if (people.isEmpty()) "Escaneando presença no ar..." else "${people.size} pessoa(s) no seu alcance",
+                                text = if (people.isEmpty()) "Buscando pessoas no local..." else "${people.size} pessoa(s) no seu alcance",
                                 style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary)
                             )
                         }
@@ -330,7 +331,7 @@ fun PeopleRadarTab(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Default.BluetoothSearching,
+                                imageVector = Icons.Default.PersonSearch,
                                 contentDescription = null,
                                 tint = RadarCyan,
                                 modifier = Modifier.size(36.dp)
@@ -339,7 +340,7 @@ fun PeopleRadarTab(
                     }
 
                     Text(
-                        text = "Procurando pessoas no raio de 10m...",
+                        text = "Buscando pessoas por perto...",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary
@@ -348,7 +349,7 @@ fun PeopleRadarTab(
                     )
 
                     Text(
-                        text = "Qualquer pessoa que estiver fisicamente perto com o PessoasAqui aberto aparecerá automaticamente aqui no seu radar.",
+                        text = "Qualquer pessoa que estiver fisicamente perto com o PessoasAqui aberto aparecerá automaticamente aqui no app.",
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = TextSecondary,
                             textAlign = TextAlign.Center,
@@ -381,6 +382,7 @@ fun PeopleRadarTab(
                     PersonCard(
                         person = person,
                         onToggleMark = { onToggleMark(person.id) },
+                        onAcceptMutual = { onAcceptMutual(person.id) },
                         onOpenChat = { onOpenChat(person) }
                     )
                 }
@@ -396,6 +398,7 @@ fun PeopleRadarTab(
 fun PersonCard(
     person: NearbyPerson,
     onToggleMark: () -> Unit,
+    onAcceptMutual: () -> Unit = onToggleMark,
     onOpenChat: () -> Unit
 ) {
     Card(
@@ -519,26 +522,69 @@ fun PersonCard(
 
                 // Botão de Marcação (Coração)
                 IconButton(
-                    onClick = onToggleMark,
+                    onClick = {
+                        if (person.isMarkingMe && !person.isMarkedByMe) {
+                            onAcceptMutual()
+                        } else {
+                            onToggleMark()
+                        }
+                    },
                     modifier = Modifier.size(40.dp),
                     colors = IconButtonDefaults.iconButtonColors(
                         containerColor = when {
                             person.isMutualConnection -> EmeraldGreenGlow
+                            person.isMarkingMe && !person.isMarkedByMe -> EmeraldGreen.copy(alpha = 0.22f)
                             person.isMarkedByMe -> RadarCyanGlow
                             else -> DarkCardElevated
                         }
                     )
                 ) {
                     Icon(
-                        imageVector = if (person.isMarkedByMe) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        imageVector = if (person.isMarkedByMe || person.isMutualConnection) Icons.Default.Favorite else if (person.isMarkingMe) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         contentDescription = "Marcar pessoa",
                         tint = when {
                             person.isMutualConnection -> EmeraldGreen
+                            person.isMarkingMe && !person.isMarkedByMe -> EmeraldGreen
                             person.isMarkedByMe -> RadarCyan
                             else -> TextSecondary
                         },
                         modifier = Modifier.size(20.dp)
                     )
+                }
+            }
+
+            // Banner indicando que a pessoa marcou o usuário
+            AnimatedVisibility(visible = person.isMarkingMe && !person.isMarkedByMe && !person.isMutualConnection) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = EmeraldGreen.copy(alpha = 0.15f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                        .clickable { onAcceptMutual() }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Favorite,
+                            contentDescription = null,
+                            tint = EmeraldGreen,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "★ Marcou você! Toque no coração para aceitar conexão mútua.",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = EmeraldGreen,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 

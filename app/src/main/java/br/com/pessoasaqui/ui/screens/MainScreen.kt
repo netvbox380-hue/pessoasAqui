@@ -27,6 +27,7 @@ fun MainScreen(
     onOpenChat: (NearbyPerson) -> Unit,
     onEnableBluetooth: () -> Unit = {}
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var showIntentSelector by remember { mutableStateOf(false) }
     var showPlayground by remember { mutableStateOf(false) }
@@ -38,6 +39,7 @@ fun MainScreen(
     val people by repository.discoveredPeople.collectAsState()
     val offers by repository.localOffers.collectAsState()
     val localMessages by repository.localChatMessages.collectAsState()
+    val privateChats by repository.privateChats.collectAsState()
     val currentIntent by repository.currentIntent.collectAsState()
     val currentAlias by repository.currentAlias.collectAsState()
     val isDemoMode by repository.isDemoMode.collectAsState()
@@ -289,25 +291,60 @@ fun MainScreen(
                         onToggleMark = { personId ->
                             repository.toggleMarkPerson(personId)
                         },
+                        onAcceptMutual = { personId ->
+                            repository.acceptMutualConnection(personId)
+                        },
                         onOpenChat = onOpenChat
                     )
 
                     1 -> ConversationsTab(
                         localMessages = localMessages,
                         connectedPeople = connectedPeople,
+                        privateChats = privateChats,
+                        nearbyPeople = people,
                         onSendLocalMessage = { text ->
                             repository.sendLocalMessage(text)
                         },
-                        onOpenChat = onOpenChat
+                        onOpenChat = onOpenChat,
+                        onToggleMarkPerson = { personId ->
+                            repository.toggleMarkPerson(personId)
+                        },
+                        onClearLocalMessages = {
+                            repository.clearLocalMessages()
+                        },
+                        onCreateInviteLink = {
+                            repository.createOneTimeInviteLink { url ->
+                                if (url != null) {
+                                    val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                        putExtra(android.content.Intent.EXTRA_SUBJECT, "Convite Seguro - PessoasAqui")
+                                        putExtra(
+                                            android.content.Intent.EXTRA_TEXT,
+                                            "Olá! Estou te convidando para nos conectarmos no PessoasAqui com conversa privada, chamadas de voz e vídeo criptografadas à distância.\n\nToque no link abaixo para aceitar meu convite de conexão mútua (link seguro de uso único):\n$url"
+                                        )
+                                        type = "text/plain"
+                                    }
+                                    val shareIntent = android.content.Intent.createChooser(sendIntent, "Compartilhar Convite Seguro")
+                                    context.startActivity(shareIntent)
+                                }
+                            }
+                        }
                     )
 
                     2 -> OffersTab(
                         offers = offers,
+                        myId = repository.getMyIdentity(),
+                        myAlias = currentAlias,
                         onToggleMarkAuthor = { authorId ->
                             repository.toggleMarkPerson(authorId)
                         },
-                        onPostOffer = { prof, desc ->
-                            repository.postLocalOffer(prof, desc)
+                        onPostOffer = { prof, desc, img, link ->
+                            repository.postLocalOffer(prof, desc, img, link)
+                        },
+                        onUpdateOffer = { offerId, prof, desc, img, link ->
+                            repository.updateLocalOffer(offerId, prof, desc, img, link)
+                        },
+                        onDeleteOffer = { offerId ->
+                            repository.deleteLocalOffer(offerId)
                         }
                     )
                 }

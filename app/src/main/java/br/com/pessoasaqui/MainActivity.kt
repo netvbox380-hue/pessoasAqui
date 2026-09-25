@@ -17,13 +17,28 @@ import br.com.pessoasaqui.data.repository.PessoasAquiRepository
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.ui.screens.*
-import br.com.pessoasaqui.ui.theme.DeepBlack
-import br.com.pessoasaqui.ui.theme.PessoasAquiTheme
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.*
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import br.com.pessoasaqui.ui.theme.*
+
+data class IncomingInvite(
+    val inviteId: String,
+    val token: String,
+    val senderIdentity: String,
+    val senderAlias: String
+)
 
 class MainActivity : ComponentActivity() {
 
+    private val incomingInvite = mutableStateOf<IncomingInvite?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        parseDeepLink(intent)
 
         val app = application as? PessoasAquiApp
         val repository = app?.repository ?: PessoasAquiRepository()
@@ -34,9 +49,36 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = DeepBlack
                 ) {
-                    PessoasAquiNavHost(repository = repository)
+                    PessoasAquiNavHost(
+                        repository = repository,
+                        incomingInvite = incomingInvite.value,
+                        onClearIncomingInvite = { incomingInvite.value = null }
+                    )
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        parseDeepLink(intent)
+    }
+
+    private fun parseDeepLink(intent: Intent?) {
+        val uri = intent?.data ?: return
+        val id = uri.getQueryParameter("id") ?: uri.getQueryParameter("inviteId")
+        val token = uri.getQueryParameter("token")
+        val sender = uri.getQueryParameter("sender") ?: uri.getQueryParameter("senderIdentity")
+        val alias = uri.getQueryParameter("alias") ?: uri.getQueryParameter("senderAlias") ?: "Usuário"
+
+        if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
+            incomingInvite.value = IncomingInvite(
+                inviteId = id.trim(),
+                token = token.trim(),
+                senderIdentity = sender.trim(),
+                senderAlias = alias.trim()
+            )
         }
     }
 }
@@ -51,7 +93,11 @@ sealed class Screen {
 }
 
 @Composable
-fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
+fun PessoasAquiNavHost(
+    repository: PessoasAquiRepository,
+    incomingInvite: IncomingInvite? = null,
+    onClearIncomingInvite: () -> Unit = {}
+) {
     val isAgeVerified by repository.isAgeVerified.collectAsState()
     val hasCompletedProfile by repository.hasCompletedProfile.collectAsState()
     val hasGrantedPermissions by repository.hasGrantedPermissions.collectAsState()
@@ -126,14 +172,18 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
 
         is Screen.Chat -> {
             BackHandler { currentScreen = Screen.Main }
-            val livePerson = discoveredPeople.find {
-                it.id == screen.person.id || it.technicalIdentityHash == screen.person.technicalIdentityHash
-            } ?: screen.person
+            val livePerson = repository.getLivePerson(screen.person)
 
-            val cleanTargetId = livePerson.id.removePrefix("peer-")
+            val cleanTargetId = repository.cleanId(livePerson.id)
             val messages = privateChats[livePerson.id] 
                 ?: privateChats[cleanTargetId] 
                 ?: privateChats[livePerson.technicalIdentityHash] 
+                ?: privateChats.entries.firstOrNull { 
+                    val k = repository.cleanId(it.key)
+                    k == cleanTargetId || 
+                    k == repository.cleanId(livePerson.technicalIdentityHash) ||
+                    (!livePerson.alias.startsWith("Pessoa Próxima #") && it.key.equals(livePerson.alias, ignoreCase = true))
+                }?.value 
                 ?: emptyList()
 
             ChatDetailScreen(
@@ -141,22 +191,25 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
                 messages = messages,
                 onBack = { currentScreen = Screen.Main },
                 onSendMessage = { text ->
-                    repository.sendPrivateMessage(livePerson.technicalIdentityHash, text)
+                    repository.sendPrivateMessage(livePerson.technicalIdentityHash.ifBlank { livePerson.id }, text)
                 },
                 onStartCall = { targetPerson, isVideo ->
                     repository.startCall(targetPerson, isVideo)
                 },
                 onSendAudioMessage = { targetPerson, duration ->
-                    repository.sendAudioMessage(targetPerson.technicalIdentityHash, duration)
+                    repository.sendAudioMessage(targetPerson.technicalIdentityHash.ifBlank { targetPerson.id }, duration)
                 },
                 onSendImageMessage = { targetPerson, base64 ->
-                    repository.sendImageMessage(targetPerson.technicalIdentityHash, base64)
+                    repository.sendImageMessage(targetPerson.technicalIdentityHash.ifBlank { targetPerson.id }, base64)
                 },
                 onSendDocumentMessage = { targetPerson, fileName, base64, size ->
-                    repository.sendDocumentMessage(targetPerson.technicalIdentityHash, fileName, base64, size)
+                    repository.sendDocumentMessage(targetPerson.technicalIdentityHash.ifBlank { targetPerson.id }, fileName, base64, size)
                 },
                 onToggleMarkPerson = { targetPerson ->
                     repository.toggleMarkPerson(targetPerson.id)
+                },
+                onAcceptMutualConnection = { targetPerson ->
+                    repository.acceptMutualConnection(targetPerson.id)
                 },
                 onRequestFamilyRole = { targetPerson, role ->
                     repository.requestFamilyRole(targetPerson, role)
@@ -223,6 +276,105 @@ fun PessoasAquiNavHost(repository: PessoasAquiRepository) {
             request = req,
             onAccept = { person, role -> repository.acceptFamilyRole(person, role) },
             onReject = { repository.rejectFamilyRequest() }
+        )
+    }
+
+    // Diálogo de Convite de Conexão Mútua Recebido via Deep Link (Uso Único)
+    incomingInvite?.let { invite ->
+        var isRedeeming by remember(invite.inviteId) { mutableStateOf(false) }
+        var errorMessage by remember(invite.inviteId) { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = {
+                if (!isRedeeming) onClearIncomingInvite()
+            },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = null,
+                    tint = EmeraldGreen,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "Convite de Conexão Segura",
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "${invite.senderAlias} convidou você para uma conexão mútua à distância!",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            color = TextPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                    Text(
+                        text = "Este convite é de uso único. Ao aceitar, vocês poderão conversar livremente a qualquer distância com mensagens, chamadas e fotos criptografadas.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                    )
+                    if (errorMessage != null) {
+                        Text(
+                            text = errorMessage ?: "",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = AlertRed,
+                                fontWeight = FontWeight.Bold
+                            )
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isRedeeming = true
+                        errorMessage = null
+                        repository.redeemOneTimeInvite(
+                            inviteId = invite.inviteId,
+                            token = invite.token,
+                            senderIdentity = invite.senderIdentity,
+                            senderAlias = invite.senderAlias
+                        ) { success, msg, peer ->
+                            isRedeeming = false
+                            if (success && peer != null) {
+                                onClearIncomingInvite()
+                                currentScreen = Screen.Chat(peer)
+                            } else {
+                                errorMessage = msg
+                            }
+                        }
+                    },
+                    enabled = !isRedeeming,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = EmeraldGreen,
+                        contentColor = TextPrimary
+                    )
+                ) {
+                    if (isRedeeming) {
+                        CircularProgressIndicator(
+                            color = TextPrimary,
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Validando...", fontWeight = FontWeight.Bold)
+                    } else {
+                        Text("★ Aceitar Conexão", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = onClearIncomingInvite,
+                    enabled = !isRedeeming
+                ) {
+                    Text("Recusar", color = TextSecondary)
+                }
+            },
+            containerColor = DarkSurface
         )
     }
 }

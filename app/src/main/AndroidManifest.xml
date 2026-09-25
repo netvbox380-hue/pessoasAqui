@@ -35,10 +35,36 @@
             android:name=".MainActivity"
             android:exported="true"
             android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
             android:theme="@style/Theme.PessoasAqui">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Deep Link para convites de conexão mútua (esquema customizado) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="pessoasaqui"
+                    android:host="invite" />
+            </intent-filter>
+
+            <!-- Deep Link para convites de conexão mútua (URL web HTTPS) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="pessoasaqui.onrender.com"
+                    android:pathPrefix="/invite" />
+                <data
+                    android:scheme="http"
+                    android:host="pessoasaqui.onrender.com"
+                    android:pathPrefix="/invite" />
             </intent-filter>
         </activity>
     </application>

@@ -235,7 +235,15 @@ class ProximitySimulator(
      * Adiciona nova oferta local (10 metros)
      */
     fun addLocalOffer(offer: OfferItem) {
-        _localOffers.value = listOf(offer) + _localOffers.value
+        _localOffers.value = listOf(offer) + _localOffers.value.filter { it.id != offer.id }
+    }
+
+    fun updateLocalOffer(offer: OfferItem) {
+        _localOffers.value = _localOffers.value.map { if (it.id == offer.id) offer else it }
+    }
+
+    fun deleteLocalOffer(offerId: String) {
+        _localOffers.value = _localOffers.value.filter { it.id != offerId }
     }
 
     /**
@@ -250,6 +258,13 @@ class ProximitySimulator(
             isFromMe = true
         )
         _localChatMessages.value = _localChatMessages.value + msg
+    }
+
+    /**
+     * Limpa as mensagens do mural local (10m)
+     */
+    fun clearLocalMessages() {
+        _localChatMessages.value = emptyList()
     }
 
     /**

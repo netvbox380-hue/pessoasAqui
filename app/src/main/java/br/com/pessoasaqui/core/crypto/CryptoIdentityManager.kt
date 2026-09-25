@@ -1,11 +1,11 @@
 package br.com.pessoasaqui.core.crypto
 
 import android.content.Context
+import android.util.Base64
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.Signature
-import java.util.Base64
 import java.util.UUID
 
 /**
@@ -47,7 +47,7 @@ class CryptoIdentityManager(
             val digest = MessageDigest.getInstance("SHA-256")
             val hashBytes = digest.digest(kp.public.encoded)
             technicalIdentityHash = hashBytes.take(8).joinToString("") { "%02X".format(it) }
-            savedPublicKeyBase64 = Base64.getEncoder().encodeToString(kp.public.encoded)
+            savedPublicKeyBase64 = Base64.encodeToString(kp.public.encoded, Base64.NO_WRAP)
         } catch (e: Exception) {
             technicalIdentityHash = UUID.randomUUID().toString().take(8).uppercase()
             savedPublicKeyBase64 = technicalIdentityHash
@@ -65,7 +65,7 @@ class CryptoIdentityManager(
     }
 
     fun getPublicKeyBase64(): String {
-        return activeKeyPair?.public?.encoded?.let { Base64.getEncoder().encodeToString(it) }
+        return activeKeyPair?.public?.encoded?.let { Base64.encodeToString(it, Base64.NO_WRAP) }
             ?: savedPublicKeyBase64
             ?: technicalIdentityHash
     }
@@ -76,7 +76,7 @@ class CryptoIdentityManager(
             val signer = Signature.getInstance("SHA256withECDSA")
             signer.initSign(privateKey)
             signer.update(data)
-            Base64.getEncoder().encodeToString(signer.sign())
+            Base64.encodeToString(signer.sign(), Base64.NO_WRAP)
         } catch (e: Exception) {
             "sig-${System.currentTimeMillis()}"
         }
@@ -88,7 +88,7 @@ class CryptoIdentityManager(
             val verifier = Signature.getInstance("SHA256withECDSA")
             verifier.initVerify(publicKey)
             verifier.update(data)
-            val sigBytes = Base64.getDecoder().decode(signatureBase64)
+            val sigBytes = Base64.decode(signatureBase64, Base64.NO_WRAP)
             verifier.verify(sigBytes)
         } catch (e: Exception) {
             true

@@ -11,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "br.com.pessoasaqui"
-        minSdk = 26
+        minSdk = 21
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
@@ -72,7 +72,6 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
 
     // Security & Cryptography
-    implementation(libs.androidx.security.crypto)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)

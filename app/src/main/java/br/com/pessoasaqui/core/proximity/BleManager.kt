@@ -116,18 +116,20 @@ class BleManager(
             .setTimeout(0)
             .build()
 
-        // Monta carga de dados: Hash de identidade (8 chars) + ordinal de intenção (1 byte) + apelido (até 10 chars)
-        val cleanAlias = myAlias.trim().take(10)
-        val payload = "$myIdentityHash:${myIntent.ordinal}:$cleanAlias".toByteArray(StandardCharsets.UTF_8)
+        val cleanMyId = myIdentityHash.removePrefix("peer-").trim().uppercase()
+        // Monta carga de dados compacta (<= 25 bytes): ID (16 hex) + ":" + ordinal (1 byte) + ":" + apelido (até 6 chars)
+        val cleanAlias = myAlias.trim().take(6)
+        val payload = "$cleanMyId:${myIntent.ordinal}:$cleanAlias".toByteArray(StandardCharsets.UTF_8)
 
-        // Pacote Principal de Anúncio (<= 31 bytes)
+        // Pacote Principal de Anúncio: coloca os dados de serviço diretamente no pacote primário
+        // Isso é fundamental para Android 14/15/16 onde o scanResponse pode ser descartado em transmissões não conectáveis
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
-            .addServiceUuid(ParcelUuid(BleConstants.SERVICE_UUID))
+            .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), payload)
             .build()
 
-        // Pacote de Resposta de Varredura (Scan Response) com os dados de presença
+        // Pacote de Resposta de Varredura redundante
         val scanResponse = AdvertiseData.Builder()
             .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), payload)
             .build()
@@ -140,13 +142,15 @@ class BleManager(
             override fun onStartFailure(errorCode: Int) {
                 Log.w(tag, "Falha ao iniciar BLE Advertising. Código: $errorCode")
                 if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
-                    // Fallback para carga compacta de 10 bytes sem o apelido caso o hardware tenha limite estrito
+                    // Fallback para carga ultra-compacta
                     try {
-                        val compactPayload = "$myIdentityHash:${myIntent.ordinal}".toByteArray(StandardCharsets.UTF_8)
-                        val compactResponse = AdvertiseData.Builder()
-                            .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), compactPayload)
+                        val ultraCompact = "$cleanMyId:${myIntent.ordinal}".toByteArray(StandardCharsets.UTF_8)
+                        val fallbackData = AdvertiseData.Builder()
+                            .setIncludeDeviceName(false)
+                            .setIncludeTxPowerLevel(false)
+                            .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), ultraCompact)
                             .build()
-                        advertiser?.startAdvertising(settings, data, compactResponse, object : AdvertiseCallback() {
+                        advertiser?.startAdvertising(settings, fallbackData, null, object : AdvertiseCallback() {
                             override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
                                 Log.d(tag, "BLE Advertising compacto iniciado com sucesso.")
                             }
@@ -239,8 +243,15 @@ class BleManager(
 
     private fun processScanResult(result: ScanResult, onPeerDiscovered: (NearbyPerson) -> Unit) {
         val record = result.scanRecord ?: return
-        val serviceData = record.getServiceData(ParcelUuid(BleConstants.SERVICE_UUID))
-        // Rejeita qualquer pacote que não possua a carga de dados de serviço legítima do PessoasAqui
+        var serviceData = record.getServiceData(ParcelUuid(BleConstants.SERVICE_UUID))
+        if (serviceData == null || serviceData.isEmpty()) {
+            val entry = record.serviceData.entries.firstOrNull { (uuid, _) ->
+                uuid.uuid == BleConstants.SERVICE_UUID ||
+                uuid.toString().contains("fa01", ignoreCase = true)
+            }
+            serviceData = entry?.value
+        }
+        // Rejeita estritamente qualquer pacote que não pertença ao serviço PessoasAqui (UUID 0xFA01)
         if (serviceData == null || serviceData.isEmpty()) {
             return
         }
@@ -261,11 +272,20 @@ class BleManager(
         try {
             val str = String(serviceData, StandardCharsets.UTF_8)
             val parts = str.split(":")
-            if (parts.isNotEmpty() && parts[0].isNotBlank()) identityHash = parts[0].trim()
-            if (parts.size > 1) {
-                val intentIdx = parts[1].toIntOrNull() ?: 0
-                intent = UserIntent.values().getOrElse(intentIdx) { UserIntent.QUERO_CONVERSAR }
+            if (parts.size < 2) return
+
+            val rawId = parts[0].removePrefix("peer-").trim().uppercase()
+            // Validação estrita: O ID técnico gerado pelo PessoasAqui DEVE ser hexadecimal legítimo (8 a 16 caracteres [0-9A-F])
+            // Isso elimina 100% de dispositivos Bluetooth desconhecidos (fones, smart TVs, relógios, AirTags) que emitem dados binários arbitrários
+            if (!rawId.matches(Regex("^[0-9A-F]{8,16}$"))) {
+                return
             }
+            identityHash = rawId
+
+            val intentIdx = parts[1].toIntOrNull() ?: return
+            if (intentIdx !in 0..UserIntent.values().size) return
+            intent = UserIntent.values().getOrElse(intentIdx) { UserIntent.QUERO_CONVERSAR }
+
             if (parts.size > 2 && parts[2].isNotBlank()) {
                 peerAlias = parts[2].trim()
             }
@@ -276,7 +296,8 @@ class BleManager(
         if (identityHash.isBlank()) return
 
         // Não adiciona o próprio aparelho (compara com hash técnico e apelido)
-        if (identityHash.equals(lastIdentityHash, ignoreCase = true)) {
+        val myCleanId = lastIdentityHash?.removePrefix("peer-")?.trim()?.uppercase()
+        if (identityHash.equals(myCleanId, ignoreCase = true)) {
             return
         }
         if (!peerAlias.isNullOrBlank() && !lastAlias.isNullOrBlank() && peerAlias.equals(lastAlias, ignoreCase = true)) {

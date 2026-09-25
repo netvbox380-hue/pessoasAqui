@@ -98,7 +98,7 @@ fun ProfileSetupScreen(
                 )
 
                 Text(
-                    text = "Este é o nome que as pessoas a até 10 metros verão no radar.",
+                    text = "Este é o nome que as pessoas a até 10 metros verão por perto.",
                     style = MaterialTheme.typography.bodySmall.copy(
                         color = TextSecondary,
                         lineHeight = 18.sp
@@ -230,7 +230,7 @@ fun ProfileSetupScreen(
                     )
                 ) {
                     Text(
-                        text = "Entrar no Radar",
+                        text = "Ver Pessoas no Local",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }

@@ -102,9 +102,11 @@ data class OfferItem(
     val authorAlias: String,
     val profession: String,
     val description: String,
-    val distanceMeters: Double,
-    val proximityLabel: String,
-    val createdAtMs: Long = System.currentTimeMillis()
+    val distanceMeters: Double = 0.5,
+    val proximityLabel: String = "10m",
+    val createdAtMs: Long = System.currentTimeMillis(),
+    val imageBase64: String? = null,
+    val externalLink: String? = null
 )
 
 /**

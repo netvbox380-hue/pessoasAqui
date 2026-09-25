@@ -1,5 +1,6 @@
 package br.com.pessoasaqui.data.remote
 
+import br.com.pessoasaqui.domain.model.OfferItem
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,11 @@ class PessoasAquiNetworkClient(
     private var lastOnPresenceSync: ((List<RemotePeer>) -> Unit)? = null
     private var lastOnPeerOnline: ((RemotePeer) -> Unit)? = null
     private var lastOnPeerOffline: ((String) -> Unit)? = null
+    private var lastOnMutualConnection: ((String, String) -> Unit)? = null
+    private var lastOnPeerMarkedYou: ((String, String) -> Unit)? = null
+
+    var onOfferPublished: ((OfferItem) -> Unit)? = null
+    var onOfferDeleted: ((String) -> Unit)? = null
 
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
@@ -57,7 +63,9 @@ class PessoasAquiNetworkClient(
                     onSessionRevoked = lastOnRevoked ?: {},
                     onPresenceSync = lastOnPresenceSync,
                     onPeerOnline = lastOnPeerOnline,
-                    onPeerOffline = lastOnPeerOffline
+                    onPeerOffline = lastOnPeerOffline,
+                    onMutualConnection = lastOnMutualConnection,
+                    onPeerMarkedYou = lastOnPeerMarkedYou
                 )
             }
         }
@@ -207,7 +215,9 @@ class PessoasAquiNetworkClient(
         onSessionRevoked: (notice: String) -> Unit,
         onPresenceSync: ((List<RemotePeer>) -> Unit)? = null,
         onPeerOnline: ((RemotePeer) -> Unit)? = null,
-        onPeerOffline: ((String) -> Unit)? = null
+        onPeerOffline: ((String) -> Unit)? = null,
+        onMutualConnection: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
+        onPeerMarkedYou: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null
     ) {
         disconnectSocket()
 
@@ -220,6 +230,8 @@ class PessoasAquiNetworkClient(
         lastOnPresenceSync = onPresenceSync
         lastOnPeerOnline = onPeerOnline
         lastOnPeerOffline = onPeerOffline
+        lastOnMutualConnection = onMutualConnection
+        lastOnPeerMarkedYou = onPeerMarkedYou
 
         val request = Request.Builder().url(wsUrl).build()
         activeWebSocket = client.newWebSocket(request, object : WebSocketListener() {
@@ -246,6 +258,20 @@ class PessoasAquiNetworkClient(
                             val msgId = obj.optString("messageId", "")
                             onE2eeMessageReceived(sender, payload, iv, msgId)
                         }
+                        "MUTUAL_CONNECTION_ESTABLISHED" -> {
+                            val partnerId = obj.optString("partnerIdentity")
+                            val partnerAlias = obj.optString("partnerAlias", "Conexão Mútua")
+                            if (partnerId.isNotBlank()) {
+                                onMutualConnection?.invoke(partnerId, partnerAlias)
+                            }
+                        }
+                        "PEER_MARKED_YOU" -> {
+                            val partnerId = obj.optString("partnerIdentity")
+                            val partnerAlias = obj.optString("partnerAlias", "Alguém")
+                            if (partnerId.isNotBlank()) {
+                                onPeerMarkedYou?.invoke(partnerId, partnerAlias)
+                            }
+                        }
                         "SESSION_REVOKED" -> {
                             val msg = obj.optString("message", "Sessão revogada: sua identidade foi resgatada em outro aparelho.")
                             onSessionRevoked(msg)
@@ -260,7 +286,10 @@ class PessoasAquiNetworkClient(
                                         RemotePeer(
                                             identityHash = p.getString("identityHash"),
                                             alias = p.optString("alias", "Pessoa Próxima"),
-                                            intent = p.optString("intent", "QUERO_CONVERSAR")
+                                            intent = p.optString("intent", "QUERO_CONVERSAR"),
+                                            isMutual = p.optBoolean("isMutual", false),
+                                            isMarkedByMe = p.optBoolean("isMarkedByMe", false),
+                                            isMarkingMe = p.optBoolean("isMarkingMe", false)
                                         )
                                     )
                                 }
@@ -273,7 +302,10 @@ class PessoasAquiNetworkClient(
                                 val peer = RemotePeer(
                                     identityHash = p.getString("identityHash"),
                                     alias = p.optString("alias", "Pessoa Próxima"),
-                                    intent = p.optString("intent", "QUERO_CONVERSAR")
+                                    intent = p.optString("intent", "QUERO_CONVERSAR"),
+                                    isMutual = p.optBoolean("isMutual", false),
+                                    isMarkedByMe = p.optBoolean("isMarkedByMe", false),
+                                    isMarkingMe = p.optBoolean("isMarkingMe", false)
                                 )
                                 onPeerOnline?.invoke(peer)
                             }
@@ -282,6 +314,29 @@ class PessoasAquiNetworkClient(
                             val offHash = obj.optString("identityHash")
                             if (offHash.isNotBlank()) {
                                 onPeerOffline?.invoke(offHash)
+                            }
+                        }
+                        "OFFER_PUBLISHED" -> {
+                            val o = obj.optJSONObject("offer")
+                            if (o != null) {
+                                val item = OfferItem(
+                                    id = o.getString("id"),
+                                    authorId = o.getString("authorId"),
+                                    authorAlias = o.optString("authorAlias", "Profissional"),
+                                    profession = o.optString("profession", ""),
+                                    description = o.optString("description", ""),
+                                    distanceMeters = o.optDouble("distanceMeters", 10.0),
+                                    proximityLabel = o.optString("proximityLabel", "Profissional Próximo • 10m"),
+                                    imageBase64 = o.optString("imageBase64").takeIf { it.isNotBlank() },
+                                    externalLink = o.optString("externalLink").takeIf { it.isNotBlank() }
+                                )
+                                onOfferPublished?.invoke(item)
+                            }
+                        }
+                        "OFFER_DELETED" -> {
+                            val id = obj.optString("offerId")
+                            if (id.isNotBlank()) {
+                                onOfferDeleted?.invoke(id)
                             }
                         }
                     }
@@ -365,7 +420,10 @@ class PessoasAquiNetworkClient(
                             RemotePeer(
                                 identityHash = p.getString("identityHash"),
                                 alias = p.optString("alias", "Pessoa Próxima"),
-                                intent = p.optString("intent", "QUERO_CONVERSAR")
+                                intent = p.optString("intent", "QUERO_CONVERSAR"),
+                                isMutual = p.optBoolean("isMutual", false),
+                                isMarkedByMe = p.optBoolean("isMarkedByMe", false),
+                                isMarkingMe = p.optBoolean("isMarkingMe", false)
                             )
                         )
                     }
@@ -445,6 +503,208 @@ class PessoasAquiNetworkClient(
         }
     }
 
+    /**
+     * Consulta status das conexões (mútuas e marcações) diretamente da fonte da verdade
+     */
+    suspend fun fetchConnectionStatus(myIdentity: String): Result<ConnectionStatusResponse> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$baseUrl/api/connections/status?myIdentity=$myIdentity")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string() ?: "{}"
+                val obj = JSONObject(bodyStr)
+                val markedArr = obj.optJSONArray("markedByMe")
+                val markingArr = obj.optJSONArray("markingMe")
+                val mutualArr = obj.optJSONArray("mutual")
+
+                val markedList = mutableListOf<String>()
+                markedArr?.let { for (i in 0 until it.length()) markedList.add(it.getString(i)) }
+
+                val markingList = mutableListOf<String>()
+                markingArr?.let { for (i in 0 until it.length()) markingList.add(it.getString(i)) }
+
+                val mutualList = mutableListOf<String>()
+                mutualArr?.let { for (i in 0 until it.length()) mutualList.add(it.getString(i)) }
+
+                Result.success(ConnectionStatusResponse(markedList, markingList, mutualList))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Publica ou atualiza uma oferta/divulgação local no servidor
+     */
+    suspend fun publishOffer(offer: OfferItem): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("id", offer.id)
+                put("authorId", offer.authorId)
+                put("authorAlias", offer.authorAlias)
+                put("profession", offer.profession)
+                put("description", offer.description)
+                put("imageBase64", offer.imageBase64 ?: "")
+                put("externalLink", offer.externalLink ?: "")
+                put("distanceMeters", offer.distanceMeters)
+                put("proximityLabel", offer.proximityLabel)
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/offers/publish")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                Result.success(response.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Remove uma oferta/divulgação local do servidor
+     */
+    suspend fun deleteOffer(offerId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$baseUrl/api/offers/$offerId")
+                .delete()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                Result.success(response.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Busca ofertas ativas de outros usuários no servidor
+     */
+    suspend fun fetchNearbyOffers(): Result<List<OfferItem>> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$baseUrl/api/offers/nearby")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string() ?: "{}"
+                val obj = JSONObject(bodyStr)
+                val arr = obj.optJSONArray("offers")
+                val list = mutableListOf<OfferItem>()
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val o = arr.getJSONObject(i)
+                        list.add(
+                            OfferItem(
+                                id = o.getString("id"),
+                                authorId = o.getString("authorId"),
+                                authorAlias = o.optString("authorAlias", "Profissional"),
+                                profession = o.optString("profession", ""),
+                                description = o.optString("description", ""),
+                                distanceMeters = o.optDouble("distanceMeters", 10.0),
+                                proximityLabel = o.optString("proximityLabel", "Profissional Próximo • 10m"),
+                                imageBase64 = o.optString("imageBase64").takeIf { it.isNotBlank() },
+                                externalLink = o.optString("externalLink").takeIf { it.isNotBlank() }
+                            )
+                        )
+                    }
+                }
+                Result.success(list)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Cria um convite criptografado de uso único no servidor
+     */
+    suspend fun createOneTimeInvite(senderIdentity: String, senderAlias: String): Result<CreateInviteResponse> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("senderIdentity", senderIdentity)
+                put("senderAlias", senderAlias)
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/invites/create")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string() ?: "{}"
+                if (response.isSuccessful) {
+                    val obj = JSONObject(bodyStr)
+                    Result.success(
+                        CreateInviteResponse(
+                            inviteId = obj.getString("inviteId"),
+                            token = obj.getString("token"),
+                            inviteUrl = obj.getString("inviteUrl"),
+                            senderIdentity = obj.getString("senderIdentity"),
+                            senderAlias = obj.getString("senderAlias"),
+                            expiresAt = obj.optLong("expiresAt", 0)
+                        )
+                    )
+                } else {
+                    val err = try { JSONObject(bodyStr).optString("error", "Erro ao criar convite") } catch (_: Exception) { "Erro HTTP ${response.code}" }
+                    Result.failure(IOException(err))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Resgata o convite de uso único para estabelecer conexão mútua à distância
+     */
+    suspend fun redeemOneTimeInvite(
+        inviteId: String,
+        token: String,
+        receiverIdentity: String,
+        receiverAlias: String
+    ): Result<RedeemInviteResponse> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("inviteId", inviteId)
+                put("token", token)
+                put("receiverIdentity", receiverIdentity)
+                put("receiverAlias", receiverAlias)
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/invites/redeem")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string() ?: "{}"
+                if (response.isSuccessful) {
+                    val obj = JSONObject(bodyStr)
+                    Result.success(
+                        RedeemInviteResponse(
+                            senderIdentity = obj.getString("senderIdentity"),
+                            senderAlias = obj.getString("senderAlias"),
+                            receiverIdentity = obj.getString("receiverIdentity"),
+                            receiverAlias = obj.getString("receiverAlias"),
+                            message = obj.optString("message", "Conexão mútua estabelecida com sucesso!")
+                        )
+                    )
+                } else {
+                    val err = try { JSONObject(bodyStr).optString("error", "Erro ao resgatar convite") } catch (_: Exception) { "Erro HTTP ${response.code}" }
+                    Result.failure(IOException(err))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun disconnectSocket() {
         try {
             activeWebSocket?.close(1000, "App closed")
@@ -454,10 +714,36 @@ class PessoasAquiNetworkClient(
     }
 }
 
+data class CreateInviteResponse(
+    val inviteId: String,
+    val token: String,
+    val inviteUrl: String,
+    val senderIdentity: String,
+    val senderAlias: String,
+    val expiresAt: Long
+)
+
+data class RedeemInviteResponse(
+    val senderIdentity: String,
+    val senderAlias: String,
+    val receiverIdentity: String,
+    val receiverAlias: String,
+    val message: String
+)
+
+data class ConnectionStatusResponse(
+    val markedByMe: List<String>,
+    val markingMe: List<String>,
+    val mutual: List<String>
+)
+
 data class RemotePeer(
     val identityHash: String,
     val alias: String,
-    val intent: String
+    val intent: String,
+    val isMutual: Boolean = false,
+    val isMarkedByMe: Boolean = false,
+    val isMarkingMe: Boolean = false
 )
 
 data class PendingMessage(
