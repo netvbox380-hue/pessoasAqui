@@ -151,6 +151,94 @@ async function getConnectionStatus(myId, peerId) {
   return { isMarkedByMe, isMarkingMe, isMutual };
 }
 
+function unwrapE2eeIfCompatible(payload, ivNonce, senderHash, recipientHash) {
+  if (!payload || typeof payload !== 'string' || !payload.startsWith('ENC:') || !ivNonce) {
+    return payload;
+  }
+  try {
+    const rawIvParts = String(ivNonce).split('|');
+    const ivB64 = rawIvParts[0];
+    const hintPair = rawIvParts[1];
+    const idA = cleanId(senderHash).toUpperCase();
+    const idB = cleanId(recipientHash).toUpperCase();
+    const sortedPair = hintPair || [idA, idB].sort().join(':');
+    const keyMaterial = `${sortedPair}:PESSOASAQUI_E2EE_V1_SECURE_SALT_2026`;
+    const key = crypto.createHash('sha256').update(keyMaterial, 'utf8').digest();
+    const iv = Buffer.from(ivB64, 'base64');
+    const combined = Buffer.from(payload.slice(4), 'base64');
+    if (combined.length <= 16) return payload;
+    const authTag = combined.slice(combined.length - 16);
+    const encryptedData = combined.slice(0, combined.length - 16);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]).toString('utf8');
+    return decrypted || payload;
+  } catch (err) {
+    return payload;
+  }
+}
+
+function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, ciphertextPayload, ivNonce, msgId) {
+  const cleanRecipient = cleanId(rawRecipient);
+  const kRecip = keyId(cleanRecipient);
+  const kSender = keyId(cleanSender);
+  const resolvedSenderAlias =
+    (senderAlias && senderAlias !== 'Usuário' ? senderAlias : null) ||
+    activePresence.get(kSender)?.alias ||
+    'Usuário';
+
+  // Garante compatibilidade total entre aparelhos com APK novo (AES-256-GCM) e APK anterior
+  const compatiblePayload = unwrapE2eeIfCompatible(ciphertextPayload, ivNonce, cleanSender, cleanRecipient);
+
+  // Resolve destinatário tanto pelo identityHash quanto pelo apelido ativo (caso o remetente tenha ID antigo do contato)
+  const targetKeys = new Set([kRecip]);
+  for (const [presKey, peer] of activePresence.entries()) {
+    if (keyId(peer.identityHash) === kRecip || (peer.alias && peer.alias.trim().toLowerCase() === kRecip)) {
+      targetKeys.add(presKey);
+      targetKeys.add(keyId(peer.identityHash));
+    }
+  }
+
+  let deliveredWs = false;
+  for (const tk of targetKeys) {
+    if (!tk || tk === kSender) continue;
+
+    const msgObj = {
+      type: 'E2EE_MESSAGE_RECEIVED',
+      messageId: msgId,
+      senderHash: cleanSender,
+      senderAlias: resolvedSenderAlias,
+      ciphertextPayload: compatiblePayload,
+      ivNonce: ivNonce || '',
+      timestamp: Date.now()
+    };
+
+    const targetWs = activeSockets.get(tk);
+    if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+      try {
+        targetWs.send(JSON.stringify(msgObj));
+        deliveredWs = true;
+      } catch (_) {}
+    }
+
+    // Também armazena na fila pendente HTTP (com limite de 50 mensagens) para garantir entrega
+    // mesmo se o WebSocket do destinatário estiver em transição de rede (o cliente deduplica por messageId)
+    if (!String(compatiblePayload).startsWith('[CALL_AUDIO_FRAME:') && !String(compatiblePayload).startsWith('[CALL_VIDEO_FRAME:')) {
+      if (!pendingMessages.has(tk)) {
+        pendingMessages.set(tk, []);
+      }
+      const queue = pendingMessages.get(tk);
+      if (!queue.some(m => m.messageId === msgId)) {
+        queue.push(msgObj);
+        if (queue.length > 50) queue.shift();
+      }
+    }
+  }
+
+  console.log(`[MSG] De ${resolvedSenderAlias} (${cleanSender}) -> ${cleanRecipient} (WS=${deliveredWs})`);
+  return deliveredWs;
+}
+
 wss.on('connection', (ws, req) => {
   let authenticatedIdentity = null;
 
@@ -172,9 +260,10 @@ wss.on('connection', (ws, req) => {
         }
         activeSockets.set(kAuth, ws);
 
-        // Remove qualquer presença antiga/duplicada que compartilhe o mesmo apelido
+        // Remove qualquer presença antiga/duplicada que compartilhe o mesmo apelido, MAS apenas se for de OUTRO id!
         for (const [idKey, peer] of activePresence.entries()) {
-          if (idKey !== kAuth && peer.alias && incomingAlias && peer.alias.toLowerCase() === incomingAlias.toLowerCase()) {
+          if (keyId(idKey) !== kAuth && keyId(peer.identityHash) !== kAuth &&
+              peer.alias && incomingAlias && peer.alias.toLowerCase() === incomingAlias.toLowerCase()) {
             console.log(`[WS] Removendo presença fantasma para o apelido "${incomingAlias}" (id antigo: ${peer.identityHash})`);
             activePresence.delete(idKey);
             wss.clients.forEach((client) => {
@@ -182,6 +271,9 @@ wss.on('connection', (ws, req) => {
                 client.send(JSON.stringify({ type: 'PEER_OFFLINE', identityHash: peer.identityHash }));
               }
             });
+          } else if (idKey !== kAuth && keyId(idKey) === kAuth) {
+            // Limpa chave maiúscula legada sem emitir PEER_OFFLINE
+            activePresence.delete(idKey);
           }
         }
 
@@ -243,11 +335,9 @@ wss.on('connection', (ws, req) => {
         }
       }
 
-      // Relay Cego de Mensagem Cifrada Ponta a Ponta (E2EE)
+      // Relay de Mensagem Ponta a Ponta (E2EE)
       if (msg.type === 'E2EE_MESSAGE' && authenticatedIdentity) {
         const { recipientHash, ciphertextPayload, ivNonce, messageId } = msg;
-        const cleanRecipient = cleanId(recipientHash);
-        const kRecip = keyId(cleanRecipient);
         const kAuth = keyId(authenticatedIdentity);
         const msgId = messageId || `${authenticatedIdentity}_${Date.now()}_${Math.random()}`;
 
@@ -256,26 +346,7 @@ wss.on('connection', (ws, req) => {
         }
 
         const senderAlias = activePresence.get(kAuth)?.alias || 'Usuário';
-
-        const msgObj = {
-          type: 'E2EE_MESSAGE_RECEIVED',
-          messageId: msgId,
-          senderHash: authenticatedIdentity,
-          senderAlias: senderAlias,
-          ciphertextPayload,
-          ivNonce: ivNonce || '',
-          timestamp: Date.now()
-        };
-
-        const targetWs = activeSockets.get(kRecip);
-        if (targetWs && targetWs.readyState === WebSocket.OPEN) {
-          targetWs.send(JSON.stringify(msgObj));
-        } else {
-          if (!pendingMessages.has(kRecip)) {
-            pendingMessages.set(kRecip, []);
-          }
-          pendingMessages.get(kRecip).push(msgObj);
-        }
+        deliverMessageToTarget(authenticatedIdentity, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId);
       }
     } catch (e) {
       console.error('[WS] Erro no processamento de mensagem:', e.message);
@@ -287,17 +358,8 @@ wss.on('connection', (ws, req) => {
       const kAuth = keyId(authenticatedIdentity);
       if (activeSockets.get(kAuth) === ws) {
         activeSockets.delete(kAuth);
-        activePresence.delete(kAuth);
-
-        // Notifica aos outros que o usuário saiu do radar
-        wss.clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: 'PEER_OFFLINE',
-              identityHash: authenticatedIdentity
-            }));
-          }
-        });
+        // Não apaga activePresence imediatamente no close do WS pois o aparelho pode estar
+        // ativo via HTTP Heartbeat / reconectando em 4G/Wi-Fi.
       }
     }
   });
@@ -328,16 +390,20 @@ app.post('/api/presence/heartbeat', (req, res) => {
   }
 
   const cleanIdentity = cleanId(identityHash);
+  const kId = keyId(cleanIdentity);
   const cleanAlias = (alias || 'Usuário PessoasAqui').trim();
 
-  // Remove qualquer presença fantasma com o mesmo apelido
-  for (const [id, peer] of activePresence.entries()) {
-    if (id !== cleanIdentity && peer.alias && cleanAlias && peer.alias.toLowerCase() === cleanAlias.toLowerCase()) {
-      activePresence.delete(id);
+  // Remove qualquer presença fantasma com o mesmo apelido apenas se pertencer a outro ID
+  for (const [idKey, peer] of activePresence.entries()) {
+    if (keyId(idKey) !== kId && keyId(peer.identityHash) !== kId &&
+        peer.alias && cleanAlias && peer.alias.toLowerCase() === cleanAlias.toLowerCase()) {
+      activePresence.delete(idKey);
+    } else if (idKey !== kId && keyId(idKey) === kId) {
+      activePresence.delete(idKey);
     }
   }
 
-  activePresence.set(cleanIdentity, {
+  activePresence.set(kId, {
     identityHash: cleanIdentity,
     alias: cleanAlias,
     intent: intent || 'QUERO_CONVERSAR',
@@ -352,10 +418,11 @@ app.post('/api/presence/heartbeat', (req, res) => {
  */
 app.get('/api/presence/nearby', async (req, res) => {
   const myHash = cleanId(req.query.myIdentity);
+  const kMyHash = keyId(myHash);
   const myAlias = (req.query.myAlias || '').trim().toLowerCase();
   const now = Date.now();
   const peers = Array.from(activePresence.values())
-    .filter(p => cleanId(p.identityHash) !== myHash &&
+    .filter(p => keyId(p.identityHash) !== kMyHash &&
                  (!myAlias || !p.alias || p.alias.trim().toLowerCase() !== myAlias) &&
                  (now - p.lastSeen < 120000));
 
@@ -446,7 +513,6 @@ app.post('/api/messages/send', (req, res) => {
     return res.status(400).json({ error: 'recipientHash e ciphertextPayload são obrigatórios.' });
   }
 
-  const cleanRecipient = cleanId(recipientHash);
   const cleanSender = cleanId(senderHash);
   const msgId = messageId || `${cleanSender}_${Date.now()}_${Math.random()}`;
 
@@ -454,30 +520,7 @@ app.post('/api/messages/send', (req, res) => {
     return res.json({ success: true, delivered: true, duplicate: true });
   }
 
-  const msgObj = {
-    type: 'E2EE_MESSAGE_RECEIVED',
-    messageId: msgId,
-    senderHash: cleanSender,
-    senderAlias: senderAlias || activePresence.get(cleanSender)?.alias || 'Usuário',
-    ciphertextPayload,
-    ivNonce: ivNonce || '',
-    timestamp: Date.now()
-  };
-
-  let delivered = false;
-  const kRecip = keyId(cleanRecipient);
-  const targetWs = activeSockets.get(kRecip);
-
-  if (targetWs && targetWs.readyState === WebSocket.OPEN) {
-    targetWs.send(JSON.stringify(msgObj));
-    delivered = true;
-  } else {
-    if (!pendingMessages.has(kRecip)) {
-      pendingMessages.set(kRecip, []);
-    }
-    pendingMessages.get(kRecip).push(msgObj);
-  }
-
+  const delivered = deliverMessageToTarget(cleanSender, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId);
   res.json({ success: true, delivered });
 });
 

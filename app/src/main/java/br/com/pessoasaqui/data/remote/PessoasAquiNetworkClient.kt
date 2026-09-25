@@ -26,6 +26,7 @@ class PessoasAquiNetworkClient(
         .connectTimeout(35, TimeUnit.SECONDS)
         .readTimeout(35, TimeUnit.SECONDS)
         .writeTimeout(35, TimeUnit.SECONDS)
+        .pingInterval(15, TimeUnit.SECONDS)
         .build()
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -347,6 +348,7 @@ class PessoasAquiNetworkClient(
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 isWsConnected = false
+                if (activeWebSocket === webSocket) activeWebSocket = null
                 if (code != 1000) {
                     scheduleReconnect()
                 }
@@ -354,6 +356,7 @@ class PessoasAquiNetworkClient(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 isWsConnected = false
+                if (activeWebSocket === webSocket) activeWebSocket = null
                 scheduleReconnect()
             }
         })
@@ -363,6 +366,7 @@ class PessoasAquiNetworkClient(
      * Envia envelope cifrado E2EE pelo WebSocket
      */
     fun sendE2eeEnvelope(recipientHash: String, ciphertext: String, ivNonce: String, messageId: String = java.util.UUID.randomUUID().toString()): Boolean {
+        if (!isWsConnected) return false
         val ws = activeWebSocket ?: return false
         val envelope = JSONObject().apply {
             put("type", "E2EE_MESSAGE")

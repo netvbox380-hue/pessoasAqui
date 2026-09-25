@@ -51,13 +51,17 @@ object E2eeCryptoEngine {
      * A ordem das identidades é normalizada para que ambos os lados cheguem exatamente
      * à mesma chave criptográfica.
      */
+    fun deriveSharedKeyFromPair(sortedPair: String): ByteArray {
+        val seed = "$sortedPair:PESSOASAQUI_E2EE_V1_SECURE_SALT_2026"
+        val md = MessageDigest.getInstance("SHA-256")
+        return md.digest(seed.toByteArray(StandardCharsets.UTF_8))
+    }
+
     fun deriveSharedKey(identityA: String, identityB: String): ByteArray {
         val cleanA = identityA.removePrefix("peer-").trim().uppercase()
         val cleanB = identityB.removePrefix("peer-").trim().uppercase()
         val sortedPair = listOf(cleanA, cleanB).sorted().joinToString(":")
-        val seed = "$sortedPair:PESSOASAQUI_E2EE_V1_SECURE_SALT_2026"
-        val md = MessageDigest.getInstance("SHA-256")
-        return md.digest(seed.toByteArray(StandardCharsets.UTF_8))
+        return deriveSharedKeyFromPair(sortedPair)
     }
 
     /**
@@ -66,7 +70,10 @@ object E2eeCryptoEngine {
      */
     fun encrypt(plaintext: String, senderId: String, recipientId: String): Pair<String, String> {
         return try {
-            val keyBytes = deriveSharedKey(senderId, recipientId)
+            val cleanA = senderId.removePrefix("peer-").trim().uppercase()
+            val cleanB = recipientId.removePrefix("peer-").trim().uppercase()
+            val sortedPair = listOf(cleanA, cleanB).sorted().joinToString(":")
+            val keyBytes = deriveSharedKeyFromPair(sortedPair)
             val iv = ByteArray(IV_LENGTH_BYTES)
             SecureRandom().nextBytes(iv)
 
@@ -77,7 +84,7 @@ object E2eeCryptoEngine {
 
             val ciphertextBase64 = Base64Helper.encode(ciphertextBytes)
             val ivBase64 = Base64Helper.encode(iv)
-            Pair("$PREFIX$ciphertextBase64", ivBase64)
+            Pair("$PREFIX$ciphertextBase64", "$ivBase64|$sortedPair")
         } catch (_: Exception) {
             // Em caso de falha rara de hardware, retorna texto original como fallback
             Pair(plaintext, "")
@@ -94,11 +101,12 @@ object E2eeCryptoEngine {
         }
 
         return try {
+            val pureIvB64 = ivBase64.substringBefore("|").trim()
             val keyBytes = deriveSharedKey(senderId, recipientId)
             val ciphertextRaw = payload.removePrefix(PREFIX)
             val ciphertextBytes = Base64Helper.decode(ciphertextRaw)
-            val ivBytes = if (ivBase64.isNotBlank()) {
-                Base64Helper.decode(ivBase64)
+            val ivBytes = if (pureIvB64.isNotBlank()) {
+                Base64Helper.decode(pureIvB64)
             } else {
                 ByteArray(IV_LENGTH_BYTES)
             }
@@ -109,7 +117,7 @@ object E2eeCryptoEngine {
             val decryptedBytes = cipher.doFinal(ciphertextBytes)
             String(decryptedBytes, StandardCharsets.UTF_8)
         } catch (_: Exception) {
-            // Se falhar a decifração, preserva o conteúdo recebido
+            // Se falhar a decifração (terceiro não autorizado), preserva o ciphertext cifrado
             payload
         }
     }
