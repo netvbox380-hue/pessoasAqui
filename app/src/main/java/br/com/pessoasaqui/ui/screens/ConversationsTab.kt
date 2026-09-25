@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -39,12 +40,14 @@ fun ConversationsTab(
     onOpenChat: (NearbyPerson) -> Unit,
     onToggleMarkPerson: (String) -> Unit = {},
     onClearLocalMessages: () -> Unit = {},
-    onCreateInviteLink: () -> Unit = {}
+    onCreateInviteLink: () -> Unit = {},
+    onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null
 ) {
     var selectedSection by remember { mutableIntStateOf(0) } // 0 = Mural Local (10m), 1 = Conversas Privadas
     var localInputText by remember { mutableStateOf("") }
     var selectedAuthorToInteract by remember { mutableStateOf<Pair<String, String>?>(null) } // senderId to senderAlias
     var showClearConfirmDialog by remember { mutableStateOf(false) }
+    var showPasteInviteDialog by remember { mutableStateOf(false) }
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
@@ -478,29 +481,176 @@ fun ConversationsTab(
                     }
                 }
 
-                // Botão de Convite Criptografado de Uso Único
-                Button(
-                    onClick = onCreateInviteLink,
+                // Botões de Convite Criptografado de Uso Único
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 12.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = RadarCyanGlow,
-                        contentColor = RadarCyan
-                    ),
-                    border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.5f))
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Share,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Convidar por Link Seguro (Uso Único)",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
+                    Button(
+                        onClick = onCreateInviteLink,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = RadarCyanGlow,
+                            contentColor = RadarCyan
+                        ),
+                        border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.5f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Criar Convite",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    Button(
+                        onClick = { showPasteInviteDialog = true },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = EmeraldGreen.copy(alpha = 0.15f),
+                            contentColor = EmeraldGreen
+                        ),
+                        border = BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.5f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Colar Convite",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                if (showPasteInviteDialog) {
+                    var pastedInviteText by remember { mutableStateOf("") }
+                    var isRedeeming by remember { mutableStateOf(false) }
+                    var pasteError by remember { mutableStateOf<String?>(null) }
+                    val clipboard = LocalClipboardManager.current
+
+                    AlertDialog(
+                        onDismissRequest = {
+                            if (!isRedeeming) showPasteInviteDialog = false
+                        },
+                        title = {
+                            Text(
+                                text = "Inserir Link de Convite",
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                        },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(
+                                    text = "Cole o link de convite recebido para estabelecer a conexão mútua imediata:",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                                )
+                                OutlinedTextField(
+                                    value = pastedInviteText,
+                                    onValueChange = {
+                                        pastedInviteText = it
+                                        pasteError = null
+                                    },
+                                    placeholder = {
+                                        Text("https://pessoasaqui.onrender.com/invite?id=...", color = TextSecondary.copy(alpha = 0.5f))
+                                    },
+                                    singleLine = false,
+                                    maxLines = 3,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = EmeraldGreen,
+                                        unfocusedBorderColor = DarkSurfaceLight,
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary
+                                    )
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    TextButton(
+                                        onClick = {
+                                            val clipText = clipboard.getText()?.text
+                                            if (!clipText.isNullOrBlank()) {
+                                                pastedInviteText = clipText.trim()
+                                            }
+                                        }
+                                    ) {
+                                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp), tint = RadarCyan)
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Colar", color = RadarCyan, fontSize = 12.sp)
+                                    }
+                                }
+                                if (pasteError != null) {
+                                    Text(
+                                        text = pasteError ?: "",
+                                        color = AlertRed,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                                    )
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    val input = pastedInviteText.trim()
+                                    if (input.isBlank()) {
+                                        pasteError = "Por favor, cole o link do convite."
+                                        return@Button
+                                    }
+                                    isRedeeming = true
+                                    pasteError = null
+                                    onRedeemInviteLink?.invoke(input) { success, msg, peer ->
+                                        isRedeeming = false
+                                        if (success && peer != null) {
+                                            showPasteInviteDialog = false
+                                            onOpenChat(peer)
+                                        } else {
+                                            pasteError = msg ?: "Falha ao validar convite."
+                                        }
+                                    }
+                                },
+                                enabled = !isRedeeming && pastedInviteText.isNotBlank(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = EmeraldGreen,
+                                    contentColor = TextPrimary
+                                )
+                            ) {
+                                if (isRedeeming) {
+                                    CircularProgressIndicator(
+                                        color = TextPrimary,
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Validando...", fontWeight = FontWeight.Bold)
+                                } else {
+                                    Text("★ Conectar", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(
+                                onClick = { showPasteInviteDialog = false },
+                                enabled = !isRedeeming
+                            ) {
+                                Text("Cancelar", color = TextSecondary)
+                            }
+                        },
+                        containerColor = DarkSurface
                     )
                 }
 

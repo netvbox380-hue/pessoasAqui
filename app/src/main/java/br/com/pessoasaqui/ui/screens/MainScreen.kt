@@ -327,6 +327,26 @@ fun MainScreen(
                                     context.startActivity(shareIntent)
                                 }
                             }
+                        },
+                        onRedeemInviteLink = { rawInput, onResult ->
+                            val parsedUri = try { android.net.Uri.parse(rawInput.trim()) } catch (_: Exception) { null }
+                            val id = parsedUri?.getQueryParameter("id") ?: parsedUri?.getQueryParameter("inviteId")
+                            val token = parsedUri?.getQueryParameter("token")
+                            val sender = parsedUri?.getQueryParameter("sender") ?: parsedUri?.getQueryParameter("senderIdentity")
+                            val alias = parsedUri?.getQueryParameter("alias") ?: parsedUri?.getQueryParameter("senderAlias") ?: "Usuário"
+
+                            if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
+                                repository.redeemOneTimeInvite(
+                                    inviteId = id.trim(),
+                                    token = token.trim(),
+                                    senderIdentity = sender.trim(),
+                                    senderAlias = alias.trim()
+                                ) { success, msg, peer ->
+                                    onResult(success, msg, peer)
+                                }
+                            } else {
+                                onResult(false, "Link ou formato de convite inválido.", null)
+                            }
                         }
                     )
 

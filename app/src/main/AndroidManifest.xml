@@ -47,13 +47,11 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="pessoasaqui"
-                    android:host="invite" />
+                <data android:scheme="pessoasaqui" />
             </intent-filter>
 
-            <!-- Deep Link para convites de conexão mútua (URL web HTTPS) -->
-            <intent-filter>
+            <!-- Deep Link para convites de conexão mútua (URL web HTTPS / Android App Links) -->
+            <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />

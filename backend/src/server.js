@@ -805,11 +805,12 @@ app.post('/api/invites/redeem', async (req, res) => {
  * Landing Page Web do Convite (com suporte a Deep Link automático para o app PessoasAqui)
  */
 app.get('/invite', (req, res) => {
-  const { id, token, sender, alias } = req.query;
+  const { id, token, sender, alias, fallback } = req.query;
   const safeAlias = (alias || 'Alguém').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const queryParams = `id=${encodeURIComponent(id || '')}&token=${encodeURIComponent(token || '')}&sender=${encodeURIComponent(sender || '')}&alias=${encodeURIComponent(alias || '')}`;
   const appDeepLink = `pessoasaqui://invite?${queryParams}`;
-  const chromeIntentLink = `intent://invite?${queryParams}#Intent;scheme=pessoasaqui;package=br.com.pessoasaqui;end`;
+  const fallbackUrl = `https://pessoasaqui.onrender.com/invite?${queryParams}&fallback=true`;
+  const chromeIntentLink = `intent://invite?${queryParams}#Intent;scheme=pessoasaqui;package=br.com.pessoasaqui;S.browser_fallback_url=${encodeURIComponent(fallbackUrl)};end`;
 
   res.send(`<!DOCTYPE html>
 <html lang="pt-BR">
@@ -837,7 +838,7 @@ app.get('/invite', (req, res) => {
       border: 1px solid #1C2430;
       border-radius: 20px;
       padding: 32px 24px;
-      max-width: 420px;
+      max-width: 440px;
       width: 100%;
       box-shadow: 0 8px 32px rgba(0,0,0,0.5);
     }
@@ -876,6 +877,10 @@ app.get('/invite', (req, res) => {
       padding: 14px 20px;
       border-radius: 12px;
       margin-bottom: 12px;
+      cursor: pointer;
+      border: none;
+      width: 100%;
+      box-sizing: border-box;
       transition: opacity 0.2s;
     }
     .btn:hover {
@@ -883,24 +888,52 @@ app.get('/invite', (req, res) => {
     }
     .btn-secondary {
       background-color: #1C2430;
-      color: #8B949E;
+      color: #00E5FF;
+      border: 1px solid rgba(0, 229, 255, 0.3);
       font-size: 14px;
     }
     .security-note {
       font-size: 12px;
       color: #8B949E;
       margin-top: 16px;
+      line-height: 1.4;
+    }
+    .instructions {
+      margin-top: 20px;
+      padding: 12px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px dashed #21262D;
+      font-size: 12px;
+      color: #8B949E;
+      text-align: left;
     }
   </style>
   <script>
-    // Tenta abrir o aplicativo automaticamente via Chrome Intent no Android ou Deep Link
+    // Se não for fallback, tenta abrir no app
     window.onload = function() {
-      if (/Android/i.test(navigator.userAgent)) {
-        window.location.href = "${chromeIntentLink}";
-      } else {
-        window.location.href = "${appDeepLink}";
+      const isFallback = ${fallback ? 'true' : 'false'};
+      if (!isFallback) {
+        if (/Android/i.test(navigator.userAgent)) {
+          window.location.href = "${chromeIntentLink}";
+        } else {
+          window.location.href = "${appDeepLink}";
+        }
       }
     };
+
+    function copyLink() {
+      const textToCopy = window.location.href.replace('&fallback=true', '');
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(textToCopy).then(function() {
+          const btn = document.getElementById('copyBtn');
+          btn.innerText = '✅ Link Copiado!';
+          setTimeout(function() { btn.innerText = '📋 Copiar Link do Convite'; }, 2500);
+        });
+      } else {
+        prompt('Copie o link abaixo:', textToCopy);
+      }
+    }
   </script>
 </head>
 <body>
@@ -908,9 +941,16 @@ app.get('/invite', (req, res) => {
     <div class="badge">🔒 Convite Criptografado de Uso Único</div>
     <h1>Conectar no PessoasAqui</h1>
     <p><span class="sender-name">${safeAlias}</span> convidou você para uma conexão mútua segura à distância com mensagens, chamadas e fotos criptografadas de ponta a ponta.</p>
+    
     <a href="${chromeIntentLink}" class="btn">★ Abrir no Aplicativo PessoasAqui</a>
     <a href="${appDeepLink}" class="btn btn-secondary">Abrir via link direto</a>
-    <div class="security-note">Se o aplicativo não abrir automaticamente, toque no botão acima.</div>
+    <button id="copyBtn" onclick="copyLink()" class="btn btn-secondary">📋 Copiar Link do Convite</button>
+
+    <div class="instructions">
+      <strong style="color:#F0F6FC;">Dica de Conexão:</strong><br>
+      Se o app não abrir automaticamente, você pode tocar em <strong>"Copiar Link do Convite"</strong>, abrir o aplicativo <strong>PessoasAqui</strong>, ir na aba <strong>Privado</strong> e tocar em <strong>"Colar Convite"</strong>.
+    </div>
+    <div class="security-note">Este link é exclusivo e expira após o primeiro uso.</div>
   </div>
 </body>
 </html>`);
@@ -926,6 +966,7 @@ app.get('/.well-known/assetlinks.json', (req, res) => {
       namespace: "android_app",
       package_name: "br.com.pessoasaqui",
       sha256_cert_fingerprints: [
+        "52:0C:ED:CA:47:CA:66:A8:A0:C9:D3:37:C7:7F:5E:E6:73:53:34:48:CC:00:E8:79:F7:08:E5:AF:D7:D3:1F:41",
         "14:A4:44:03:77:F1:C9:83:81:4A:27:0B:4D:B5:1A:87:69:B6:59:75:A8:DF:6B:47:19:D4:57:3E:68:5B:3F:58"
       ]
     }
