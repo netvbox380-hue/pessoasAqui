@@ -419,11 +419,30 @@ class PessoasAquiRepository(
         when {
             payload.startsWith("[CALL_AUDIO_FRAME:") -> {
                 val b64 = payload.removePrefix("[CALL_AUDIO_FRAME:").removeSuffix("]")
+                // Se o chamador recebe áudio do destinatário mas seu estado ainda marca 'não conectado',
+                // significa que o destinatário atendeu! Conecta imediatamente e inicia sua mídia.
+                val current = _activeCallState.value
+                if (current != null && !current.isConnected && !current.isIncoming) {
+                    callRingtoneWakeManager?.stopAllCallAlerts()
+                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+                    callMediaEngine?.startCallMedia(current.isVideo)
+                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
+                }
                 callMediaEngine?.playRemoteAudioFrame(b64)
             }
             payload.startsWith("[CALL_VIDEO_FRAME:") -> {
                 val b64 = payload.removePrefix("[CALL_VIDEO_FRAME:").removeSuffix("]")
-                _activeCallState.value = _activeCallState.value?.copy(remoteVideoFrameBase64 = b64)
+                // Se o chamador recebe vídeo do destinatário mas seu estado ainda marca 'não conectado',
+                // conecta imediatamente e inicia sua transmissão.
+                val current = _activeCallState.value
+                if (current != null && !current.isConnected && !current.isIncoming) {
+                    callRingtoneWakeManager?.stopAllCallAlerts()
+                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = true, remoteVideoFrameBase64 = b64)
+                    callMediaEngine?.startCallMedia(true)
+                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
+                } else {
+                    _activeCallState.value = _activeCallState.value?.copy(remoteVideoFrameBase64 = b64)
+                }
             }
             payload.startsWith("[CALL_INIT:") -> {
                 val parts = payload.removePrefix("[CALL_INIT:").removeSuffix("]").split(":")
@@ -443,15 +462,25 @@ class PessoasAquiRepository(
                     onAutoTimeout = { endCall() }
                 )
             }
-            payload == "[CALL_ACCEPT]" -> {
+            payload.startsWith("[CALL_ACCEPT]") -> {
                 callRingtoneWakeManager?.stopAllCallAlerts()
                 val current = _activeCallState.value
-                if (current != null) {
+                if (current != null && !current.isConnected) {
+                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+                    callMediaEngine?.startCallMedia(current.isVideo)
+                    // Confirmação de recebimento (handshake bidirecional)
+                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
+                }
+            }
+            payload.startsWith("[CALL_ACK]") -> {
+                callRingtoneWakeManager?.stopAllCallAlerts()
+                val current = _activeCallState.value
+                if (current != null && !current.isConnected) {
                     _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
                     callMediaEngine?.startCallMedia(current.isVideo)
                 }
             }
-            payload == "[CALL_END]" -> {
+            payload.startsWith("[CALL_END]") -> {
                 callRingtoneWakeManager?.stopAllCallAlerts()
                 callMediaEngine?.stopCallMedia()
                 _activeCallState.value = null
@@ -1662,6 +1691,15 @@ class PessoasAquiRepository(
         )
         callRingtoneWakeManager?.startOutgoingRingbackTone()
         sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
+
+        // Retransmissão preventiva de CALL_INIT após 800ms para garantir toque caso haja oscilação inicial
+        scope.launch {
+            delay(800)
+            val cur = _activeCallState.value
+            if (cur != null && !cur.isConnected && !cur.isIncoming && cur.peerHash == cleanHash) {
+                sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
+            }
+        }
     }
 
     fun answerCall() {
@@ -1669,7 +1707,20 @@ class PessoasAquiRepository(
         callRingtoneWakeManager?.stopAllCallAlerts()
         _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
         callMediaEngine?.startCallMedia(current.isVideo)
+
+        // Envio prioritário imediato
         sendPrivateMessage(current.peerHash, "[CALL_ACCEPT]")
+
+        // Retransmissão redundante anti-perda de pacotes (3 envios a cada 300ms)
+        val peer = current.peerHash
+        scope.launch {
+            repeat(3) {
+                delay(300)
+                if (_activeCallState.value?.isConnected == true) {
+                    sendPrivateMessage(peer, "[CALL_ACCEPT]")
+                }
+            }
+        }
     }
 
     fun endCall() {
@@ -1679,6 +1730,12 @@ class PessoasAquiRepository(
         callMediaEngine?.stopCallMedia()
         _activeCallState.value = null
         sendPrivateMessage(peer, "[CALL_END]")
+
+        // Envio repetido de garantia para desligamento instantâneo em ambos os aparelhos
+        scope.launch {
+            delay(200)
+            sendPrivateMessage(peer, "[CALL_END]")
+        }
     }
 
     fun toggleCallMute() {

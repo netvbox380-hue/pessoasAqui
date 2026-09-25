@@ -7,6 +7,9 @@ import android.graphics.Rect
 import android.graphics.YuvImage
 import android.hardware.camera2.*
 import android.media.*
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -19,8 +22,9 @@ import java.nio.ByteBuffer
 /**
  * Motor de Transmissão de Mídia em Tempo Real para Chamadas de Voz e Vídeo.
  *
- * - Áudio: Captura PCM 16-bit via AudioRecord e reprodução instantânea com baixa latência via AudioTrack.
- * - Vídeo: Captura de quadros da câmera frontal via Camera2 ImageReader e transmissão comprimida.
+ * - Áudio: Captura PCM 16kHz HD Wideband com cancelamento acústico de eco (AEC),
+ *   supressão de ruído (NS) e controle automático de ganho (AGC).
+ * - Vídeo: Captura de quadros otimizada via Camera2 ImageReader e compressão JPEG HD (65%).
  * - Hardware: Controle de Mudo, Viva-Voz e Chaveamento de Câmera.
  */
 class CallMediaEngine(
@@ -30,7 +34,7 @@ class CallMediaEngine(
 ) {
     companion object {
         private const val TAG = "CallMediaEngine"
-        private const val SAMPLE_RATE = 8000 // 8kHz Mono para voz eficiente e baixo consumo de dados
+        private const val SAMPLE_RATE = 16000 // 16kHz HD Wideband Voice para chamadas nítidas
         private const val CHANNEL_CONFIG_IN = AudioFormat.CHANNEL_IN_MONO
         private const val CHANNEL_CONFIG_OUT = AudioFormat.CHANNEL_OUT_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
@@ -47,6 +51,11 @@ class CallMediaEngine(
     private var audioTrack: AudioTrack? = null
     private var audioRecordJob: Job? = null
     private val mediaScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Efeitos de Hardware para Cancelamento de Eco e Ruído
+    private var echoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var gainControl: AutomaticGainControl? = null
 
     // Camera2
     private var cameraDevice: CameraDevice? = null
@@ -144,7 +153,7 @@ class CallMediaEngine(
     private fun startAudioCapture() {
         try {
             val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG_IN, AUDIO_FORMAT)
-            val bufferSize = minBuf.coerceAtLeast(1024)
+            val bufferSize = minBuf.coerceAtLeast(2048)
 
             val record = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -160,11 +169,44 @@ class CallMediaEngine(
                 return
             }
 
+            // Ativa Cancelamento Acústico de Eco (elimina microfonia e retorno em viva-voz)
+            val sessionId = record.audioSessionId
+            try {
+                if (AcousticEchoCanceler.isAvailable()) {
+                    echoCanceler = AcousticEchoCanceler.create(sessionId)?.apply { enabled = true }
+                    Log.i(TAG, "AcousticEchoCanceler ativado com sucesso")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "AcousticEchoCanceler indisponível: ${e.message}")
+            }
+
+            // Ativa Supressão de Ruídos de Fundo
+            try {
+                if (NoiseSuppressor.isAvailable()) {
+                    noiseSuppressor = NoiseSuppressor.create(sessionId)?.apply { enabled = true }
+                    Log.i(TAG, "NoiseSuppressor ativado com sucesso")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "NoiseSuppressor indisponível: ${e.message}")
+            }
+
+            // Ativa Controle Automático de Ganho
+            try {
+                if (AutomaticGainControl.isAvailable()) {
+                    gainControl = AutomaticGainControl.create(sessionId)?.apply { enabled = true }
+                    Log.i(TAG, "AutomaticGainControl ativado com sucesso")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "AutomaticGainControl indisponível: ${e.message}")
+            }
+
             record.startRecording()
             audioRecord = record
 
             audioRecordJob = mediaScope.launch {
-                val buffer = ByteArray(bufferSize / 2)
+                // Fragmento de 40ms para voz HD em tempo real (16000 * 2 * 0.04 = 1280 bytes)
+                val chunkSize = (SAMPLE_RATE * 2 * 0.04).toInt().coerceAtLeast(1024)
+                val buffer = ByteArray(chunkSize)
                 while (isCallActive && isActive) {
                     val read = record.read(buffer, 0, buffer.size)
                     if (read > 0 && !isMuted) {
@@ -172,7 +214,6 @@ class CallMediaEngine(
                         val b64 = Base64.encodeToString(activeChunk, Base64.NO_WRAP)
                         onSendAudioFrame(b64)
                     }
-                    delay(80) // Transmite blocos de áudio em intervalos regulares
                 }
             }
         } catch (e: Exception) {
@@ -190,6 +231,13 @@ class CallMediaEngine(
             audioRecord?.release()
         } catch (_: Exception) {}
         audioRecord = null
+
+        try { echoCanceler?.release() } catch (_: Exception) {}
+        echoCanceler = null
+        try { noiseSuppressor?.release() } catch (_: Exception) {}
+        noiseSuppressor = null
+        try { gainControl?.release() } catch (_: Exception) {}
+        gainControl = null
     }
 
     private fun startAudioPlayback() {
@@ -263,18 +311,28 @@ class CallMediaEngine(
                 facing == CameraCharacteristics.LENS_FACING_FRONT
             } ?: cameraManager.cameraIdList.firstOrNull() ?: return
 
+            val chars = cameraManager.getCameraCharacteristics(frontCameraId)
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888) ?: emptyArray()
+            val chosenSize = sizes.find { it.width == 480 && it.height == 360 }
+                ?: sizes.find { it.width == 640 && it.height == 480 }
+                ?: sizes.find { it.width in 320..640 }
+                ?: sizes.firstOrNull()
+            val targetWidth = chosenSize?.width ?: 320
+            val targetHeight = chosenSize?.height ?: 240
+
             val thread = HandlerThread("CameraBackgroundThread").apply { start() }
             cameraThread = thread
             val handler = Handler(thread.looper)
             cameraHandler = handler
 
-            val reader = ImageReader.newInstance(320, 240, ImageFormat.YUV_420_888, 2)
+            val reader = ImageReader.newInstance(targetWidth, targetHeight, ImageFormat.YUV_420_888, 2)
             reader.setOnImageAvailableListener({ ir ->
                 val image = ir.acquireLatestImage() ?: return@setOnImageAvailableListener
                 try {
                     val now = System.currentTimeMillis()
-                    // Limita a ~4 quadros por segundo para economia de banda e fluidez E2EE
-                    if (isCallActive && isCameraOn && (now - lastVideoFrameSentMs >= 240)) {
+                    // 8-10 FPS para vídeo nítido, fluido e responsivo em tempo real
+                    if (isCallActive && isCameraOn && (now - lastVideoFrameSentMs >= 120)) {
                         lastVideoFrameSentMs = now
                         val jpegBytes = yuv420ToJpeg(image)
                         if (jpegBytes != null) {
@@ -381,7 +439,8 @@ class CallMediaEngine(
 
             val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
             val out = ByteArrayOutputStream()
-            yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 40, out)
+            // Compressão JPEG a 65% para alta nitidez facial e transmissão fluida
+            yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 65, out)
             out.toByteArray()
         } catch (_: Exception) {
             null

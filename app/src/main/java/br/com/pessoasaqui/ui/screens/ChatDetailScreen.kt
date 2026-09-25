@@ -15,6 +15,8 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -29,12 +31,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.FamilyRole
 import br.com.pessoasaqui.domain.model.MessageType
@@ -121,6 +128,8 @@ fun ChatDetailScreen(
     var isRecordingAudio by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableStateOf(0) }
     var playingAudioId by remember { mutableStateOf<String?>(null) }
+    var fullscreenImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    var fullscreenImageSender by remember { mutableStateOf("") }
 
     val voiceNoteManager = remember { VoiceNoteManager() }
     DisposableEffect(Unit) {
@@ -670,15 +679,51 @@ fun ChatDetailScreen(
                                         }
 
                                         if (bitmap != null) {
-                                            Image(
-                                                bitmap = bitmap,
-                                                contentDescription = "Foto Cifrada",
+                                            Box(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .heightIn(max = 220.dp)
-                                                    .clip(RoundedCornerShape(10.dp)),
-                                                contentScale = ContentScale.Crop
-                                            )
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .clickable {
+                                                        fullscreenImageBitmap = bitmap
+                                                        fullscreenImageSender = msg.senderAlias
+                                                    }
+                                            ) {
+                                                Image(
+                                                    bitmap = bitmap,
+                                                    contentDescription = "Foto Cifrada (Toque para ampliar)",
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .heightIn(max = 240.dp),
+                                                    contentScale = ContentScale.Crop
+                                                )
+
+                                                // Badge discreto indicando que a imagem abre em tela cheia com zoom
+                                                Surface(
+                                                    color = DeepBlack.copy(alpha = 0.7f),
+                                                    shape = RoundedCornerShape(topStart = 8.dp),
+                                                    modifier = Modifier.align(Alignment.BottomEnd)
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.ZoomIn,
+                                                            contentDescription = "Ampliar",
+                                                            tint = RadarCyan,
+                                                            modifier = Modifier.size(13.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(3.dp))
+                                                        Text(
+                                                            text = "Toque para ampliar",
+                                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                                color = TextPrimary,
+                                                                fontSize = 9.sp
+                                                            )
+                                                        )
+                                                    }
+                                                }
+                                            }
                                             Spacer(modifier = Modifier.height(4.dp))
                                             Text(
                                                 text = "📷 Foto Cifrada Ponta a Ponta",
@@ -1098,6 +1143,147 @@ fun ChatDetailScreen(
                 },
                 containerColor = DarkSurface
             )
+        }
+
+        if (fullscreenImageBitmap != null) {
+            FullscreenImageViewerDialog(
+                bitmap = fullscreenImageBitmap!!,
+                senderName = fullscreenImageSender,
+                onDismiss = { fullscreenImageBitmap = null }
+            )
+        }
+    }
+}
+
+@Composable
+fun FullscreenImageViewerDialog(
+    bitmap: ImageBitmap,
+    senderName: String,
+    onDismiss: () -> Unit
+) {
+    var scale by remember { mutableStateOf(1f) }
+    var offsetX by remember { mutableStateOf(0f) }
+    var offsetY by remember { mutableStateOf(0f) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.96f))
+        ) {
+            // Imagem com suporte a gestos de pinch-to-zoom, pan e duplo toque
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                if (scale > 1.2f) {
+                                    scale = 1f
+                                    offsetX = 0f
+                                    offsetY = 0f
+                                } else {
+                                    scale = 2.5f
+                                }
+                            }
+                        )
+                    }
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            scale = (scale * zoom).coerceIn(1f, 5f)
+                            if (scale > 1f) {
+                                offsetX += pan.x
+                                offsetY += pan.y
+                            } else {
+                                offsetX = 0f
+                                offsetY = 0f
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = "Visualização de Imagem em Tela Cheia",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offsetX,
+                            translationY = offsetY
+                        ),
+                    contentScale = ContentScale.Fit
+                )
+            }
+
+            // Barra superior com controles
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.6f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Fechar",
+                        tint = Color.White
+                    )
+                }
+
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = if (senderName.isNotBlank()) "Foto • $senderName" else "Foto Cifrada",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                    Text(
+                        text = "Toque duplo ou use dois dedos para zoom (${String.format("%.1fx", scale)})",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = Color.LightGray
+                        )
+                    )
+                }
+
+                if (scale > 1.05f) {
+                    IconButton(
+                        onClick = {
+                            scale = 1f
+                            offsetX = 0f
+                            offsetY = 0f
+                        },
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.6f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ZoomOutMap,
+                            contentDescription = "Redefinir Zoom",
+                            tint = Color.White
+                        )
+                    }
+                } else {
+                    Spacer(modifier = Modifier.size(44.dp))
+                }
+            }
         }
     }
 }
