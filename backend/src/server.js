@@ -3,8 +3,34 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
+const crypto = require('crypto');
 const { initDatabase, localStore, isPostgres, query } = require('./db');
 const { hashPin, generateNonce, calculateLockoutDurationSeconds } = require('./crypto');
+
+const INVITE_SECRET = process.env.INVITE_SECRET || process.env.SESSION_SECRET || 'pessoasaqui_invite_crypto_secret_key_2026';
+
+function signInvitePayload(inviteId, token, senderIdentity, expiresAt) {
+  const cleanInvId = (inviteId || '').replace(/^peer-/, '').trim().toLowerCase();
+  const cleanTok = (token || '').trim();
+  const cleanSender = (senderIdentity || '').replace(/^peer-/, '').trim().toLowerCase();
+  const exp = String(expiresAt || '');
+  return crypto.createHmac('sha256', INVITE_SECRET)
+    .update(`${cleanInvId}:${cleanTok}:${cleanSender}:${exp}`)
+    .digest('hex');
+}
+
+function verifyInvitePayloadSignature(inviteId, token, senderIdentity, expiresAt, signature) {
+  if (!signature) return false;
+  try {
+    const expected = signInvitePayload(inviteId, token, senderIdentity, expiresAt);
+    const sigBuf = Buffer.from(signature, 'hex');
+    const expBuf = Buffer.from(expected, 'hex');
+    if (sigBuf.length !== expBuf.length) return false;
+    return crypto.timingSafeEqual(sigBuf, expBuf);
+  } catch (_) {
+    return false;
+  }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -18,6 +44,29 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 // Inicia conexão com banco (Supabase PostgreSQL ou local)
 initDatabase();
+
+// Garante tabela persistente de convites se estiver conectado ao PostgreSQL
+setTimeout(async () => {
+  if (isPostgres()) {
+    try {
+      await query(`CREATE TABLE IF NOT EXISTS invites (
+        id VARCHAR(64) PRIMARY KEY,
+        token VARCHAR(64) NOT NULL,
+        sender_identity VARCHAR(64),
+        sender_alias VARCHAR(64),
+        signature TEXT,
+        expires_at TIMESTAMPTZ NOT NULL,
+        is_used BOOLEAN DEFAULT FALSE,
+        used_by VARCHAR(64),
+        used_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )`);
+      console.log('[DB] Tabela persistente de convites criptografados verificada.');
+    } catch (err) {
+      console.warn('[DB] Nota ao verificar tabela de convites:', err.message);
+    }
+  }
+}, 500);
 
 // Mapa de conexões WebSocket ativas: identityHash -> WebSocket (1 dispositivo ativo por identidade)
 const activeSockets = new Map();
@@ -66,6 +115,18 @@ async function getConnectionStatus(myId, peerId) {
   const kFrom = keyId(from);
   const kTo = keyId(to);
 
+  // Sempre verifica o cache local em memória primeiro (garante resiliência instantânea)
+  const k1 = `${kFrom}->${kTo}`;
+  const k2 = `${kTo}->${kFrom}`;
+  if (localStore.connections.has(k1)) {
+    isMarkedByMe = true;
+    if (localStore.connections.get(k1).isMutual) isMutual = true;
+  }
+  if (localStore.connections.has(k2)) {
+    isMarkingMe = true;
+    if (localStore.connections.get(k2).isMutual) isMutual = true;
+  }
+
   if (isPostgres()) {
     try {
       const res = await query(
@@ -83,17 +144,6 @@ async function getConnectionStatus(myId, peerId) {
       }
     } catch (e) {
       console.error('[DB] Erro ao consultar status de conexão:', e.message);
-    }
-  } else {
-    const k1 = `${kFrom}->${kTo}`;
-    const k2 = `${kTo}->${kFrom}`;
-    if (localStore.connections.has(k1)) {
-      isMarkedByMe = true;
-      if (localStore.connections.get(k1).isMutual) isMutual = true;
-    }
-    if (localStore.connections.has(k2)) {
-      isMarkingMe = true;
-      if (localStore.connections.get(k2).isMutual) isMutual = true;
     }
   }
 
@@ -415,16 +465,17 @@ app.post('/api/messages/send', (req, res) => {
   };
 
   let delivered = false;
-  const targetWs = activeSockets.get(cleanRecipient);
+  const kRecip = keyId(cleanRecipient);
+  const targetWs = activeSockets.get(kRecip);
 
   if (targetWs && targetWs.readyState === WebSocket.OPEN) {
     targetWs.send(JSON.stringify(msgObj));
     delivered = true;
   } else {
-    if (!pendingMessages.has(cleanRecipient)) {
-      pendingMessages.set(cleanRecipient, []);
+    if (!pendingMessages.has(kRecip)) {
+      pendingMessages.set(kRecip, []);
     }
-    pendingMessages.get(cleanRecipient).push(msgObj);
+    pendingMessages.get(kRecip).push(msgObj);
   }
 
   res.json({ success: true, delivered });
@@ -438,7 +489,7 @@ app.get('/api/messages/pending', (req, res) => {
   if (!rawId) {
     return res.status(400).json({ error: 'identityHash obrigatório.' });
   }
-  const cleanKey = cleanId(rawId);
+  const cleanKey = keyId(rawId);
   const pending = pendingMessages.get(cleanKey) || [];
   pendingMessages.delete(cleanKey);
   res.json({ success: true, messages: pending });
@@ -457,6 +508,15 @@ app.post('/api/identities/register', async (req, res) => {
   const cleanIdentity = cleanId(identityHash);
   const pinHash = hashPin(pin);
 
+  // Sempre armazena no cache em memória local para velocidade e resiliência
+  localStore.identities.set(cleanIdentity, {
+    id: cleanIdentity,
+    publicKeyEd25519,
+    publicKeyX25519,
+    pinHash,
+    alias: alias || 'Eu'
+  });
+
   if (isPostgres()) {
     try {
       await query(
@@ -466,16 +526,8 @@ app.post('/api/identities/register', async (req, res) => {
         [cleanIdentity, publicKeyEd25519, publicKeyX25519 || '', pinHash, alias || 'Eu']
       );
     } catch (e) {
-      return res.status(500).json({ error: 'Erro ao gravar identidade no Supabase: ' + e.message });
+      console.warn('[DB] Aviso ao gravar identidade no PostgreSQL (mantido em memória):', e.message);
     }
-  } else {
-    localStore.identities.set(cleanIdentity, {
-      id: cleanIdentity,
-      publicKeyEd25519,
-      publicKeyX25519,
-      pinHash,
-      alias: alias || 'Eu'
-    });
   }
 
   res.json({ success: true, identityHash: cleanIdentity, message: 'Identidade técnica registrada com sucesso.' });
@@ -493,6 +545,18 @@ app.get('/api/connections/status', async (req, res) => {
   let markedByMe = [];
   let markingMe = [];
   let mutual = [];
+
+  // Sempre lê as conexões em memória local
+  for (const [key, val] of localStore.connections.entries()) {
+    const f = cleanId(val.fromIdentity);
+    const t = cleanId(val.toIdentity);
+    if (f === myId && !markedByMe.includes(t)) markedByMe.push(t);
+    if (t === myId && !markingMe.includes(f)) markingMe.push(f);
+    if (val.isMutual) {
+      const partner = f === myId ? t : f;
+      if (!mutual.includes(partner)) mutual.push(partner);
+    }
+  }
 
   if (isPostgres()) {
     try {
@@ -513,17 +577,6 @@ app.get('/api/connections/status', async (req, res) => {
       }
     } catch (e) {
       console.error('[DB] Erro ao buscar connections:', e.message);
-    }
-  } else {
-    for (const [key, val] of localStore.connections.entries()) {
-      const f = cleanId(val.fromIdentity);
-      const t = cleanId(val.toIdentity);
-      if (f === myId && !markedByMe.includes(t)) markedByMe.push(t);
-      if (t === myId && !markingMe.includes(f)) markingMe.push(f);
-      if (val.isMutual) {
-        const partner = f === myId ? t : f;
-        if (!mutual.includes(partner)) mutual.push(partner);
-      }
     }
   }
 
@@ -549,39 +602,47 @@ app.post('/api/connections/mark', async (req, res) => {
   const kFrom = keyId(from);
   const kTo = keyId(to);
 
+  const reverseKey = `${kTo}->${kFrom}`;
+  if (localStore.connections.has(reverseKey)) {
+    isReciprocal = true;
+  }
+
   if (isPostgres()) {
-    const existing = await query(
-      `SELECT * FROM connections WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))`,
-      [to, from]
-    );
-    if (existing.rows.length > 0) {
-      isReciprocal = true;
-    }
-
-    await query(
-      `INSERT INTO connections (from_identity, to_identity, is_mutual)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = EXCLUDED.is_mutual`,
-      [from, to, isReciprocal]
-    );
-
-    if (isReciprocal) {
-      await query(
-        `UPDATE connections SET is_mutual = TRUE
-         WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
-            OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
-        [from, to]
+    try {
+      const existing = await query(
+        `SELECT * FROM connections WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))`,
+        [to, from]
       );
+      if (existing.rows.length > 0) {
+        isReciprocal = true;
+      }
+
+      await query(
+        `INSERT INTO connections (from_identity, to_identity, is_mutual)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = EXCLUDED.is_mutual`,
+        [from, to, isReciprocal]
+      );
+
+      if (isReciprocal) {
+        await query(
+          `UPDATE connections SET is_mutual = TRUE
+           WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
+              OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
+          [from, to]
+        );
+      }
+    } catch (e) {
+      console.error('[DB] Erro ao gravar marcação no PostgreSQL:', e.message);
     }
-  } else {
-    const reverseKey = `${kTo}->${kFrom}`;
-    if (localStore.connections.has(reverseKey)) {
-      isReciprocal = true;
-    }
-    localStore.connections.set(`${kFrom}->${kTo}`, { fromIdentity: from, toIdentity: to, isMutual: isReciprocal });
-    if (isReciprocal && localStore.connections.has(reverseKey)) {
-      localStore.connections.get(reverseKey).isMutual = true;
-    }
+  }
+
+  // Sempre atualiza localStore em memória para velocidade imediata e resiliência
+  localStore.connections.set(`${kFrom}->${kTo}`, { fromIdentity: from, toIdentity: to, isMutual: isReciprocal });
+  if (isReciprocal && localStore.connections.has(reverseKey)) {
+    localStore.connections.get(reverseKey).isMutual = true;
+  } else if (isReciprocal) {
+    localStore.connections.set(reverseKey, { fromIdentity: to, toIdentity: from, isMutual: true });
   }
 
   const myAlias = senderAlias || activePresence.get(kFrom)?.alias || 'Alguém';
@@ -665,12 +726,14 @@ app.post('/api/invites/create', async (req, res) => {
   const alias = (senderAlias || 'Usuário').trim();
   const createdAt = Date.now();
   const expiresAt = createdAt + (7 * 24 * 60 * 60 * 1000); // 7 dias de validade
+  const signature = signInvitePayload(inviteId, token, sender, expiresAt);
 
   const inviteData = {
     inviteId,
     token,
     senderIdentity: sender,
     senderAlias: alias,
+    signature,
     isUsed: false,
     usedBy: null,
     usedAt: null,
@@ -679,16 +742,32 @@ app.post('/api/invites/create', async (req, res) => {
   };
 
   activeInvites.set(inviteId, inviteData);
+  if (localStore.invites) localStore.invites.set(inviteId, inviteData);
+
+  if (isPostgres()) {
+    try {
+      await query(
+        `INSERT INTO invites (id, token, sender_identity, sender_alias, signature, expires_at)
+         VALUES ($1, $2, $3, $4, $5, TO_TIMESTAMP($6 / 1000.0))
+         ON CONFLICT (id) DO UPDATE SET token = EXCLUDED.token, signature = EXCLUDED.signature, expires_at = EXCLUDED.expires_at`,
+        [inviteId, token, sender, alias, signature, expiresAt]
+      );
+    } catch (e) {
+      console.error('[DB] Erro ao gravar convite no PostgreSQL:', e.message);
+    }
+  }
 
   const baseUrl = process.env.BASE_URL || 'https://pessoasaqui.onrender.com';
-  const inviteUrl = `${baseUrl}/invite?id=${encodeURIComponent(inviteId)}&token=${encodeURIComponent(token)}&sender=${encodeURIComponent(sender)}&alias=${encodeURIComponent(alias)}`;
+  const queryParams = `id=${encodeURIComponent(inviteId)}&token=${encodeURIComponent(token)}&sender=${encodeURIComponent(sender)}&alias=${encodeURIComponent(alias)}&sig=${encodeURIComponent(signature)}&exp=${expiresAt}`;
+  const inviteUrl = `${baseUrl}/invite?${queryParams}`;
 
-  console.log(`[Convite] Novo convite único gerado: ${inviteId} por ${alias} (${sender})`);
+  console.log(`[Convite] Novo convite único gerado: ${inviteId} por ${alias} (${sender}) com assinatura segura`);
 
   res.json({
     success: true,
     inviteId,
     token,
+    signature,
     inviteUrl,
     senderIdentity: sender,
     senderAlias: alias,
@@ -700,7 +779,7 @@ app.post('/api/invites/create', async (req, res) => {
  * Resgate de Convite de Uso Único (Efetiva Conexão Mútua Instantânea à Distância)
  */
 app.post('/api/invites/redeem', async (req, res) => {
-  const { inviteId, token, receiverIdentity, receiverAlias } = req.body;
+  const { inviteId, token, receiverIdentity, receiverAlias, senderIdentity, senderAlias, signature, expiresAt } = req.body;
   const receiver = cleanId(receiverIdentity);
   const recAlias = (receiverAlias || 'Usuário Convidado').trim();
 
@@ -708,21 +787,68 @@ app.post('/api/invites/redeem', async (req, res) => {
     return res.status(400).json({ error: 'Parâmetros de convite ou destinatário inválidos.' });
   }
 
-  const invite = activeInvites.get(inviteId);
-  if (!invite) {
+  let invite = activeInvites.get(inviteId) || (localStore.invites && localStore.invites.get(inviteId));
+
+  // Se não estiver na memória, busca no PostgreSQL persistente
+  if (!invite && isPostgres()) {
+    try {
+      const dbRes = await query(`SELECT * FROM invites WHERE id = $1`, [inviteId]);
+      if (dbRes.rows.length > 0) {
+        const row = dbRes.rows[0];
+        invite = {
+          inviteId: row.id,
+          token: row.token,
+          senderIdentity: row.sender_identity,
+          senderAlias: row.sender_alias,
+          signature: row.signature,
+          isUsed: row.is_used,
+          usedBy: row.used_by,
+          usedAt: row.used_at ? new Date(row.used_at).getTime() : null,
+          expiresAt: new Date(row.expires_at).getTime()
+        };
+        activeInvites.set(inviteId, invite);
+      }
+    } catch (e) {
+      console.error('[DB] Erro ao consultar convite no banco:', e.message);
+    }
+  }
+
+  // Fallback Criptográfico Seguro: Se o servidor foi reciclado ou o convite foi criado com assinatura válida
+  const candidateSender = cleanId(invite?.senderIdentity || senderIdentity);
+  const candidateExp = invite ? invite.expiresAt : Number(expiresAt || (Date.now() + 86400000));
+  const candidateSig = invite?.signature || signature;
+
+  const isCryptographicallyValid = verifyInvitePayloadSignature(inviteId, token, candidateSender, candidateExp, candidateSig);
+
+  if (!invite && !isCryptographicallyValid) {
     return res.status(404).json({ error: 'Convite não encontrado ou inexistente.' });
   }
 
-  if (invite.token !== token) {
-    return res.status(403).json({ error: 'Token de convite inválido ou adulterado.' });
-  }
-
-  if (invite.isUsed) {
-    return res.status(410).json({ error: 'Este convite já foi utilizado e não pode ser reutilizado.' });
-  }
-
-  if (Date.now() > invite.expiresAt) {
-    return res.status(410).json({ error: 'Este convite expirou.' });
+  if (invite) {
+    if (invite.token !== token) {
+      return res.status(403).json({ error: 'Token de convite inválido ou adulterado.' });
+    }
+    if (invite.isUsed) {
+      return res.status(410).json({ error: 'Este convite já foi utilizado e não pode ser reutilizado.' });
+    }
+    if (Date.now() > invite.expiresAt) {
+      return res.status(410).json({ error: 'Este convite expirou.' });
+    }
+  } else {
+    // Verificado via assinatura criptográfica sem registro prévio na RAM
+    if (Date.now() > candidateExp) {
+      return res.status(410).json({ error: 'Este convite expirou.' });
+    }
+    invite = {
+      inviteId,
+      token,
+      senderIdentity: candidateSender,
+      senderAlias: senderAlias || 'Usuário Remetente',
+      signature: candidateSig,
+      isUsed: false,
+      expiresAt: candidateExp
+    };
+    activeInvites.set(inviteId, invite);
   }
 
   const sender = cleanId(invite.senderIdentity);
@@ -738,9 +864,16 @@ app.post('/api/invites/redeem', async (req, res) => {
   const kSender = keyId(sender);
   const kReceiver = keyId(receiver);
 
-  // Estabelece Conexão Mútua Bidirecional Permanente
+  // Estabelece Conexão Mútua Bidirecional Permanente (sempre em memória local + PostgreSQL se ativo)
+  localStore.connections.set(`${kSender}->${kReceiver}`, { fromIdentity: sender, toIdentity: receiver, isMutual: true });
+  localStore.connections.set(`${kReceiver}->${kSender}`, { fromIdentity: receiver, toIdentity: sender, isMutual: true });
+
   if (isPostgres()) {
     try {
+      await query(
+        `UPDATE invites SET is_used = TRUE, used_by = $1, used_at = NOW() WHERE id = $2`,
+        [receiver, inviteId]
+      );
       await query(
         `INSERT INTO connections (from_identity, to_identity, is_mutual)
          VALUES ($1, $2, TRUE), ($2, $1, TRUE)
@@ -750,9 +883,6 @@ app.post('/api/invites/redeem', async (req, res) => {
     } catch (e) {
       console.error('[DB] Erro ao gravar conexão mútua por convite:', e.message);
     }
-  } else {
-    localStore.connections.set(`${kSender}->${kReceiver}`, { fromIdentity: sender, toIdentity: receiver, isMutual: true });
-    localStore.connections.set(`${kReceiver}->${kSender}`, { fromIdentity: receiver, toIdentity: sender, isMutual: true });
   }
 
   console.log(`[Convite] Convite ${inviteId} resgatado com sucesso por ${recAlias} (${receiver}) com ${invite.senderAlias} (${sender})!`);
@@ -805,9 +935,9 @@ app.post('/api/invites/redeem', async (req, res) => {
  * Landing Page Web do Convite (com suporte a Deep Link automático para o app PessoasAqui)
  */
 app.get('/invite', (req, res) => {
-  const { id, token, sender, alias, fallback } = req.query;
+  const { id, token, sender, alias, fallback, sig, exp } = req.query;
   const safeAlias = (alias || 'Alguém').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const queryParams = `id=${encodeURIComponent(id || '')}&token=${encodeURIComponent(token || '')}&sender=${encodeURIComponent(sender || '')}&alias=${encodeURIComponent(alias || '')}`;
+  const queryParams = `id=${encodeURIComponent(id || '')}&token=${encodeURIComponent(token || '')}&sender=${encodeURIComponent(sender || '')}&alias=${encodeURIComponent(alias || '')}&sig=${encodeURIComponent(sig || '')}&exp=${encodeURIComponent(exp || '')}`;
   const appDeepLink = `pessoasaqui://invite?${queryParams}`;
   const fallbackUrl = `https://pessoasaqui.onrender.com/invite?${queryParams}&fallback=true`;
   const chromeIntentLink = `intent://invite?${queryParams}#Intent;scheme=pessoasaqui;package=br.com.pessoasaqui;S.browser_fallback_url=${encodeURIComponent(fallbackUrl)};end`;

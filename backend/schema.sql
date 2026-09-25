@@ -68,6 +68,20 @@ CREATE TABLE IF NOT EXISTS recovery_authorizations (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 6.1. CONVITES CRIPTOGRAFADOS DE USO ÚNICO (Conexão Mútua à Distância)
+CREATE TABLE IF NOT EXISTS invites (
+    id VARCHAR(64) PRIMARY KEY,                  -- ID do convite (ex: inv_abc123)
+    token VARCHAR(64) NOT NULL,                  -- Token aleatório ou segredo
+    sender_identity VARCHAR(64) REFERENCES identities(id) ON DELETE CASCADE,
+    sender_alias VARCHAR(64),
+    signature TEXT,                              -- Assinatura criptográfica HMAC / Ed25519
+    expires_at TIMESTAMPTZ NOT NULL,             -- Validade estrita do convite
+    is_used BOOLEAN DEFAULT FALSE,               -- Uso único garantido
+    used_by VARCHAR(64) REFERENCES identities(id) ON DELETE SET NULL,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- 7. RELAY DE MENSAGENS E2EE (Criptografia Ponta a Ponta - Servidor não lê conteúdo)
 CREATE TABLE IF NOT EXISTS e2ee_messages (
     id VARCHAR(64) PRIMARY KEY,

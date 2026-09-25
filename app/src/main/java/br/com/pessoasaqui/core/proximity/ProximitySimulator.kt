@@ -310,9 +310,13 @@ class ProximitySimulator(
         val isImage = text.startsWith("[IMAGE:")
         val isDoc = text.startsWith("[DOC:")
 
-        val duration = if (isAudio) {
-            text.substringAfter("[AUDIO:").substringBefore("]").toIntOrNull() ?: 3
-        } else 0
+        val (duration, audioBase64) = if (isAudio) {
+            val content = text.removePrefix("[AUDIO:").removeSuffix("]")
+            val parts = content.split(":", limit = 2)
+            val dur = parts.getOrNull(0)?.toIntOrNull() ?: 3
+            val b64 = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+            Pair(dur, b64)
+        } else Pair(0, null)
 
         val (docName, docSize, docBase64) = if (isDoc) {
             val parts = text.removePrefix("[DOC:").removeSuffix("]").split(":", limit = 3)
@@ -349,7 +353,7 @@ class ProximitySimulator(
             isFromMe = false,
             messageType = finalType,
             audioDurationSeconds = duration,
-            mediaBase64 = imageBase64 ?: docBase64,
+            mediaBase64 = imageBase64 ?: docBase64 ?: audioBase64,
             fileName = docName,
             fileSizeBytes = docSize
         )
@@ -360,7 +364,13 @@ class ProximitySimulator(
         _privateChats.value = updatedMap
     }
 
-    fun sendAudioMessage(recipientId: String, durationSeconds: Int, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
+    fun sendAudioMessage(
+        recipientId: String,
+        durationSeconds: Int,
+        myAlias: String,
+        messageId: String = UUID.randomUUID().toString(),
+        audioBase64: String? = null
+    ) {
         val cleanId = recipientId.removePrefix("peer-")
         val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: emptyList()
         if (currentList.any { it.id == messageId }) return
@@ -374,7 +384,8 @@ class ProximitySimulator(
             isEncrypted = true,
             isFromMe = true,
             messageType = MessageType.AUDIO,
-            audioDurationSeconds = durationSeconds
+            audioDurationSeconds = durationSeconds,
+            mediaBase64 = audioBase64
         )
 
         val updatedMap = _privateChats.value.toMutableMap()

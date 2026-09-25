@@ -12,6 +12,7 @@ import android.os.ParcelUuid
 import android.util.Log
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.UserIntent
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,6 +40,9 @@ class BleManager(
 
     private val _realDiscoveredPeers = MutableStateFlow<Map<String, NearbyPerson>>(emptyMap())
     val realDiscoveredPeers: StateFlow<Map<String, NearbyPerson>> = _realDiscoveredPeers.asStateFlow()
+
+    // Histórico de RSSI suavizado por identidade (filtro EMA contra jitter e oscilação)
+    private val peerRssiHistory = java.util.concurrent.ConcurrentHashMap<String, Double>()
 
     private var advertiseCallback: AdvertiseCallback? = null
     private var scanCallback: ScanCallback? = null
@@ -256,15 +260,6 @@ class BleManager(
             return
         }
 
-        val rssi = result.rssi
-        val distance = distanceEstimator.estimateDistanceMeters(rssi)
-
-        // Regra de Proximidade Física Estrita (10 metros):
-        // Se a distância estimada ultrapassar 10 metros, descarta imediatamente!
-        if (!distanceEstimator.isWithin10Meters(distance)) {
-            return
-        }
-
         var identityHash = ""
         var intent = UserIntent.QUERO_CONVERSAR
         var peerAlias: String? = null
@@ -302,6 +297,26 @@ class BleManager(
         }
         if (!peerAlias.isNullOrBlank() && !lastAlias.isNullOrBlank() && peerAlias.equals(lastAlias, ignoreCase = true)) {
             return
+        }
+
+        // Suavização do RSSI por aparelho via EMA (Exponential Moving Average):
+        // Elimina oscilações instantâneas de radiofrequência que faziam contatos saltarem de posição
+        val rawRssi = result.rssi
+        val prevRssi = peerRssiHistory[identityHash]
+        val smoothedRssi = distanceEstimator.smoothRssi(rawRssi, prevRssi)
+        peerRssiHistory[identityHash] = smoothedRssi
+
+        val distance = distanceEstimator.estimateDistanceMeters(smoothedRssi.roundToInt())
+
+        // Regra de Proximidade Física Estrita (10 metros):
+        // Se a distância estimada ultrapassar 10 metros pelo sinal suavizado, descarta
+        if (!distanceEstimator.isWithin10Meters(distance)) {
+            return
+        }
+
+        // Limpeza de cache de sinal se acumular mais de 300 aparelhos
+        if (peerRssiHistory.size > 300) {
+            peerRssiHistory.keys.take(50).forEach { peerRssiHistory.remove(it) }
         }
 
         val finalAlias = if (!peerAlias.isNullOrBlank()) peerAlias else "Pessoa Próxima #${identityHash.take(4)}"

@@ -40,6 +40,7 @@ fun ConversationsTab(
     onOpenChat: (NearbyPerson) -> Unit,
     onToggleMarkPerson: (String) -> Unit = {},
     onClearLocalMessages: () -> Unit = {},
+    isCreatingInvite: Boolean = false,
     onCreateInviteLink: () -> Unit = {},
     onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null
 ) {
@@ -490,6 +491,7 @@ fun ConversationsTab(
                 ) {
                     Button(
                         onClick = onCreateInviteLink,
+                        enabled = !isCreatingInvite,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -498,17 +500,31 @@ fun ConversationsTab(
                         ),
                         border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.5f))
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Criar Convite",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
+                        if (isCreatingInvite) {
+                            CircularProgressIndicator(
+                                color = RadarCyan,
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Criando...",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Criar Convite",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
                     }
 
                     Button(

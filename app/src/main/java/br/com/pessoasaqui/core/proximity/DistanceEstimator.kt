@@ -36,6 +36,33 @@ class DistanceEstimator(
     }
 
     /**
+     * Aplica filtro de Suavização Exponencial (EMA - Exponential Moving Average) no RSSI.
+     * Elimina ruídos de rádio e oscilações bruscas instantâneas que causavam
+     * a troca descontrolada de posições no radar.
+     */
+    fun smoothRssi(currentRssi: Int, previousRssi: Double?): Double {
+        if (previousRssi == null || previousRssi == 0.0) return currentRssi.toDouble()
+        val alpha = 0.25 // Peso para novas leituras (suavização suave e responsiva)
+        return (alpha * currentRssi) + ((1.0 - alpha) * previousRssi)
+    }
+
+    /**
+     * Retorna a zona de proximidade física para agrupamento estável:
+     * 0 = Imediato (< 2.5m)
+     * 1 = Próximo (2.5m a 6.0m)
+     * 2 = Alcance (6.0m a 10.0m)
+     * 3 = Fora do limite (> 10.0m)
+     */
+    fun getProximityZone(distanceMeters: Double): Int {
+        return when {
+            distanceMeters < 2.5 -> 0
+            distanceMeters < 6.0 -> 1
+            distanceMeters <= BleConstants.MAX_DISCOVERY_DISTANCE_METERS -> 2
+            else -> 3
+        }
+    }
+
+    /**
      * Gera o rótulo amigável e preservador de privacidade para a interface.
      */
     fun getProximityLabel(distanceMeters: Double): String {

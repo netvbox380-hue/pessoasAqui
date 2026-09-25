@@ -29,7 +29,9 @@ data class IncomingInvite(
     val inviteId: String,
     val token: String,
     val senderIdentity: String,
-    val senderAlias: String
+    val senderAlias: String,
+    val signature: String? = null,
+    val expiresAt: Long? = null
 )
 
 class MainActivity : ComponentActivity() {
@@ -71,13 +73,17 @@ class MainActivity : ComponentActivity() {
         val token = uri.getQueryParameter("token")
         val sender = uri.getQueryParameter("sender") ?: uri.getQueryParameter("senderIdentity")
         val alias = uri.getQueryParameter("alias") ?: uri.getQueryParameter("senderAlias") ?: "Usuário"
+        val sig = uri.getQueryParameter("sig") ?: uri.getQueryParameter("signature")
+        val exp = uri.getQueryParameter("exp")?.toLongOrNull() ?: uri.getQueryParameter("expiresAt")?.toLongOrNull()
 
         if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
             incomingInvite.value = IncomingInvite(
                 inviteId = id.trim(),
                 token = token.trim(),
                 senderIdentity = sender.trim(),
-                senderAlias = alias.trim()
+                senderAlias = alias.trim(),
+                signature = sig?.trim(),
+                expiresAt = exp
             )
         }
     }
@@ -196,8 +202,8 @@ fun PessoasAquiNavHost(
                 onStartCall = { targetPerson, isVideo ->
                     repository.startCall(targetPerson, isVideo)
                 },
-                onSendAudioMessage = { targetPerson, duration ->
-                    repository.sendAudioMessage(targetPerson.technicalIdentityHash.ifBlank { targetPerson.id }, duration)
+                onSendAudioMessage = { targetPerson, duration, audioBase64 ->
+                    repository.sendAudioMessage(targetPerson.technicalIdentityHash.ifBlank { targetPerson.id }, duration, audioBase64)
                 },
                 onSendImageMessage = { targetPerson, base64 ->
                     repository.sendImageMessage(targetPerson.technicalIdentityHash.ifBlank { targetPerson.id }, base64)
@@ -266,7 +272,8 @@ fun PessoasAquiNavHost(
             onAnswer = { repository.answerCall() },
             onEnd = { repository.endCall() },
             onToggleMute = { repository.toggleCallMute() },
-            onToggleCamera = { repository.toggleCallCamera() }
+            onToggleCamera = { repository.toggleCallCamera() },
+            onToggleSpeakerphone = { repository.toggleCallSpeakerphone() }
         )
     }
 
@@ -336,7 +343,9 @@ fun PessoasAquiNavHost(
                             inviteId = invite.inviteId,
                             token = invite.token,
                             senderIdentity = invite.senderIdentity,
-                            senderAlias = invite.senderAlias
+                            senderAlias = invite.senderAlias,
+                            signature = invite.signature,
+                            expiresAt = invite.expiresAt
                         ) { success, msg, peer ->
                             isRedeeming = false
                             if (success && peer != null) {

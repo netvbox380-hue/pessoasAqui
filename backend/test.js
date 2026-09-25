@@ -203,9 +203,78 @@ async function runTests() {
     assert.strictEqual(revocationMsg.type, 'SESSION_REVOKED');
     console.log('✅ Regra 18 cumprida: Dispositivo antigo revogado em tempo real via WebSocket!');
 
-    // Fecha WebSockets
-    wsAliceOld.close();
-    wsBob.close();
+    try { wsAliceOld.close(); } catch (_) {}
+    try { wsBob.close(); } catch (_) {}
+
+    // -------------------------------------------------------------
+    // Teste 7: Convite Criptografado de Uso Único (Conexão Mútua à Distância)
+    // -------------------------------------------------------------
+    console.log('\n--- Teste 7: Convite Criptografado de Uso Único ---');
+    const userC = {
+      identityHash: 'hash-charlie-1122334455667788',
+      publicKeyEd25519: 'ed25519-charlie-pubkey',
+      pin: '9900',
+      alias: 'Charlie'
+    };
+    await postJson('/api/identities/register', userC);
+
+    // Charlie gera convite criptografado
+    const createInviteRes = await postJson('/api/invites/create', {
+      senderIdentity: userC.identityHash,
+      senderAlias: userC.alias
+    });
+    assert.strictEqual(createInviteRes.status, 200);
+    assert.ok(createInviteRes.json.inviteId.startsWith('inv_'));
+    assert.ok(createInviteRes.json.token);
+    assert.ok(createInviteRes.json.signature, 'Convite deve possuir assinatura criptográfica HMAC');
+    assert.ok(createInviteRes.json.inviteUrl.includes('&sig='));
+    const { inviteId, token, signature, expiresAt } = createInviteRes.json;
+    console.log(`✅ Convite gerado com assinatura criptográfica: ${inviteId}`);
+
+    // Tentativa 1: Charlie tenta resgatar o próprio convite (deve falhar 400)
+    const selfRedeem = await postJson('/api/invites/redeem', {
+      inviteId,
+      token,
+      receiverIdentity: userC.identityHash,
+      receiverAlias: userC.alias
+    });
+    assert.strictEqual(selfRedeem.status, 400);
+    console.log('✅ Bloqueio de auto-resgate validado.');
+
+    // Tentativa 2: Token adulterado (deve falhar 403)
+    const badTokenRedeem = await postJson('/api/invites/redeem', {
+      inviteId,
+      token: 'TOKEN_ADULTERADO',
+      receiverIdentity: userA.identityHash,
+      receiverAlias: userA.alias
+    });
+    assert.strictEqual(badTokenRedeem.status, 403);
+    console.log('✅ Rejeição de token adulterado validada.');
+
+    // Tentativa 3: Alice resgata o convite legitimamente
+    const redeemRes = await postJson('/api/invites/redeem', {
+      inviteId,
+      token,
+      receiverIdentity: userA.identityHash,
+      receiverAlias: userA.alias,
+      senderIdentity: userC.identityHash,
+      senderAlias: userC.alias,
+      signature,
+      expiresAt
+    });
+    assert.strictEqual(redeemRes.status, 200);
+    assert.strictEqual(redeemRes.json.success, true);
+    console.log('✅ Convite resgatado e conexão mútua à distância estabelecida com sucesso.');
+
+    // Tentativa 4: Segundo resgate do mesmo convite (deve falhar 410 Gone - Uso Único)
+    const secondRedeem = await postJson('/api/invites/redeem', {
+      inviteId,
+      token,
+      receiverIdentity: userB.identityHash,
+      receiverAlias: userB.alias
+    });
+    assert.strictEqual(secondRedeem.status, 410);
+    console.log('✅ Regra de Uso Único estrito validada (reutilização rejeitada com 410).');
 
     console.log('\n🎉 TODOS OS TESTES DO BACKEND PASSARAM COM 100% DE SUCESSO!\n');
   } finally {

@@ -35,6 +35,7 @@ fun MainScreen(
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var tempAliasInput by remember { mutableStateOf("") }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
+    var isCreatingInvite by remember { mutableStateOf(false) }
 
     val people by repository.discoveredPeople.collectAsState()
     val offers by repository.localOffers.collectAsState()
@@ -312,35 +313,69 @@ fun MainScreen(
                         onClearLocalMessages = {
                             repository.clearLocalMessages()
                         },
+                        isCreatingInvite = isCreatingInvite,
                         onCreateInviteLink = {
-                            repository.createOneTimeInviteLink { url ->
-                                if (url != null) {
-                                    val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                        putExtra(android.content.Intent.EXTRA_SUBJECT, "Convite Seguro - PessoasAqui")
-                                        putExtra(
-                                            android.content.Intent.EXTRA_TEXT,
-                                            "Olá! Estou te convidando para nos conectarmos no PessoasAqui com conversa privada, chamadas de voz e vídeo criptografadas à distância.\n\nToque no link abaixo para aceitar meu convite de conexão mútua (link seguro de uso único):\n$url"
-                                        )
-                                        type = "text/plain"
+                            if (!isCreatingInvite) {
+                                isCreatingInvite = true
+                                repository.createOneTimeInviteLink { url ->
+                                    isCreatingInvite = false
+                                    if (url != null) {
+                                        val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                            putExtra(android.content.Intent.EXTRA_SUBJECT, "Convite Seguro - PessoasAqui")
+                                            putExtra(
+                                                android.content.Intent.EXTRA_TEXT,
+                                                "Olá! Estou te convidando para nos conectarmos no PessoasAqui com conversa privada, chamadas de voz e vídeo criptografadas à distância.\n\nToque no link abaixo para aceitar meu convite de conexão mútua (link seguro de uso único):\n$url"
+                                            )
+                                            type = "text/plain"
+                                        }
+                                        val shareIntent = android.content.Intent.createChooser(sendIntent, "Compartilhar Convite Seguro")
+                                        context.startActivity(shareIntent)
                                     }
-                                    val shareIntent = android.content.Intent.createChooser(sendIntent, "Compartilhar Convite Seguro")
-                                    context.startActivity(shareIntent)
                                 }
                             }
                         },
                         onRedeemInviteLink = { rawInput, onResult ->
-                            val parsedUri = try { android.net.Uri.parse(rawInput.trim()) } catch (_: Exception) { null }
-                            val id = parsedUri?.getQueryParameter("id") ?: parsedUri?.getQueryParameter("inviteId")
+                            val text = rawInput.trim()
+
+                            // Extrai a URL caso o usuário tenha colado a mensagem completa do WhatsApp ou outros apps
+                            val urlPattern = Regex("""(https?://[^\s]+|pessoasaqui://[^\s]+)""")
+                            val matchedUrl = urlPattern.find(text)?.value ?: text
+                            val parsedUri = try { android.net.Uri.parse(matchedUrl) } catch (_: Exception) { null }
+
+                            val id = parsedUri?.getQueryParameter("id")
+                                ?: parsedUri?.getQueryParameter("inviteId")
+                                ?: Regex("""[?&](?:id|inviteId)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
+
                             val token = parsedUri?.getQueryParameter("token")
-                            val sender = parsedUri?.getQueryParameter("sender") ?: parsedUri?.getQueryParameter("senderIdentity")
-                            val alias = parsedUri?.getQueryParameter("alias") ?: parsedUri?.getQueryParameter("senderAlias") ?: "Usuário"
+                                ?: Regex("""[?&]token=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
+
+                            val sender = parsedUri?.getQueryParameter("sender")
+                                ?: parsedUri?.getQueryParameter("senderIdentity")
+                                ?: Regex("""[?&](?:sender|senderIdentity)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
+
+                            val rawAlias = parsedUri?.getQueryParameter("alias")
+                                ?: parsedUri?.getQueryParameter("senderAlias")
+                                ?: Regex("""[?&](?:alias|senderAlias)=([^&\s]+)""").find(text)?.groupValues?.get(1)
+                            val alias = rawAlias?.let {
+                                try { java.net.URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it }
+                            } ?: "Usuário"
+
+                            val sig = parsedUri?.getQueryParameter("sig")
+                                ?: parsedUri?.getQueryParameter("signature")
+                                ?: Regex("""[?&](?:sig|signature)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
+
+                            val exp = parsedUri?.getQueryParameter("exp")?.toLongOrNull()
+                                ?: parsedUri?.getQueryParameter("expiresAt")?.toLongOrNull()
+                                ?: Regex("""[?&](?:exp|expiresAt)=([0-9]+)""").find(text)?.groupValues?.get(1)?.toLongOrNull()
 
                             if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
                                 repository.redeemOneTimeInvite(
                                     inviteId = id.trim(),
                                     token = token.trim(),
                                     senderIdentity = sender.trim(),
-                                    senderAlias = alias.trim()
+                                    senderAlias = alias.trim(),
+                                    signature = sig?.trim(),
+                                    expiresAt = exp
                                 ) { success, msg, peer ->
                                     onResult(success, msg, peer)
                                 }

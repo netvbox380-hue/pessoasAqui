@@ -23,9 +23,9 @@ class PessoasAquiNetworkClient(
     var wsUrl: String = "wss://pessoasaqui.onrender.com"
 ) {
     private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(35, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
+        .writeTimeout(35, TimeUnit.SECONDS)
         .build()
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -251,10 +251,10 @@ class PessoasAquiNetworkClient(
                 try {
                     val obj = JSONObject(text)
                     when (obj.optString("type")) {
-                        "E2EE_MESSAGE_RECEIVED" -> {
+                        "E2EE_MESSAGE_RECEIVED", "E2EE_MESSAGE" -> {
                             val sender = obj.getString("senderHash")
                             val payload = obj.getString("ciphertextPayload")
-                            val iv = obj.getString("ivNonce")
+                            val iv = obj.optString("ivNonce", "")
                             val msgId = obj.optString("messageId", "")
                             onE2eeMessageReceived(sender, payload, iv, msgId)
                         }
@@ -443,7 +443,8 @@ class PessoasAquiNetworkClient(
         recipientHash: String,
         ciphertext: String,
         senderAlias: String,
-        messageId: String = java.util.UUID.randomUUID().toString()
+        messageId: String = java.util.UUID.randomUUID().toString(),
+        ivNonce: String = ""
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
@@ -451,7 +452,7 @@ class PessoasAquiNetworkClient(
                 put("recipientHash", recipientHash)
                 put("ciphertextPayload", ciphertext)
                 put("senderAlias", senderAlias)
-                put("ivNonce", java.util.UUID.randomUUID().toString().take(12))
+                put("ivNonce", if (ivNonce.isNotBlank()) ivNonce else java.util.UUID.randomUUID().toString().take(12))
                 put("messageId", messageId)
             }
             val request = Request.Builder()
@@ -645,6 +646,7 @@ class PessoasAquiNetworkClient(
                         CreateInviteResponse(
                             inviteId = obj.getString("inviteId"),
                             token = obj.getString("token"),
+                            signature = obj.optString("signature", ""),
                             inviteUrl = obj.getString("inviteUrl"),
                             senderIdentity = obj.getString("senderIdentity"),
                             senderAlias = obj.getString("senderAlias"),
@@ -668,7 +670,11 @@ class PessoasAquiNetworkClient(
         inviteId: String,
         token: String,
         receiverIdentity: String,
-        receiverAlias: String
+        receiverAlias: String,
+        senderIdentity: String? = null,
+        senderAlias: String? = null,
+        signature: String? = null,
+        expiresAt: Long? = null
     ): Result<RedeemInviteResponse> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
@@ -676,6 +682,10 @@ class PessoasAquiNetworkClient(
                 put("token", token)
                 put("receiverIdentity", receiverIdentity)
                 put("receiverAlias", receiverAlias)
+                if (!senderIdentity.isNullOrBlank()) put("senderIdentity", senderIdentity)
+                if (!senderAlias.isNullOrBlank()) put("senderAlias", senderAlias)
+                if (!signature.isNullOrBlank()) put("signature", signature)
+                if (expiresAt != null && expiresAt > 0) put("expiresAt", expiresAt)
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/invites/redeem")
@@ -688,10 +698,10 @@ class PessoasAquiNetworkClient(
                     val obj = JSONObject(bodyStr)
                     Result.success(
                         RedeemInviteResponse(
-                            senderIdentity = obj.getString("senderIdentity"),
-                            senderAlias = obj.getString("senderAlias"),
-                            receiverIdentity = obj.getString("receiverIdentity"),
-                            receiverAlias = obj.getString("receiverAlias"),
+                            senderIdentity = obj.optString("senderIdentity", senderIdentity ?: ""),
+                            senderAlias = obj.optString("senderAlias", senderAlias?.ifBlank { "Conexão Convidada" } ?: "Conexão Convidada"),
+                            receiverIdentity = obj.optString("receiverIdentity", receiverIdentity),
+                            receiverAlias = obj.optString("receiverAlias", receiverAlias),
                             message = obj.optString("message", "Conexão mútua estabelecida com sucesso!")
                         )
                     )
@@ -717,6 +727,7 @@ class PessoasAquiNetworkClient(
 data class CreateInviteResponse(
     val inviteId: String,
     val token: String,
+    val signature: String = "",
     val inviteUrl: String,
     val senderIdentity: String,
     val senderAlias: String,

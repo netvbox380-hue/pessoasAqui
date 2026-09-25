@@ -1,11 +1,15 @@
 package br.com.pessoasaqui.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import br.com.pessoasaqui.core.media.VoiceNoteManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
@@ -98,7 +102,7 @@ fun ChatDetailScreen(
     onBack: () -> Unit,
     onSendMessage: (String) -> Unit,
     onStartCall: (NearbyPerson, Boolean) -> Unit = { _, _ -> },
-    onSendAudioMessage: (NearbyPerson, Int) -> Unit = { _, _ -> },
+    onSendAudioMessage: (NearbyPerson, Int, String?) -> Unit = { _, _, _ -> },
     onSendImageMessage: (NearbyPerson, String) -> Unit = { _, _ -> },
     onSendDocumentMessage: (NearbyPerson, String, String, Long) -> Unit = { _, _, _, _ -> },
     onToggleMarkPerson: (NearbyPerson) -> Unit = { _ -> },
@@ -117,6 +121,41 @@ fun ChatDetailScreen(
     var isRecordingAudio by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableStateOf(0) }
     var playingAudioId by remember { mutableStateOf<String?>(null) }
+
+    val voiceNoteManager = remember { VoiceNoteManager() }
+    DisposableEffect(Unit) {
+        onDispose {
+            voiceNoteManager.stopRecording()
+            voiceNoteManager.stopPlayback()
+        }
+    }
+
+    val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            val started = voiceNoteManager.startRecording(context)
+            if (started) isRecordingAudio = true
+        }
+    }
+
+    var pendingCallType by remember { mutableStateOf<Boolean?>(null) } // true for video, false for voice
+    val callPermissionsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissionsMap ->
+        val audioGranted = permissionsMap[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val isVideo = pendingCallType ?: false
+        val cameraGranted = if (isVideo) {
+            permissionsMap[Manifest.permission.CAMERA] == true ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        } else true
+
+        if (audioGranted && cameraGranted) {
+            onStartCall(person, isVideo)
+        }
+        pendingCallType = null
+    }
 
     val isMutualOrFamily = person.isMutualConnection || person.isFamily
     val listState = rememberLazyListState()
@@ -228,7 +267,13 @@ fun ChatDetailScreen(
                     // Ícone de Chamada de Voz
                     IconButton(onClick = {
                         if (isMutualOrFamily) {
-                            onStartCall(person, false)
+                            val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                            if (hasAudio) {
+                                onStartCall(person, false)
+                            } else {
+                                pendingCallType = false
+                                callPermissionsLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                            }
                         } else {
                             restrictedFeatureDialog = "Chamada de Voz"
                         }
@@ -255,7 +300,14 @@ fun ChatDetailScreen(
                     // Ícone de Chamada de Vídeo
                     IconButton(onClick = {
                         if (isMutualOrFamily) {
-                            onStartCall(person, true)
+                            val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                            val hasCamera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                            if (hasAudio && hasCamera) {
+                                onStartCall(person, true)
+                            } else {
+                                pendingCallType = true
+                                callPermissionsLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA))
+                            }
                         } else {
                             restrictedFeatureDialog = "Chamada de Vídeo"
                         }
@@ -529,13 +581,26 @@ fun ChatDetailScreen(
                                             IconButton(
                                                 onClick = {
                                                     if (isPlaying) {
+                                                        voiceNoteManager.stopPlayback()
                                                         playingAudioId = null
                                                     } else {
                                                         playingAudioId = msg.id
-                                                        scope.launch {
-                                                            delay((msg.audioDurationSeconds.coerceAtLeast(2) * 1000).toLong())
-                                                            if (playingAudioId == msg.id) {
+                                                        if (!msg.mediaBase64.isNullOrBlank()) {
+                                                            val ok = voiceNoteManager.playVoiceNote(context, msg.id, msg.mediaBase64) {
                                                                 playingAudioId = null
+                                                            }
+                                                            if (!ok) {
+                                                                scope.launch {
+                                                                    delay((msg.audioDurationSeconds.coerceAtLeast(2) * 1000).toLong())
+                                                                    if (playingAudioId == msg.id) playingAudioId = null
+                                                                }
+                                                            }
+                                                        } else {
+                                                            scope.launch {
+                                                                delay((msg.audioDurationSeconds.coerceAtLeast(2) * 1000).toLong())
+                                                                if (playingAudioId == msg.id) {
+                                                                    playingAudioId = null
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -732,6 +797,7 @@ fun ChatDetailScreen(
                                 onClick = {
                                     isRecordingAudio = false
                                     recordingSeconds = 0
+                                    voiceNoteManager.cancelRecording()
                                 }
                             ) {
                                 Text("Cancelar", color = AlertRed)
@@ -739,10 +805,15 @@ fun ChatDetailScreen(
 
                             Button(
                                 onClick = {
-                                    val finalDur = recordingSeconds.coerceAtLeast(2)
+                                    val finalDur = recordingSeconds.coerceAtLeast(1)
                                     isRecordingAudio = false
                                     recordingSeconds = 0
-                                    onSendAudioMessage(person, finalDur)
+                                    val recorded = voiceNoteManager.stopRecording()
+                                    if (recorded != null) {
+                                        onSendAudioMessage(person, recorded.first, recorded.second)
+                                    } else {
+                                        onSendAudioMessage(person, finalDur, null)
+                                    }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = RadarCyan)
                             ) {
@@ -822,7 +893,13 @@ fun ChatDetailScreen(
                             IconButton(
                                 onClick = {
                                     if (isMutualOrFamily) {
-                                        isRecordingAudio = true
+                                        val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                                        if (hasAudio) {
+                                            val started = voiceNoteManager.startRecording(context)
+                                            if (started) isRecordingAudio = true
+                                        } else {
+                                            recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        }
                                     } else {
                                         restrictedFeatureDialog = "Mensagem de Áudio"
                                     }

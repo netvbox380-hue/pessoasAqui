@@ -36,12 +36,16 @@ fun PermissionScreen(
                 Manifest.permission.BLUETOOTH_ADVERTISE,
                 Manifest.permission.BLUETOOTH_CONNECT,
                 Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.CAMERA,
+                Manifest.permission.RECORD_AUDIO
             )
         } else {
             arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.CAMERA,
+                Manifest.permission.RECORD_AUDIO
             )
         }
     }
@@ -131,6 +135,20 @@ fun PermissionScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
                             text = "Apenas quem está a até 10 metros entra no seu radar.",
+                            style = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary)
+                        )
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Videocam,
+                            contentDescription = null,
+                            tint = FamilyPurple,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Microfone e Câmera exclusivos para chamadas e áudios criptografados (E2EE).",
                             style = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary)
                         )
                     }

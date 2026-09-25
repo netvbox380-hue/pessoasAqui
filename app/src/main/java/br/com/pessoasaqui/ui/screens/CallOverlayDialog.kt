@@ -1,6 +1,9 @@
 package br.com.pessoasaqui.ui.screens
 
+import android.graphics.BitmapFactory
+import android.util.Base64
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -16,6 +19,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -31,9 +36,16 @@ fun CallOverlayDialog(
     onAnswer: () -> Unit,
     onEnd: () -> Unit,
     onToggleMute: () -> Unit,
-    onToggleCamera: () -> Unit
+    onToggleCamera: () -> Unit,
+    onToggleSpeakerphone: () -> Unit = {}
 ) {
     var callSeconds by remember { mutableStateOf(0) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val answerPermissionsLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
+        onAnswer()
+    }
 
     LaunchedEffect(callState.isConnected) {
         if (callState.isConnected) {
@@ -167,13 +179,22 @@ fun CallOverlayDialog(
                         )
                     )
 
-                    // Se for chamada de vídeo conectada, exibe tela de vídeo simulada
+                    // Se for chamada de vídeo conectada, exibe tela de vídeo real ou indicador
                     if (callState.isVideo && callState.isConnected) {
                         Spacer(modifier = Modifier.height(16.dp))
+                        val remoteBitmap = remember(callState.remoteVideoFrameBase64) {
+                            try {
+                                if (!callState.remoteVideoFrameBase64.isNullOrBlank()) {
+                                    val decoded = Base64.decode(callState.remoteVideoFrameBase64, Base64.DEFAULT)
+                                    BitmapFactory.decodeByteArray(decoded, 0, decoded.size)?.asImageBitmap()
+                                } else null
+                            } catch (_: Exception) { null }
+                        }
+
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(200.dp)
+                                .height(220.dp)
                                 .clip(RoundedCornerShape(16.dp))
                                 .border(1.dp, RadarCyan.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
                             color = DarkCard
@@ -182,7 +203,28 @@ fun CallOverlayDialog(
                                 modifier = Modifier.fillMaxSize(),
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (callState.isCameraOn) {
+                                if (remoteBitmap != null) {
+                                    Image(
+                                        bitmap = remoteBitmap,
+                                        contentDescription = "Vídeo de ${callState.peerAlias}",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    // Badge discreto de transmissão segura
+                                    Surface(
+                                        color = DeepBlack.copy(alpha = 0.6f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomStart)
+                                            .padding(8.dp)
+                                    ) {
+                                        Text(
+                                            text = "● Ao Vivo • ${callState.peerAlias}",
+                                            style = MaterialTheme.typography.labelSmall.copy(color = EmeraldGreen),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                } else if (callState.isCameraOn) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                         Icon(
                                             imageVector = Icons.Default.Videocam,
@@ -192,7 +234,7 @@ fun CallOverlayDialog(
                                         )
                                         Spacer(modifier = Modifier.height(8.dp))
                                         Text(
-                                            text = "Transmissão de Vídeo Segura Ativa",
+                                            text = "Câmera ativa • Conectando transmissão segura...",
                                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                                         )
                                     }
@@ -235,7 +277,29 @@ fun CallOverlayDialog(
 
                         // Botão Atender
                         IconButton(
-                            onClick = onAnswer,
+                            onClick = {
+                                val hasAudio = androidx.core.content.ContextCompat.checkSelfPermission(
+                                    context,
+                                    android.Manifest.permission.RECORD_AUDIO
+                                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                val hasCamera = if (callState.isVideo) {
+                                    androidx.core.content.ContextCompat.checkSelfPermission(
+                                        context,
+                                        android.Manifest.permission.CAMERA
+                                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                } else true
+
+                                if (hasAudio && hasCamera) {
+                                    onAnswer()
+                                } else {
+                                    val perms = if (callState.isVideo) {
+                                        arrayOf(android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.CAMERA)
+                                    } else {
+                                        arrayOf(android.Manifest.permission.RECORD_AUDIO)
+                                    }
+                                    answerPermissionsLauncher.launch(perms)
+                                }
+                            },
                             modifier = Modifier
                                 .size(64.dp)
                                 .clip(CircleShape)
@@ -290,7 +354,7 @@ fun CallOverlayDialog(
                             )
                         }
 
-                        // Botão Câmera (se chamada de vídeo) ou Alto-falante
+                        // Botão Câmera (se chamada de vídeo)
                         if (callState.isVideo) {
                             IconButton(
                                 onClick = onToggleCamera,
@@ -306,21 +370,22 @@ fun CallOverlayDialog(
                                     modifier = Modifier.size(26.dp)
                                 )
                             }
-                        } else {
-                            IconButton(
-                                onClick = { /* Alterna viva-voz */ },
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(CircleShape)
-                                    .background(DarkCardElevated)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.VolumeUp,
-                                    contentDescription = "Alto-falante",
-                                    tint = TextPrimary,
-                                    modifier = Modifier.size(26.dp)
-                                )
-                            }
+                        }
+
+                        // Botão Alto-falante / Viva-Voz
+                        IconButton(
+                            onClick = onToggleSpeakerphone,
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(if (callState.isSpeakerphoneOn) RadarCyan else DarkCardElevated)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VolumeUp,
+                                contentDescription = "Alto-falante",
+                                tint = if (callState.isSpeakerphoneOn) DeepBlack else TextPrimary,
+                                modifier = Modifier.size(26.dp)
+                            )
                         }
                     }
                 }

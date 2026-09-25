@@ -4,9 +4,13 @@ import android.content.Context
 import android.util.Log
 import br.com.pessoasaqui.core.crypto.CryptoIdentityManager
 import br.com.pessoasaqui.core.crypto.DeviceSessionManager
+import br.com.pessoasaqui.core.crypto.E2eeCryptoEngine
 import br.com.pessoasaqui.core.crypto.PinSecurityManager
+import br.com.pessoasaqui.core.media.CallMediaEngine
+import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.moderation.ContentModerationManager
 import br.com.pessoasaqui.core.proximity.BleManager
+import br.com.pessoasaqui.core.proximity.DistanceEstimator
 import br.com.pessoasaqui.core.proximity.ProximitySimulator
 import br.com.pessoasaqui.data.remote.PessoasAquiNetworkClient
 import br.com.pessoasaqui.data.remote.RemotePeer
@@ -22,6 +26,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,10 +47,31 @@ class PessoasAquiRepository(
     val proximitySimulator: ProximitySimulator = ProximitySimulator(),
     val moderationManager: ContentModerationManager = ContentModerationManager(),
     val bleManager: BleManager? = null,
-    val networkClient: PessoasAquiNetworkClient = PessoasAquiNetworkClient()
+    val networkClient: PessoasAquiNetworkClient = PessoasAquiNetworkClient(),
+    val distanceEstimator: DistanceEstimator = DistanceEstimator()
 ) {
     private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.IO)
+
+    val voiceNoteManager = VoiceNoteManager()
+
+    val callMediaEngine: CallMediaEngine? = context?.let { ctx ->
+        CallMediaEngine(
+            context = ctx,
+            onSendAudioFrame = { b64Frame ->
+                val peer = _activeCallState.value?.peerHash
+                if (!peer.isNullOrBlank()) {
+                    sendPrivateMessage(peer, "[CALL_AUDIO_FRAME:$b64Frame]")
+                }
+            },
+            onSendVideoFrame = { b64Frame ->
+                val peer = _activeCallState.value?.peerHash
+                if (!peer.isNullOrBlank()) {
+                    sendPrivateMessage(peer, "[CALL_VIDEO_FRAME:$b64Frame]")
+                }
+            }
+        )
+    }
 
     // Estado do usuário atual neste aparelho persistido com SharedPreferences
     private val _isAgeVerified = MutableStateFlow(prefs?.getBoolean("is_age_verified", false) ?: false)
@@ -75,6 +101,7 @@ class PessoasAquiRepository(
 
     // Pessoas reais detectadas fisicamente via rádio BLE ou presença WebSocket
     private val _realDiscoveredPeople = MutableStateFlow<List<NearbyPerson>>(emptyList())
+    private var lastStablePeerOrder: List<String> = emptyList()
 
     // Conjuntos persistidos de marcações e conexões mútuas em SharedPreferences
     private val savedMarkedPeople = java.util.Collections.synchronizedSet(
@@ -95,6 +122,7 @@ class PessoasAquiRepository(
             ?.putStringSet("saved_marking_me_people", HashSet(savedMarkingMePeople))
             ?.putStringSet("saved_mutual_people", HashSet(savedMutualPeople))
             ?.apply()
+        saveSavedContactsToPrefs()
     }
 
     fun isPeerMarkedByMe(person: NearbyPerson): Boolean {
@@ -247,6 +275,63 @@ class PessoasAquiRepository(
         }
     }
 
+    private fun loadSavedContactsFromPrefs(): List<NearbyPerson> {
+        val jsonStr = prefs?.getString("saved_contacts_v2", null) ?: return emptyList()
+        return try {
+            val array = JSONArray(jsonStr)
+            val list = mutableListOf<NearbyPerson>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val id = cleanId(obj.getString("id"))
+                val alias = obj.optString("alias", "Contato")
+                val isMutual = obj.optBoolean("isMutual", true)
+                val isFamily = obj.optBoolean("isFamily", false)
+                val roleStr = obj.optString("familyRole", "")
+                val familyRole = if (roleStr.isNotBlank()) {
+                    try { FamilyRole.valueOf(roleStr) } catch (_: Exception) { null }
+                } else null
+                list.add(
+                    NearbyPerson(
+                        id = id,
+                        technicalIdentityHash = id,
+                        alias = alias,
+                        estimatedDistanceMeters = 500.0,
+                        proximityLabel = if (isFamily) "Família • Ilimitado" else "Conexão Mútua • Ilimitada",
+                        isMarkedByMe = true,
+                        isMarkingMe = true,
+                        isMutualConnection = isMutual,
+                        isFamily = isFamily,
+                        familyRole = familyRole,
+                        isPhotoVisible = true,
+                        lastSeenEpochMs = System.currentTimeMillis()
+                    )
+                )
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun saveSavedContactsToPrefs() {
+        try {
+            val array = JSONArray()
+            val saved = _realDiscoveredPeople.value.filter { it.isMutualConnection || it.isFamily || isPeerMutual(it) }
+            saved.forEach { person ->
+                val obj = JSONObject()
+                obj.put("id", cleanId(person.technicalIdentityHash.ifBlank { person.id }))
+                obj.put("alias", person.alias)
+                obj.put("isMutual", person.isMutualConnection)
+                obj.put("isFamily", person.isFamily)
+                obj.put("familyRole", person.familyRole?.name ?: "")
+                array.put(obj)
+            }
+            prefs?.edit()?.putString("saved_contacts_v2", array.toString())?.apply()
+        } catch (e: Exception) {
+            Log.e("PessoasAqui", "Erro ao salvar contatos mútuos", e)
+        }
+    }
+
     private fun handleRemoteOfferPublished(remoteOffer: OfferItem) {
         val myId = cleanId(cryptoIdentityManager.getTechnicalIdentity())
         val current = _realOffers.value.toMutableList()
@@ -285,6 +370,10 @@ class PessoasAquiRepository(
     val pendingFamilyRequest: StateFlow<Pair<NearbyPerson, FamilyRole>?> = _pendingFamilyRequest.asStateFlow()
 
     init {
+        val restoredContacts = loadSavedContactsFromPrefs()
+        if (restoredContacts.isNotEmpty()) {
+            _realDiscoveredPeople.value = restoredContacts.map { applyConnectionState(it) }
+        }
         updateUnifiedData()
 
         networkClient.onOfferPublished = { offer ->
@@ -308,7 +397,7 @@ class PessoasAquiRepository(
 
     private val processedMessageIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
-    private fun processIncomingPayload(senderHash: String, senderAlias: String, payload: String, messageId: String = "") {
+    private fun processIncomingPayload(senderHash: String, senderAlias: String, rawPayload: String, iv: String = "", messageId: String = "") {
         if (messageId.isNotBlank()) {
             if (processedMessageIds.contains(messageId)) return
             processedMessageIds.add(messageId)
@@ -317,8 +406,20 @@ class PessoasAquiRepository(
             }
         }
 
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
         val cleanSender = cleanId(senderHash)
+        // Decifra o payload E2EE se estiver protegido com AES-256-GCM
+        val payload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId)
+
         when {
+            payload.startsWith("[CALL_AUDIO_FRAME:") -> {
+                val b64 = payload.removePrefix("[CALL_AUDIO_FRAME:").removeSuffix("]")
+                callMediaEngine?.playRemoteAudioFrame(b64)
+            }
+            payload.startsWith("[CALL_VIDEO_FRAME:") -> {
+                val b64 = payload.removePrefix("[CALL_VIDEO_FRAME:").removeSuffix("]")
+                _activeCallState.value = _activeCallState.value?.copy(remoteVideoFrameBase64 = b64)
+            }
             payload.startsWith("[CALL_INIT:") -> {
                 val parts = payload.removePrefix("[CALL_INIT:").removeSuffix("]").split(":")
                 val isVideo = parts.getOrNull(0)?.toBoolean() ?: false
@@ -332,9 +433,14 @@ class PessoasAquiRepository(
                 )
             }
             payload == "[CALL_ACCEPT]" -> {
-                _activeCallState.value = _activeCallState.value?.copy(isConnected = true)
+                val current = _activeCallState.value
+                if (current != null) {
+                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+                    callMediaEngine?.startCallMedia(current.isVideo)
+                }
             }
             payload == "[CALL_END]" -> {
+                callMediaEngine?.stopCallMedia()
                 _activeCallState.value = null
             }
             payload.startsWith("[FAMILY_REQ:") -> {
@@ -600,7 +706,7 @@ class PessoasAquiRepository(
                     // 4. Busca mensagens pendentes na fila do servidor
                     val pendingResult = networkClient.fetchPendingMessages(myId)
                     pendingResult.getOrNull()?.forEach { pm ->
-                        processIncomingPayload(pm.senderHash, pm.senderAlias, pm.ciphertext, pm.messageId)
+                        processIncomingPayload(pm.senderHash, pm.senderAlias, pm.ciphertext, pm.ivNonce, pm.messageId)
                     }
 
                     // 5. Busca ofertas e divulgações de outros usuários próximos
@@ -632,33 +738,50 @@ class PessoasAquiRepository(
                             myIdentityHash = myId,
                             myAlias = myAlias,
                             myIntent = myIntent,
-                            onE2eeMessageReceived = { sender, payload, _, msgId ->
+                            onE2eeMessageReceived = { sender, payload, iv, msgId ->
                                 val cleanSender = cleanId(sender)
                                 val senderAlias = _realDiscoveredPeople.value.find { cleanId(it.id) == cleanSender || cleanId(it.technicalIdentityHash) == cleanSender }?.alias ?: "Pessoa Próxima"
-                                processIncomingPayload(cleanSender, senderAlias, payload, msgId)
+                                processIncomingPayload(cleanSender, senderAlias, payload, iv, msgId)
                             },
-                            onMutualConnection = { peerA, peerB ->
-                                val otherId = if (cleanId(peerA) == cleanId(myId)) cleanId(peerB) else cleanId(peerA)
-                                savedMutualPeople.add(otherId)
-                                savedMarkedPeople.add(otherId)
-                                savedMarkingMePeople.add(otherId)
+                            onMutualConnection = { partnerId, partnerAlias ->
+                                val cleanPartnerId = cleanId(partnerId)
+                                val resolvedAlias = partnerAlias.ifBlank { "Conexão Mútua" }
+                                savedMutualPeople.add(cleanPartnerId)
+                                savedMarkedPeople.add(cleanPartnerId)
+                                savedMarkingMePeople.add(cleanPartnerId)
                                 saveConnectionsToPrefs()
 
                                 val currentReal = _realDiscoveredPeople.value.toMutableList()
-                                val idx = currentReal.indexOfFirst { cleanId(it.id) == otherId || cleanId(it.technicalIdentityHash) == otherId }
+                                val idx = currentReal.indexOfFirst { cleanId(it.id) == cleanPartnerId || cleanId(it.technicalIdentityHash) == cleanPartnerId }
                                 if (idx != -1) {
                                     val p = currentReal[idx]
                                     currentReal[idx] = p.copy(
+                                        alias = if (p.alias.startsWith("Pessoa Próxima #") || p.alias.isBlank()) resolvedAlias else p.alias,
                                         isMarkedByMe = true,
                                         isMarkingMe = true,
                                         isMutualConnection = true,
                                         isPhotoVisible = true
                                     )
-                                    _realDiscoveredPeople.value = currentReal
-                                    updateUnifiedData()
+                                } else {
+                                    val newPerson = NearbyPerson(
+                                        id = cleanPartnerId,
+                                        technicalIdentityHash = cleanPartnerId,
+                                        alias = resolvedAlias,
+                                        estimatedDistanceMeters = 500.0,
+                                        proximityLabel = "Conexão Mútua • Ilimitada",
+                                        isMarkedByMe = true,
+                                        isMarkingMe = true,
+                                        isMutualConnection = true,
+                                        isPhotoVisible = true,
+                                        lastSeenEpochMs = System.currentTimeMillis()
+                                    )
+                                    currentReal.add(0, applyConnectionState(newPerson))
                                 }
+                                _realDiscoveredPeople.value = currentReal
+                                updateUnifiedData()
+                                saveSavedContactsToPrefs()
                                 proximitySimulator.receivePrivateMessage(
-                                    otherId,
+                                    cleanPartnerId,
                                     "Sistema",
                                     "✨ Conexão Mútua Estabelecida pelo Servidor! Comunicação à distância liberada.",
                                     UUID.randomUUID().toString()
@@ -724,22 +847,73 @@ class PessoasAquiRepository(
         }
     }
 
+    /**
+     * Algoritmo de Ordenação Estável com Histerese de Posição.
+     * Resolve a causa de aparelhos "ficarem doidos trocando de posição direto":
+     * - Contatos mútuos e família permanecem priorizados.
+     * - Dispositivos dentro da mesma faixa física (<2.5m, 2.5-6m, 6-10m)
+     *   MANTÊM a ordem visual anterior a menos que a variação de distância física
+     *   seja real e sustentada (>= 1.5 metros).
+     * - Suporta 200+ pessoas com estabilidade total e zero tremor.
+     */
+    fun sortWithHysteresis(peers: List<NearbyPerson>): List<NearbyPerson> {
+        val previousOrder = lastStablePeerOrder ?: emptyList()
+        val prevIndexMap = previousOrder.withIndex().associate { it.value to it.index }
+
+        val sorted = peers.sortedWith(Comparator { a, b ->
+            // 1. Conexões mútuas e familiares sempre têm prioridade no topo
+            val aPriority = if (a.isMutualConnection || a.isFamily) 1 else 0
+            val bPriority = if (b.isMutualConnection || b.isFamily) 1 else 0
+            if (aPriority != bPriority) {
+                return@Comparator bPriority.compareTo(aPriority)
+            }
+
+            // 2. Faixas de proximidade física (Imediato < 2.5m, Próximo 2.5m-6m, Alcance 6m-10m)
+            val zoneA = distanceEstimator.getProximityZone(a.estimatedDistanceMeters)
+            val zoneB = distanceEstimator.getProximityZone(b.estimatedDistanceMeters)
+            if (zoneA != zoneB) {
+                return@Comparator zoneA.compareTo(zoneB)
+            }
+
+            // 3. Aplicação de Histerese de Posição:
+            // Se ambos os contatos já estavam na lista anterior, preserva estritamente
+            // a ordem relativa anterior se a diferença entre eles for inferior a 1.5 metros.
+            val idA = cleanId(a.technicalIdentityHash.ifBlank { a.id })
+            val idB = cleanId(b.technicalIdentityHash.ifBlank { b.id })
+            val idxA = prevIndexMap[idA]
+            val idxB = prevIndexMap[idB]
+
+            if (idxA != null && idxB != null) {
+                val distanceDiff = kotlin.math.abs(a.estimatedDistanceMeters - b.estimatedDistanceMeters)
+                if (distanceDiff < 1.5) {
+                    return@Comparator idxA.compareTo(idxB)
+                }
+            }
+
+            // Variação física substancial ou novo contato: ordena por distância real
+            a.estimatedDistanceMeters.compareTo(b.estimatedDistanceMeters)
+        })
+
+        lastStablePeerOrder = sorted.map { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
+        return sorted
+    }
+
     private fun updateUnifiedData() {
+        val savedContacts = loadSavedContactsFromPrefs()
         if (_isDemoMode.value) {
-            // Em modo demonstração, mescla pessoas reais com as pessoas simuladas
+            // Em modo demonstração, mescla pessoas reais com as pessoas simuladas e contatos mútuos salvos
             val simulated = proximitySimulator.discoveredPeople.value
-            val combined = (_realDiscoveredPeople.value + simulated)
-                .distinctBy { it.technicalIdentityHash }
+            val combined = (_realDiscoveredPeople.value + simulated + savedContacts)
+                .distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
                 .map { applyConnectionState(it) }
-                .sortedBy { it.estimatedDistanceMeters }
-            _unifiedDiscoveredPeople.value = combined
+            _unifiedDiscoveredPeople.value = sortWithHysteresis(combined)
             _unifiedOffers.value = _realOffers.value + proximitySimulator.localOffers.value
         } else {
-            // PRODUÇÃO PURA: Somente pessoas e ofertas reais no radar, sempre com estado de conexão atualizado
-            val applied = _realDiscoveredPeople.value
+            // PRODUÇÃO PURA: Somente pessoas e ofertas reais no radar e contatos mútuos/familiares salvos
+            val applied = (_realDiscoveredPeople.value + savedContacts)
+                .distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
                 .map { applyConnectionState(it) }
-                .sortedBy { it.estimatedDistanceMeters }
-            _unifiedDiscoveredPeople.value = applied
+            _unifiedDiscoveredPeople.value = sortWithHysteresis(applied)
             _unifiedOffers.value = _realOffers.value
         }
     }
@@ -857,7 +1031,15 @@ class PessoasAquiRepository(
 
     private fun handlePeerOffline(peerHash: String) {
         val cleanPeerHash = cleanId(peerHash)
-        val current = _realDiscoveredPeople.value.filter { cleanId(it.technicalIdentityHash) != cleanPeerHash && cleanId(it.id) != cleanPeerHash }
+        val current = _realDiscoveredPeople.value.filter {
+            val matches = cleanId(it.technicalIdentityHash) == cleanPeerHash || cleanId(it.id) == cleanPeerHash
+            if (matches) {
+                // Conexões mútuas e familiares NUNCA desaparecem da lista ao desconectar ou trocar de rede
+                it.isMutualConnection || it.isFamily || isPeerMutual(it)
+            } else {
+                true
+            }
+        }
         _realDiscoveredPeople.value = current
         updateUnifiedData()
     }
@@ -919,6 +1101,8 @@ class PessoasAquiRepository(
         }
     }
 
+    private var bleBatchJob: Job? = null
+
     private fun startNativeBleHardware() {
         try {
             bleManager?.let { ble ->
@@ -959,11 +1143,21 @@ class PessoasAquiRepository(
                                 intent = realPeer.intent,
                                 lastSeenEpochMs = System.currentTimeMillis()
                             ))
+                            _realDiscoveredPeople.value = currentList
+
+                            // Contato existente: agrupa atualizações a cada 600ms para evitar recalcular ordenação 100x por segundo
+                            if (bleBatchJob?.isActive != true) {
+                                bleBatchJob = scope.launch {
+                                    delay(600)
+                                    updateUnifiedData()
+                                }
+                            }
                         } else {
+                            // Novo contato: adiciona imediatamente para descoberta visual instantânea
                             currentList.add(0, applyConnectionState(realPeer.copy(id = peerCleanId, technicalIdentityHash = peerCleanId)))
+                            _realDiscoveredPeople.value = currentList
+                            updateUnifiedData()
                         }
-                        _realDiscoveredPeople.value = currentList
-                        updateUnifiedData()
                     }
                 }
             }
@@ -1043,6 +1237,7 @@ class PessoasAquiRepository(
                 }
             }
             saveConnectionsToPrefs()
+            saveSavedContactsToPrefs()
 
             val updated = current.copy(
                 isMarkedByMe = newMarkedByMe,
@@ -1092,6 +1287,7 @@ class PessoasAquiRepository(
                                 cur[i] = cur[i].copy(isMarkedByMe = true, isMarkingMe = true, isMutualConnection = true, isPhotoVisible = true)
                                 _realDiscoveredPeople.value = cur
                                 updateUnifiedData()
+                                saveSavedContactsToPrefs()
                             }
                         }
                     }
@@ -1286,6 +1482,8 @@ class PessoasAquiRepository(
         token: String,
         senderIdentity: String,
         senderAlias: String,
+        signature: String? = null,
+        expiresAt: Long? = null,
         onResult: (Boolean, String, NearbyPerson?) -> Unit
     ) {
         scope.launch {
@@ -1302,7 +1500,11 @@ class PessoasAquiRepository(
                     inviteId = inviteId,
                     token = token,
                     receiverIdentity = myId,
-                    receiverAlias = getMyAlias()
+                    receiverAlias = getMyAlias(),
+                    senderIdentity = cleanSender,
+                    senderAlias = senderAlias,
+                    signature = signature,
+                    expiresAt = expiresAt
                 )
 
                 if (res.isSuccess) {
@@ -1319,7 +1521,9 @@ class PessoasAquiRepository(
                         proximityLabel = "Conexão Mútua • Ilimitada",
                         isMarkedByMe = true,
                         isMarkingMe = true,
-                        isMutualConnection = true
+                        isMutualConnection = true,
+                        isPhotoVisible = true,
+                        lastSeenEpochMs = System.currentTimeMillis()
                     )
 
                     val current = _realDiscoveredPeople.value.toMutableList()
@@ -1331,6 +1535,14 @@ class PessoasAquiRepository(
                     }
                     _realDiscoveredPeople.value = current
                     updateUnifiedData()
+                    saveSavedContactsToPrefs()
+
+                    proximitySimulator.receivePrivateMessage(
+                        cleanSender,
+                        "Sistema",
+                        "✨ Conexão Mútua Estabelecida via Link Seguro com ${peer.alias}! Conversas privadas e chamadas liberadas à distância.",
+                        UUID.randomUUID().toString()
+                    )
 
                     onResult(true, res.getOrNull()?.message ?: "Conexão Mútua estabelecida com sucesso!", peer)
                 } else {
@@ -1356,8 +1568,11 @@ class PessoasAquiRepository(
             if (!mod.isAllowed) return mod
             proximitySimulator.sendPrivateMessage(cleanRecipient, text, _currentAlias.value)
         } else if (isAudio) {
-            val dur = text.substringAfter("[AUDIO:").substringBefore("]").toIntOrNull() ?: 3
-            proximitySimulator.sendAudioMessage(cleanRecipient, dur, _currentAlias.value, msgId)
+            val content = text.removePrefix("[AUDIO:").removeSuffix("]")
+            val parts = content.split(":", limit = 2)
+            val dur = parts.getOrNull(0)?.toIntOrNull() ?: 3
+            val b64 = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+            proximitySimulator.sendAudioMessage(cleanRecipient, dur, _currentAlias.value, msgId, b64)
         } else if (isImage) {
             val base64 = text.removePrefix("[IMAGE:").removeSuffix("]")
             proximitySimulator.sendImageMessage(cleanRecipient, base64, _currentAlias.value, msgId)
@@ -1370,26 +1585,30 @@ class PessoasAquiRepository(
         }
 
         val myId = cryptoIdentityManager.getTechnicalIdentity()
-        val iv = UUID.randomUUID().toString().take(12)
+        // Criptografia de Ponta a Ponta com AES-256-GCM
+        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient)
 
         // 1. Tenta envio instantâneo prioritário via WebSocket
         val sentViaWs = networkClient.sendE2eeEnvelope(
             recipientHash = cleanRecipient,
-            ciphertext = text,
+            ciphertext = ciphertext,
             ivNonce = iv,
             messageId = msgId
         )
 
         // 2. Se o WebSocket não estiver conectado ou falhar, envia imediatamente por REST HTTP (Fallback)
-        if (!sentViaWs) {
+        // OBS: Pacotes de voz e vídeo em tempo real contínuos não devem encher a fila HTTP do banco
+        val isRealtimeMediaStream = text.startsWith("[CALL_AUDIO_FRAME:") || text.startsWith("[CALL_VIDEO_FRAME:")
+        if (!sentViaWs && !isRealtimeMediaStream) {
             scope.launch {
                 try {
                     networkClient.sendHttpMessage(
                         senderHash = myId,
                         recipientHash = cleanRecipient,
-                        ciphertext = text,
+                        ciphertext = ciphertext,
                         senderAlias = _currentAlias.value,
-                        messageId = msgId
+                        messageId = msgId,
+                        ivNonce = iv
                     )
                 } catch (e: Exception) {
                     Log.w("PessoasAqui", "Falha no envio HTTP da mensagem: ${e.message}")
@@ -1416,35 +1635,55 @@ class PessoasAquiRepository(
             peerHash = cleanHash,
             peerAlias = person.alias,
             isVideo = isVideo,
-            isConnected = false
+            isConnected = false,
+            isSpeakerphoneOn = isVideo
         )
         sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
     }
 
     fun answerCall() {
         val current = _activeCallState.value ?: return
-        _activeCallState.value = current.copy(isConnected = true)
+        _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+        callMediaEngine?.startCallMedia(current.isVideo)
         sendPrivateMessage(current.peerHash, "[CALL_ACCEPT]")
     }
 
     fun endCall() {
         val current = _activeCallState.value ?: return
         val peer = current.peerHash
+        callMediaEngine?.stopCallMedia()
         _activeCallState.value = null
         sendPrivateMessage(peer, "[CALL_END]")
     }
 
     fun toggleCallMute() {
-        _activeCallState.value = _activeCallState.value?.let { it.copy(isMuted = !it.isMuted) }
+        _activeCallState.value = _activeCallState.value?.let {
+            val nextMute = !it.isMuted
+            callMediaEngine?.setMuted(nextMute)
+            it.copy(isMuted = nextMute)
+        }
     }
 
     fun toggleCallCamera() {
-        _activeCallState.value = _activeCallState.value?.let { it.copy(isCameraOn = !it.isCameraOn) }
+        _activeCallState.value = _activeCallState.value?.let {
+            val nextCam = !it.isCameraOn
+            callMediaEngine?.setCameraEnabled(nextCam)
+            it.copy(isCameraOn = nextCam)
+        }
     }
 
-    fun sendAudioMessage(recipientId: String, durationSeconds: Int) {
+    fun toggleCallSpeakerphone() {
+        val spk = callMediaEngine?.toggleSpeakerphone() ?: false
+        _activeCallState.value = _activeCallState.value?.copy(isSpeakerphoneOn = spk)
+    }
+
+    fun sendAudioMessage(recipientId: String, durationSeconds: Int, audioBase64: String? = null) {
         val cleanRecipient = recipientId.removePrefix("peer-")
-        sendPrivateMessage(cleanRecipient, "[AUDIO:$durationSeconds]")
+        if (!audioBase64.isNullOrBlank()) {
+            sendPrivateMessage(cleanRecipient, "[AUDIO:$durationSeconds:$audioBase64]")
+        } else {
+            sendPrivateMessage(cleanRecipient, "[AUDIO:$durationSeconds]")
+        }
     }
 
     fun requestFamilyRole(person: NearbyPerson, role: FamilyRole) {

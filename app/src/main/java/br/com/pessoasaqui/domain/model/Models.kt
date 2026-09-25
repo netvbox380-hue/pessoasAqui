@@ -90,7 +90,9 @@ data class ActiveCallState(
     val isConnected: Boolean = false,
     val durationSeconds: Int = 0,
     val isMuted: Boolean = false,
-    val isCameraOn: Boolean = true
+    val isCameraOn: Boolean = true,
+    val isSpeakerphoneOn: Boolean = false,
+    val remoteVideoFrameBase64: String? = null
 )
 
 /**
