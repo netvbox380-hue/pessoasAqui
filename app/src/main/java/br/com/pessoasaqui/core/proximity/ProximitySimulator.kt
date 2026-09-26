@@ -7,6 +7,7 @@ import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.OfferItem
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.domain.model.UserIntent
+import br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,7 +22,8 @@ import java.util.UUID
  * - Vínculo familiar com privilégios e recuperação de identidade.
  */
 class ProximitySimulator(
-    private val distanceEstimator: DistanceEstimator = DistanceEstimator()
+    private val distanceEstimator: DistanceEstimator = DistanceEstimator(),
+    private var persistenceManager: ChatMessagePersistenceManager? = null
 ) {
 
     private val allSimulatedPeers = mutableListOf<NearbyPerson>()
@@ -44,6 +46,35 @@ class ProximitySimulator(
     init {
         setupInitialPeers()
         refreshDiscoveredList()
+        loadPersistedMessages()
+    }
+
+    fun setPersistenceManager(pm: ChatMessagePersistenceManager) {
+        this.persistenceManager = pm
+        loadPersistedMessages()
+    }
+
+    fun loadPersistedMessages() {
+        persistenceManager?.let { pm ->
+            val savedPrivate = pm.loadAllPrivateChats()
+            if (savedPrivate.isNotEmpty()) {
+                val merged = _privateChats.value.toMutableMap()
+                for ((k, v) in savedPrivate) {
+                    val current = merged[k] ?: emptyList()
+                    val existingIds = current.map { it.id }.toSet()
+                    val toAdd = v.filter { it.id !in existingIds }
+                    merged[k] = (current + toAdd).sortedBy { it.timestampMs }
+                }
+                _privateChats.value = merged
+            }
+            val savedMural = pm.loadLocalMural()
+            if (savedMural.isNotEmpty()) {
+                val current = _localChatMessages.value
+                val existingIds = current.map { it.id }.toSet()
+                val toAdd = savedMural.filter { it.id !in existingIds }
+                _localChatMessages.value = (current + toAdd).sortedBy { it.timestampMs }
+            }
+        }
     }
 
     private fun setupInitialPeers() {
@@ -257,7 +288,9 @@ class ProximitySimulator(
             isLocalOnly = true,
             isFromMe = true
         )
-        _localChatMessages.value = _localChatMessages.value + msg
+        val updated = _localChatMessages.value + msg
+        _localChatMessages.value = updated
+        persistenceManager?.saveLocalMural(updated)
     }
 
     /**
@@ -265,6 +298,7 @@ class ProximitySimulator(
      */
     fun clearLocalMessages() {
         _localChatMessages.value = emptyList()
+        persistenceManager?.clearLocalMural()
     }
 
     /**
@@ -282,10 +316,12 @@ class ProximitySimulator(
         val cleanId = recipientId.removePrefix("peer-")
         val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: emptyList()
         val updatedMap = _privateChats.value.toMutableMap()
-        updatedMap[recipientId] = currentList + msg
-        updatedMap[cleanId] = currentList + msg
-        updatedMap["peer-$cleanId"] = currentList + msg
+        val newList = currentList + msg
+        updatedMap[recipientId] = newList
+        updatedMap[cleanId] = newList
+        updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
+        persistenceManager?.savePrivateChat(cleanId, newList)
     }
 
     /**
@@ -359,9 +395,11 @@ class ProximitySimulator(
         )
 
         val updatedMap = _privateChats.value.toMutableMap()
-        updatedMap[cleanId] = currentList + msg
-        updatedMap["peer-$cleanId"] = currentList + msg
+        val newList = currentList + msg
+        updatedMap[cleanId] = newList
+        updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
+        persistenceManager?.savePrivateChat(cleanId, newList)
     }
 
     fun sendAudioMessage(
@@ -389,10 +427,12 @@ class ProximitySimulator(
         )
 
         val updatedMap = _privateChats.value.toMutableMap()
-        updatedMap[recipientId] = currentList + msg
-        updatedMap[cleanId] = currentList + msg
-        updatedMap["peer-$cleanId"] = currentList + msg
+        val newList = currentList + msg
+        updatedMap[recipientId] = newList
+        updatedMap[cleanId] = newList
+        updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
+        persistenceManager?.savePrivateChat(cleanId, newList)
     }
 
     fun sendImageMessage(recipientId: String, base64: String, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
@@ -413,10 +453,12 @@ class ProximitySimulator(
         )
 
         val updatedMap = _privateChats.value.toMutableMap()
-        updatedMap[recipientId] = currentList + msg
-        updatedMap[cleanId] = currentList + msg
-        updatedMap["peer-$cleanId"] = currentList + msg
+        val newList = currentList + msg
+        updatedMap[recipientId] = newList
+        updatedMap[cleanId] = newList
+        updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
+        persistenceManager?.savePrivateChat(cleanId, newList)
     }
 
     fun sendDocumentMessage(recipientId: String, fileName: String, base64: String, sizeBytes: Long, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
@@ -439,10 +481,12 @@ class ProximitySimulator(
         )
 
         val updatedMap = _privateChats.value.toMutableMap()
-        updatedMap[recipientId] = currentList + msg
-        updatedMap[cleanId] = currentList + msg
-        updatedMap["peer-$cleanId"] = currentList + msg
+        val newList = currentList + msg
+        updatedMap[recipientId] = newList
+        updatedMap[cleanId] = newList
+        updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
+        persistenceManager?.savePrivateChat(cleanId, newList)
     }
 
     /**

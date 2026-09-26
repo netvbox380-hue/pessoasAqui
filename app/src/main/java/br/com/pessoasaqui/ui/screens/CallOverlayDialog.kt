@@ -318,7 +318,7 @@ fun CallOverlayDialog(
                     color = Color.Transparent,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = if (isCompactScreen) 10.dp else 20.dp)
+                        .padding(bottom = if (isCompactScreen) 26.dp else 22.dp)
                 ) {
                     if (!callState.isConnected && callState.isIncoming) {
                         // Chamada recebida aguardando resposta (Recusar vs Atender)

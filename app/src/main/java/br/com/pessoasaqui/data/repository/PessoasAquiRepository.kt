@@ -15,6 +15,7 @@ import br.com.pessoasaqui.core.proximity.ProximitySimulator
 import br.com.pessoasaqui.data.remote.PessoasAquiNetworkClient
 import br.com.pessoasaqui.data.remote.RemotePeer
 import br.com.pessoasaqui.core.reminder.RecurringReminderManager
+import br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager
 import br.com.pessoasaqui.core.subscription.SubscriptionPlanManager
 import br.com.pessoasaqui.core.subscription.SubscriptionTier
 import br.com.pessoasaqui.domain.model.RecurringReminder
@@ -89,6 +90,10 @@ class PessoasAquiRepository(
 
     val subscriptionManager: SubscriptionPlanManager? = context?.let { ctx ->
         SubscriptionPlanManager(ctx)
+    }
+
+    val chatPersistence: ChatMessagePersistenceManager? = context?.let { ctx ->
+        ChatMessagePersistenceManager(ctx)
     }
 
     // Estado do usuário atual neste aparelho persistido com SharedPreferences
@@ -388,6 +393,10 @@ class PessoasAquiRepository(
     val pendingFamilyRequest: StateFlow<Pair<NearbyPerson, FamilyRole>?> = _pendingFamilyRequest.asStateFlow()
 
     init {
+        chatPersistence?.let { cp ->
+            proximitySimulator.setPersistenceManager(cp)
+        }
+
         val restoredContacts = loadSavedContactsFromPrefs()
         if (restoredContacts.isNotEmpty()) {
             _realDiscoveredPeople.value = restoredContacts.map { applyConnectionState(it) }

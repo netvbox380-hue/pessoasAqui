@@ -10,8 +10,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import br.com.pessoasaqui.core.media.VoiceNoteManager
+import br.com.pessoasaqui.core.media.DocumentViewerHelper
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,7 +22,12 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -100,6 +107,38 @@ fun uriToBase64Doc(context: android.content.Context, uri: Uri): Pair<String, Lon
     } catch (_: Exception) {
         null
     }
+}
+
+private fun isSameDay(ts1: Long, ts2: Long): Boolean {
+    val cal1 = Calendar.getInstance().apply { timeInMillis = ts1 }
+    val cal2 = Calendar.getInstance().apply { timeInMillis = ts2 }
+    return cal1.get(Calendar.YEAR) == cal2.get(Calendar.YEAR) &&
+            cal1.get(Calendar.DAY_OF_YEAR) == cal2.get(Calendar.DAY_OF_YEAR)
+}
+
+private fun formatMessageDateHeader(timestampMs: Long): String {
+    val nowCal = Calendar.getInstance()
+    val msgCal = Calendar.getInstance().apply { timeInMillis = timestampMs }
+
+    val isToday = nowCal.get(Calendar.YEAR) == msgCal.get(Calendar.YEAR) &&
+            nowCal.get(Calendar.DAY_OF_YEAR) == msgCal.get(Calendar.DAY_OF_YEAR)
+    if (isToday) return "Hoje"
+
+    nowCal.add(Calendar.DAY_OF_YEAR, -1)
+    val isYesterday = nowCal.get(Calendar.YEAR) == msgCal.get(Calendar.YEAR) &&
+            nowCal.get(Calendar.DAY_OF_YEAR) == msgCal.get(Calendar.DAY_OF_YEAR)
+    if (isYesterday) return "Ontem"
+
+    val currentYear = Calendar.getInstance().get(Calendar.YEAR)
+    return if (msgCal.get(Calendar.YEAR) == currentYear) {
+        SimpleDateFormat("d 'de' MMMM", Locale("pt", "BR")).format(Date(timestampMs))
+    } else {
+        SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(timestampMs))
+    }
+}
+
+private fun formatMessageTime(timestampMs: Long): String {
+    return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestampMs))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -589,8 +628,35 @@ fun ChatDetailScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(messages) { msg ->
+                itemsIndexed(messages) { index, msg ->
                     val isMe = msg.isFromMe
+                    val showDateHeader = index == 0 || !isSameDay(messages[index - 1].timestampMs, msg.timestampMs)
+
+                    if (showDateHeader) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = DarkCardElevated.copy(alpha = 0.95f),
+                                border = BorderStroke(0.5.dp, TextSecondary.copy(alpha = 0.25f))
+                            ) {
+                                Text(
+                                    text = formatMessageDateHeader(msg.timestampMs),
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = TextSecondary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 11.sp
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start
@@ -770,34 +836,96 @@ fun ChatDetailScreen(
                                     }
 
                                     MessageType.DOCUMENT -> {
-                                        // Documento / Arquivo Cifrado
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.padding(vertical = 4.dp)
+                                        // Documento / Arquivo Cifrado com Suporte Completo à Abertura (PDF, XML, DOC, etc.)
+                                        val fileName = msg.fileName ?: "documento.pdf"
+                                        val fileExt = fileName.substringAfterLast('.', "DOC").uppercase(Locale.ROOT)
+                                        val extColor = when (fileExt) {
+                                            "PDF" -> AlertRed
+                                            "XML" -> WarningAmber
+                                            "DOC", "DOCX" -> RadarCyan
+                                            "XLS", "XLSX" -> EmeraldGreen
+                                            else -> FamilyPurple
+                                        }
+
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = if (isMe) DeepBlack.copy(alpha = 0.15f) else DarkCardElevated,
+                                            border = BorderStroke(1.dp, if (isMe) DeepBlack.copy(alpha = 0.25f) else extColor.copy(alpha = 0.4f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    DocumentViewerHelper.openDocument(context, fileName, msg.mediaBase64)
+                                                }
+                                                .padding(vertical = 2.dp)
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Description,
-                                                contentDescription = null,
-                                                tint = if (isMe) DeepBlack else RadarCyan,
-                                                modifier = Modifier.size(30.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Column {
-                                                Text(
-                                                    text = msg.fileName ?: "Documento",
-                                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = if (isMe) DeepBlack else TextPrimary
+                                            Column(modifier = Modifier.padding(10.dp)) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    // Badge com tipo do documento (PDF, XML, etc.)
+                                                    Surface(
+                                                        shape = RoundedCornerShape(6.dp),
+                                                        color = extColor.copy(alpha = 0.2f),
+                                                        border = BorderStroke(1.dp, extColor.copy(alpha = 0.5f))
+                                                    ) {
+                                                        Text(
+                                                            text = fileExt.take(4),
+                                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                                color = if (isMe) DeepBlack else extColor,
+                                                                fontWeight = FontWeight.ExtraBold,
+                                                                fontSize = 10.sp
+                                                            ),
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                                        )
+                                                    }
+
+                                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = fileName,
+                                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = if (isMe) DeepBlack else TextPrimary
+                                                            ),
+                                                            maxLines = 1,
+                                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                                        )
+                                                        val sizeLabel = if (msg.fileSizeBytes > 0) "${msg.fileSizeBytes / 1024} KB" else "Arquivo seguro"
+                                                        Text(
+                                                            text = "$sizeLabel • E2EE Cifrado",
+                                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                                color = if (isMe) DeepBlack.copy(alpha = 0.7f) else TextSecondary,
+                                                                fontSize = 10.sp
+                                                            )
+                                                        )
+                                                    }
+                                                }
+
+                                                Spacer(modifier = Modifier.height(6.dp))
+
+                                                // Rodapé do documento indicando toque para abrir
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.End,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Text(
+                                                        text = "Toque para abrir documento",
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            color = if (isMe) DeepBlack.copy(alpha = 0.85f) else extColor,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            fontSize = 10.sp
+                                                        )
                                                     )
-                                                )
-                                                val sizeLabel = if (msg.fileSizeBytes > 0) "${msg.fileSizeBytes / 1024} KB" else "Arquivo anexado"
-                                                Text(
-                                                    text = "$sizeLabel • Cifrado E2EE",
-                                                    style = MaterialTheme.typography.labelSmall.copy(
-                                                        color = if (isMe) DeepBlack.copy(alpha = 0.7f) else TextSecondary,
-                                                        fontSize = 10.sp
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Icon(
+                                                        imageVector = Icons.Default.OpenInNew,
+                                                        contentDescription = "Abrir",
+                                                        tint = if (isMe) DeepBlack.copy(alpha = 0.85f) else extColor,
+                                                        modifier = Modifier.size(12.dp)
                                                     )
-                                                )
+                                                }
                                             }
                                         }
                                     }
@@ -814,17 +942,35 @@ fun ChatDetailScreen(
                                     }
                                 }
 
-                                Spacer(modifier = Modifier.height(2.dp))
+                                Spacer(modifier = Modifier.height(4.dp))
                                 Row(
                                     modifier = Modifier.align(Alignment.End),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    Text(
+                                        text = formatMessageTime(msg.timestampMs),
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Normal
+                                        )
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
                                     Icon(
                                         imageVector = Icons.Default.Lock,
-                                        contentDescription = null,
-                                        tint = if (isMe) DeepBlack.copy(alpha = 0.6f) else TextSecondary,
+                                        contentDescription = "Cifrado Ponta a Ponta",
+                                        tint = if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
                                         modifier = Modifier.size(10.dp)
                                     )
+                                    if (isMe) {
+                                        Spacer(modifier = Modifier.width(2.dp))
+                                        Icon(
+                                            imageVector = Icons.Default.DoneAll,
+                                            contentDescription = "Entregue",
+                                            tint = DeepBlack.copy(alpha = 0.65f),
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
                                 }
                             }
                         }

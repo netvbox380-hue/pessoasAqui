@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path name="shared_docs_cache" path="shared_docs/" />
+    <files-path name="shared_docs_files" path="shared_docs/" />
+    <external-cache-path name="shared_docs_ext_cache" path="shared_docs/" />
+    <cache-path name="all_cache" path="." />
+    <files-path name="all_files" path="." />
+</paths>

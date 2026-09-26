@@ -64,6 +64,28 @@ fun ConversationsTab(
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
+    fun formatSmartDateTime(timestampMs: Long): String {
+        val nowCal = java.util.Calendar.getInstance()
+        val msgCal = java.util.Calendar.getInstance().apply { timeInMillis = timestampMs }
+
+        val isToday = nowCal.get(java.util.Calendar.YEAR) == msgCal.get(java.util.Calendar.YEAR) &&
+                nowCal.get(java.util.Calendar.DAY_OF_YEAR) == msgCal.get(java.util.Calendar.DAY_OF_YEAR)
+        val timeStr = timeFormatter.format(Date(timestampMs))
+        if (isToday) return "Hoje às $timeStr"
+
+        nowCal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+        val isYesterday = nowCal.get(java.util.Calendar.YEAR) == msgCal.get(java.util.Calendar.YEAR) &&
+                nowCal.get(java.util.Calendar.DAY_OF_YEAR) == msgCal.get(java.util.Calendar.DAY_OF_YEAR)
+        if (isYesterday) return "Ontem às $timeStr"
+
+        val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        return if (msgCal.get(java.util.Calendar.YEAR) == currentYear) {
+            SimpleDateFormat("dd/MM 'às' HH:mm", Locale.getDefault()).format(Date(timestampMs))
+        } else {
+            SimpleDateFormat("dd/MM/yy 'às' HH:mm", Locale.getDefault()).format(Date(timestampMs))
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -356,7 +378,7 @@ fun ConversationsTab(
                                                 }
 
                                                 Text(
-                                                    text = timeFormatter.format(Date(msg.timestampMs)),
+                                                    text = formatSmartDateTime(msg.timestampMs),
                                                     style = MaterialTheme.typography.labelSmall.copy(
                                                         color = TextSecondary,
                                                         fontSize = 10.sp
@@ -885,8 +907,11 @@ fun ConversationsTab(
 
                                             if (lastMsg != null) {
                                                 Text(
-                                                    text = timeFormatter.format(Date(lastMsg.timestampMs)),
-                                                    style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary)
+                                                    text = formatSmartDateTime(lastMsg.timestampMs),
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        color = TextSecondary,
+                                                        fontSize = 11.sp
+                                                    )
                                                 )
                                             }
                                         }
@@ -898,7 +923,7 @@ fun ConversationsTab(
                                             lastMsg == null -> if (contact.isFamily) "Família • Vínculo permanente" else "Conexão Mútua • Conversa liberada"
                                             lastMsg.messageType == MessageType.IMAGE -> "📷 Foto enviada"
                                             lastMsg.messageType == MessageType.AUDIO -> "🎤 Áudio (${lastMsg.audioDurationSeconds}s)"
-                                            lastMsg.messageType == MessageType.DOCUMENT -> "📄 Documento"
+                                            lastMsg.messageType == MessageType.DOCUMENT -> "📄 ${lastMsg.fileName ?: "Documento"}"
                                             else -> lastMsg.text
                                         }
 

@@ -1,5 +1,6 @@
 package br.com.pessoasaqui.domain.model
 
+import kotlinx.serialization.Serializable
 import java.util.UUID
 
 /**
@@ -30,6 +31,7 @@ enum class FamilyRole(val label: String) {
     OUTRO("Familiar")
 }
 
+@Serializable
 enum class MessageType {
     TEXT,
     AUDIO,
@@ -63,6 +65,7 @@ data class NearbyPerson(
 /**
  * Mensagem em tópico local (10m) ou conversa privada ponto-a-ponta.
  */
+@Serializable
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val senderId: String,
