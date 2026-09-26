@@ -1,5 +1,6 @@
 package br.com.pessoasaqui.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -14,10 +15,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import br.com.pessoasaqui.core.subscription.SubscriptionTier
 import br.com.pessoasaqui.data.repository.PessoasAquiRepository
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.ui.theme.*
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,6 +52,8 @@ fun MainScreen(
     val isSessionRevoked by repository.deviceSessionManager.isSessionRevoked.collectAsState()
     val revocationNotice by repository.deviceSessionManager.revocationNotice.collectAsState()
     val recurringReminders by repository.recurringReminders.collectAsState()
+    val subscriptionTier by (repository.subscriptionManager?.currentTier ?: MutableStateFlow(SubscriptionTier.FREE)).collectAsState()
+    val scope = rememberCoroutineScope()
 
     // Pessoas que são conexões mútuas ou familiares
     val connectedPeople = remember(people) {
@@ -73,6 +79,40 @@ fun MainScreen(
                     }
                 },
                 actions = {
+                    // Badge indicadora de Assinante VIP
+                    if (subscriptionTier == SubscriptionTier.PRO_VIP) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = EmeraldGreen.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.45f)),
+                            modifier = Modifier
+                                .clickable {
+                                    showTopMenu = true
+                                }
+                                .padding(end = 6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.WorkspacePremium,
+                                    contentDescription = null,
+                                    tint = EmeraldGreen,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "VIP",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = EmeraldGreen
+                                    )
+                                )
+                            }
+                        }
+                    }
+
                     // Chip com o perfil do usuário ativo neste aparelho
                     Surface(
                         shape = RoundedCornerShape(20.dp),
@@ -140,6 +180,29 @@ fun MainScreen(
                                 onClick = {
                                     showTopMenu = false
                                     onOpenEntreNaSua()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (subscriptionTier == SubscriptionTier.PRO_VIP) "Plano VIP Ativo (R$ 5/mês)" else "Ativar Plano VIP (R$ 5/mês)",
+                                        color = if (subscriptionTier == SubscriptionTier.PRO_VIP) EmeraldGreen else RadarCyan
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.WorkspacePremium,
+                                        contentDescription = null,
+                                        tint = if (subscriptionTier == SubscriptionTier.PRO_VIP) EmeraldGreen else RadarCyan
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    if (subscriptionTier == SubscriptionTier.PRO_VIP) {
+                                        repository.setSubscriptionTier(SubscriptionTier.FREE)
+                                    } else {
+                                        repository.setSubscriptionTier(SubscriptionTier.PRO_VIP)
+                                    }
                                 }
                             )
                             DropdownMenuItem(
@@ -318,6 +381,22 @@ fun MainScreen(
                         onSaveReminder = { reminder -> repository.saveRecurringReminder(reminder) },
                         onDeleteReminder = { id -> repository.deleteRecurringReminder(id) },
                         onToggleReminder = { id, enabled -> repository.toggleRecurringReminder(id, enabled) },
+                        isVip = subscriptionTier == SubscriptionTier.PRO_VIP,
+                        maxAllowedBroadcastRecipients = subscriptionTier.maxBroadcastRecipients,
+                        remainingBroadcastCooldownMs = repository.subscriptionManager?.getRemainingCooldownMs() ?: 0L,
+                        onSendBroadcast = { targetIds, message, onProgress, onResult ->
+                            scope.launch {
+                                val res = repository.sendBroadcastMessage(targetIds, message, onProgress)
+                                if (res.isSuccess) {
+                                    onResult(true, "")
+                                } else {
+                                    onResult(false, res.exceptionOrNull()?.message ?: "Falha no envio da transmissão")
+                                }
+                            }
+                        },
+                        onUpgradeToVip = {
+                            repository.setSubscriptionTier(SubscriptionTier.PRO_VIP)
+                        },
                         isCreatingInvite = isCreatingInvite,
                         onCreateInviteLink = {
                             if (!isCreatingInvite) {

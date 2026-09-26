@@ -47,7 +47,12 @@ fun ConversationsTab(
     recurringReminders: List<RecurringReminder> = emptyList(),
     onSaveReminder: (RecurringReminder) -> Unit = {},
     onDeleteReminder: (String) -> Unit = {},
-    onToggleReminder: (String, Boolean) -> Unit = { _, _ -> }
+    onToggleReminder: (String, Boolean) -> Unit = { _, _ -> },
+    isVip: Boolean = false,
+    maxAllowedBroadcastRecipients: Int = 3,
+    remainingBroadcastCooldownMs: Long = 0L,
+    onSendBroadcast: (List<String>, String, (Int, Int) -> Unit, (Boolean, String) -> Unit) -> Unit = { _, _, _, _ -> },
+    onUpgradeToVip: () -> Unit = {}
 ) {
     var selectedSection by remember { mutableIntStateOf(0) } // 0 = Mural Local (10m), 1 = Conversas Privadas
     var localInputText by remember { mutableStateOf("") }
@@ -55,6 +60,7 @@ fun ConversationsTab(
     var showClearConfirmDialog by remember { mutableStateOf(false) }
     var showPasteInviteDialog by remember { mutableStateOf(false) }
     var showRemindersDialog by remember { mutableStateOf(false) }
+    var showBroadcastDialog by remember { mutableStateOf(false) }
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
@@ -557,29 +563,71 @@ fun ConversationsTab(
                     }
                 }
 
-                // Botão de Lembretes Recorrentes (Diário, Semanal, Mensal, Anual)
-                Button(
-                    onClick = { showRemindersDialog = true },
+                // Barra de Ações: Transmissão e Lembretes Recorrentes
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 12.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = FamilyPurple.copy(alpha = 0.15f),
-                        contentColor = FamilyPurple
-                    ),
-                    border = BorderStroke(1.dp, FamilyPurple.copy(alpha = 0.5f))
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Schedule,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (recurringReminders.isNotEmpty()) "⏰ Lembretes Recorrentes (${recurringReminders.size})" else "⏰ Lembretes Recorrentes (Diário/Semanal/Mensal/Anual)",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
+                    // Botão Mensagem de Transmissão
+                    Button(
+                        onClick = { showBroadcastDialog = true },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = RadarCyanGlow,
+                            contentColor = RadarCyan
+                        ),
+                        border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.5f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Campaign,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "📢 Transmissão",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    // Botão Lembretes Recorrentes
+                    Button(
+                        onClick = { showRemindersDialog = true },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = FamilyPurple.copy(alpha = 0.15f),
+                            contentColor = FamilyPurple
+                        ),
+                        border = BorderStroke(1.dp, FamilyPurple.copy(alpha = 0.5f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Schedule,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (recurringReminders.isNotEmpty()) "⏰ Lembretes (${recurringReminders.size})" else "⏰ Lembretes",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                if (showBroadcastDialog) {
+                    BroadcastMessageDialog(
+                        connectedPeople = connectedPeople,
+                        isVip = isVip,
+                        maxAllowedRecipients = maxAllowedBroadcastRecipients,
+                        remainingCooldownMs = remainingBroadcastCooldownMs,
+                        onSendBroadcast = onSendBroadcast,
+                        onUpgradeToVip = onUpgradeToVip,
+                        onDismiss = { showBroadcastDialog = false }
                     )
                 }
 

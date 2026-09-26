@@ -15,6 +15,8 @@ import br.com.pessoasaqui.core.proximity.ProximitySimulator
 import br.com.pessoasaqui.data.remote.PessoasAquiNetworkClient
 import br.com.pessoasaqui.data.remote.RemotePeer
 import br.com.pessoasaqui.core.reminder.RecurringReminderManager
+import br.com.pessoasaqui.core.subscription.SubscriptionPlanManager
+import br.com.pessoasaqui.core.subscription.SubscriptionTier
 import br.com.pessoasaqui.domain.model.RecurringReminder
 import br.com.pessoasaqui.domain.model.ActiveCallState
 import br.com.pessoasaqui.domain.model.ChatMessage
@@ -84,6 +86,10 @@ class PessoasAquiRepository(
     }
     val recurringReminders: StateFlow<List<RecurringReminder>> = reminderManager?.reminders 
         ?: MutableStateFlow<List<RecurringReminder>>(emptyList()).asStateFlow()
+
+    val subscriptionManager: SubscriptionPlanManager? = context?.let { ctx ->
+        SubscriptionPlanManager(ctx)
+    }
 
     // Estado do usuário atual neste aparelho persistido com SharedPreferences
     private val _isAgeVerified = MutableStateFlow(prefs?.getBoolean("is_age_verified", false) ?: false)
@@ -1879,6 +1885,60 @@ class PessoasAquiRepository(
         reminderManager?.checkAndTriggerDueReminders { targetId, text ->
             sendPrivateMessage(targetId, text)
         }
+    }
+
+    // ================= Mensagens de Transmissão (Broadcast) =================
+
+    suspend fun sendBroadcastMessage(
+        targetPeerIds: List<String>,
+        text: String,
+        onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> }
+    ): Result<Int> {
+        val subMgr = subscriptionManager
+        if (subMgr != null) {
+            val remainingCooldown = subMgr.getRemainingCooldownMs()
+            if (remainingCooldown > 0) {
+                val mins = (remainingCooldown / 60000) + 1
+                return Result.failure(Exception("Aguarde mais $mins minuto(s) para enviar outra transmissão (proteção anti-spam)."))
+            }
+
+            if (!subMgr.canSendToRecipientCount(targetPeerIds.size)) {
+                val max = subMgr.currentTier.value.maxBroadcastRecipients
+                return Result.failure(Exception("O plano ${subMgr.currentTier.value.label} permite no máximo $max destinatários por transmissão. Assine o VIP para enviar para todos!"))
+            }
+        }
+
+        if (targetPeerIds.isEmpty()) {
+            return Result.failure(Exception("Nenhum destinatário selecionado."))
+        }
+
+        if (text.isBlank()) {
+            return Result.failure(Exception("Digite o texto da mensagem a ser transmitida."))
+        }
+
+        var sentCount = 0
+        val total = targetPeerIds.size
+
+        for (i in targetPeerIds.indices) {
+            val peerId = targetPeerIds[i]
+            try {
+                // Envia a mensagem criptografada ponta a ponta com o identificador de transmissão
+                sendPrivateMessage(peerId, "📢 [Transmissão]: ${text.trim()}")
+                sentCount++
+                onProgress(sentCount, total)
+                // Intervalo de 40ms entre os disparos para manter o socket saudável e evitar sobrecarga de CPU
+                delay(40L)
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Falha ao enviar transmissão para $peerId: ${e.message}")
+            }
+        }
+
+        subMgr?.recordBroadcastExecuted()
+        return Result.success(sentCount)
+    }
+
+    fun setSubscriptionTier(tier: SubscriptionTier) {
+        subscriptionManager?.setSubscriptionTier(tier)
     }
 }
 
