@@ -14,6 +14,8 @@ import br.com.pessoasaqui.core.proximity.DistanceEstimator
 import br.com.pessoasaqui.core.proximity.ProximitySimulator
 import br.com.pessoasaqui.data.remote.PessoasAquiNetworkClient
 import br.com.pessoasaqui.data.remote.RemotePeer
+import br.com.pessoasaqui.core.reminder.RecurringReminderManager
+import br.com.pessoasaqui.domain.model.RecurringReminder
 import br.com.pessoasaqui.domain.model.ActiveCallState
 import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.FamilyRole
@@ -76,6 +78,12 @@ class PessoasAquiRepository(
             }
         )
     }
+
+    val reminderManager: RecurringReminderManager? = context?.let { ctx ->
+        RecurringReminderManager(ctx)
+    }
+    val recurringReminders: StateFlow<List<RecurringReminder>> = reminderManager?.reminders 
+        ?: MutableStateFlow<List<RecurringReminder>>(emptyList()).asStateFlow()
 
     // Estado do usuário atual neste aparelho persistido com SharedPreferences
     private val _isAgeVerified = MutableStateFlow(prefs?.getBoolean("is_age_verified", false) ?: false)
@@ -1852,4 +1860,25 @@ class PessoasAquiRepository(
     fun transferIdentityToThisDevice(recoveredIdentityHash: String) {
         deviceSessionManager.resetSession()
     }
+
+    // ================= Lembretes e Mensagens Recorrentes =================
+
+    fun saveRecurringReminder(reminder: RecurringReminder) {
+        reminderManager?.saveReminder(reminder)
+    }
+
+    fun deleteRecurringReminder(reminderId: String) {
+        reminderManager?.deleteReminder(reminderId)
+    }
+
+    fun toggleRecurringReminder(reminderId: String, isEnabled: Boolean) {
+        reminderManager?.toggleReminder(reminderId, isEnabled)
+    }
+
+    fun triggerDueRemindersNow() {
+        reminderManager?.checkAndTriggerDueReminders { targetId, text ->
+            sendPrivateMessage(targetId, text)
+        }
+    }
 }
+

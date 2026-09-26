@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -37,15 +38,18 @@ data class IncomingInvite(
 class MainActivity : ComponentActivity() {
 
     private val incomingInvite = mutableStateOf<IncomingInvite?>(null)
+    private val targetPeerToOpen = mutableStateOf<NearbyPerson?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         enableLockscreenWakeupFlags()
         parseDeepLink(intent)
 
         val app = application as? PessoasAquiApp
         val repository = app?.repository ?: PessoasAquiRepository()
         handleIncomingCallIntent(intent, repository)
+        handleReminderIntent(intent, repository)
 
         // Solicita POST_NOTIFICATIONS em aparelhos Android 13+ que já haviam passado pelo onboarding
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -67,7 +71,9 @@ class MainActivity : ComponentActivity() {
                     PessoasAquiNavHost(
                         repository = repository,
                         incomingInvite = incomingInvite.value,
-                        onClearIncomingInvite = { incomingInvite.value = null }
+                        onClearIncomingInvite = { incomingInvite.value = null },
+                        targetPeerToOpen = targetPeerToOpen.value,
+                        onClearTargetPeerToOpen = { targetPeerToOpen.value = null }
                     )
                 }
             }
@@ -92,6 +98,7 @@ class MainActivity : ComponentActivity() {
         val repository = (application as? PessoasAquiApp)?.repository
         if (repository != null) {
             handleIncomingCallIntent(intent, repository)
+            handleReminderIntent(intent, repository)
         }
     }
 
@@ -120,6 +127,24 @@ class MainActivity : ComponentActivity() {
             br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_DECLINE_CALL -> {
                 repository.endCall()
             }
+        }
+    }
+
+    private fun handleReminderIntent(intent: Intent?, repository: PessoasAquiRepository) {
+        val targetId = intent?.getStringExtra("OPEN_TARGET_PEER_ID") ?: return
+        val targetAlias = intent.getStringExtra("OPEN_TARGET_PEER_ALIAS") ?: "Contato"
+        if (targetId.isNotBlank() && targetId != "self") {
+            val livePerson = repository.getLivePerson(
+                NearbyPerson(
+                    id = targetId,
+                    technicalIdentityHash = targetId,
+                    alias = targetAlias,
+                    estimatedDistanceMeters = 500.0,
+                    proximityLabel = "Contato Salvo",
+                    isMutualConnection = true
+                )
+            )
+            targetPeerToOpen.value = livePerson
         }
     }
 
@@ -158,7 +183,9 @@ sealed class Screen {
 fun PessoasAquiNavHost(
     repository: PessoasAquiRepository,
     incomingInvite: IncomingInvite? = null,
-    onClearIncomingInvite: () -> Unit = {}
+    onClearIncomingInvite: () -> Unit = {},
+    targetPeerToOpen: NearbyPerson? = null,
+    onClearTargetPeerToOpen: () -> Unit = {}
 ) {
     val isAgeVerified by repository.isAgeVerified.collectAsState()
     val hasCompletedProfile by repository.hasCompletedProfile.collectAsState()
@@ -168,6 +195,7 @@ fun PessoasAquiNavHost(
     val discoveredPeople by repository.discoveredPeople.collectAsState()
     val activeCallState by repository.activeCallState.collectAsState()
     val pendingFamilyRequest by repository.pendingFamilyRequest.collectAsState()
+    val recurringReminders by repository.recurringReminders.collectAsState()
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
@@ -177,6 +205,13 @@ fun PessoasAquiNavHost(
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             repository.restartBleHardware()
+        }
+    }
+
+    LaunchedEffect(targetPeerToOpen) {
+        targetPeerToOpen?.let { person ->
+            currentScreen = Screen.Chat(person)
+            onClearTargetPeerToOpen()
         }
     }
 
@@ -290,7 +325,11 @@ fun PessoasAquiNavHost(
                 onReportUser = { userId ->
                     repository.moderationManager.blockUser(userId)
                     currentScreen = Screen.Main
-                }
+                },
+                recurringReminders = recurringReminders,
+                onSaveReminder = { reminder -> repository.saveRecurringReminder(reminder) },
+                onDeleteReminder = { id -> repository.deleteRecurringReminder(id) },
+                onToggleReminder = { id, enabled -> repository.toggleRecurringReminder(id, enabled) }
             )
 
             activeFamilyRecoveryAuth?.let { (person, auth) ->

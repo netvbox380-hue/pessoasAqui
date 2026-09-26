@@ -47,6 +47,7 @@ fun MainScreen(
     val isBluetoothEnabled by repository.isBluetoothEnabled.collectAsState()
     val isSessionRevoked by repository.deviceSessionManager.isSessionRevoked.collectAsState()
     val revocationNotice by repository.deviceSessionManager.revocationNotice.collectAsState()
+    val recurringReminders by repository.recurringReminders.collectAsState()
 
     // Pessoas que são conexões mútuas ou familiares
     val connectedPeople = remember(people) {
@@ -313,6 +314,10 @@ fun MainScreen(
                         onClearLocalMessages = {
                             repository.clearLocalMessages()
                         },
+                        recurringReminders = recurringReminders,
+                        onSaveReminder = { reminder -> repository.saveRecurringReminder(reminder) },
+                        onDeleteReminder = { id -> repository.deleteRecurringReminder(id) },
+                        onToggleReminder = { id, enabled -> repository.toggleRecurringReminder(id, enabled) },
                         isCreatingInvite = isCreatingInvite,
                         onCreateInviteLink = {
                             if (!isCreatingInvite) {

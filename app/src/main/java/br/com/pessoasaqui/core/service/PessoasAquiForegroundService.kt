@@ -16,6 +16,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import br.com.pessoasaqui.MainActivity
 import br.com.pessoasaqui.PessoasAquiApp
+import kotlinx.coroutines.*
 
 /**
  * Serviço em Primeiro Plano (Foreground Service) que mantém o WebSocket E2EE,
@@ -45,20 +46,39 @@ class PessoasAquiForegroundService : Service() {
 
     private var cpuWakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private val serviceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+    private var reminderTickerJob: kotlinx.coroutines.Job? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureServiceChannel()
         startForegroundCompat()
         acquireBackgroundLocks()
+        startReminderTicker()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundCompat()
         acquireBackgroundLocks()
+        startReminderTicker()
         // Garante que o repositório singleton esteja inicializado
         (application as? PessoasAquiApp)?.repository
         return START_STICKY
+    }
+
+    private fun startReminderTicker() {
+        if (reminderTickerJob?.isActive == true) return
+        reminderTickerJob = serviceScope.launch {
+            while (isActive) {
+                try {
+                    val repo = (application as? PessoasAquiApp)?.repository
+                    repo?.triggerDueRemindersNow()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Erro no ticker de lembretes: ${e.message}")
+                }
+                delay(30_000L) // Checa a cada 30 segundos
+            }
+        }
     }
 
     private fun ensureServiceChannel() {
@@ -148,6 +168,8 @@ class PessoasAquiForegroundService : Service() {
 
     override fun onDestroy() {
         try {
+            reminderTickerJob?.cancel()
+            serviceScope.cancel()
             cpuWakeLock?.let { if (it.isHeld) it.release() }
             wifiLock?.let { if (it.isHeld) it.release() }
         } catch (_: Exception) {}

@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.sp
 import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.MessageType
 import br.com.pessoasaqui.domain.model.NearbyPerson
+import br.com.pessoasaqui.domain.model.RecurringReminder
 import br.com.pessoasaqui.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -42,13 +43,18 @@ fun ConversationsTab(
     onClearLocalMessages: () -> Unit = {},
     isCreatingInvite: Boolean = false,
     onCreateInviteLink: () -> Unit = {},
-    onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null
+    onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null,
+    recurringReminders: List<RecurringReminder> = emptyList(),
+    onSaveReminder: (RecurringReminder) -> Unit = {},
+    onDeleteReminder: (String) -> Unit = {},
+    onToggleReminder: (String, Boolean) -> Unit = { _, _ -> }
 ) {
     var selectedSection by remember { mutableIntStateOf(0) } // 0 = Mural Local (10m), 1 = Conversas Privadas
     var localInputText by remember { mutableStateOf("") }
     var selectedAuthorToInteract by remember { mutableStateOf<Pair<String, String>?>(null) } // senderId to senderAlias
     var showClearConfirmDialog by remember { mutableStateOf(false) }
     var showPasteInviteDialog by remember { mutableStateOf(false) }
+    var showRemindersDialog by remember { mutableStateOf(false) }
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
@@ -549,6 +555,43 @@ fun ConversationsTab(
                             fontSize = 13.sp
                         )
                     }
+                }
+
+                // Botão de Lembretes Recorrentes (Diário, Semanal, Mensal, Anual)
+                Button(
+                    onClick = { showRemindersDialog = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = FamilyPurple.copy(alpha = 0.15f),
+                        contentColor = FamilyPurple
+                    ),
+                    border = BorderStroke(1.dp, FamilyPurple.copy(alpha = 0.5f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Schedule,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (recurringReminders.isNotEmpty()) "⏰ Lembretes Recorrentes (${recurringReminders.size})" else "⏰ Lembretes Recorrentes (Diário/Semanal/Mensal/Anual)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                }
+
+                if (showRemindersDialog) {
+                    RecurringRemindersDialog(
+                        reminders = recurringReminders,
+                        connectedPeople = connectedPeople,
+                        onSaveReminder = onSaveReminder,
+                        onDeleteReminder = onDeleteReminder,
+                        onToggleReminder = onToggleReminder,
+                        onDismiss = { showRemindersDialog = false }
+                    )
                 }
 
                 if (showPasteInviteDialog) {

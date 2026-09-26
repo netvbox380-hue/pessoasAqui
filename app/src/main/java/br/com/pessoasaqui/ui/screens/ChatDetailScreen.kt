@@ -46,6 +46,7 @@ import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.FamilyRole
 import br.com.pessoasaqui.domain.model.MessageType
 import br.com.pessoasaqui.domain.model.NearbyPerson
+import br.com.pessoasaqui.domain.model.RecurringReminder
 import br.com.pessoasaqui.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -117,12 +118,17 @@ fun ChatDetailScreen(
     onRequestFamilyRole: (NearbyPerson, FamilyRole) -> Unit = { _, _ -> },
     onGenerateFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
     onBlockUser: (String) -> Unit = { _ -> },
-    onReportUser: (String) -> Unit = { _ -> }
+    onReportUser: (String) -> Unit = { _ -> },
+    recurringReminders: List<RecurringReminder> = emptyList(),
+    onSaveReminder: (RecurringReminder) -> Unit = {},
+    onDeleteReminder: (String) -> Unit = {},
+    onToggleReminder: (String, Boolean) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
     var menuExpanded by remember { mutableStateOf(false) }
     var showFamilyRoleDialog by remember { mutableStateOf(false) }
+    var showRemindersDialog by remember { mutableStateOf(false) }
     var showAttachmentOptions by remember { mutableStateOf(false) }
     var restrictedFeatureDialog by remember { mutableStateOf<String?>(null) }
     var isRecordingAudio by remember { mutableStateOf(false) }
@@ -408,6 +414,27 @@ fun ChatDetailScreen(
                                 } else {
                                     onToggleMarkPerson(person)
                                 }
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "⏰ Lembrete Recorrente",
+                                    color = FamilyPurple,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Schedule,
+                                    contentDescription = null,
+                                    tint = FamilyPurple
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                showRemindersDialog = true
                             }
                         )
 
@@ -1152,6 +1179,21 @@ fun ChatDetailScreen(
                 onDismiss = { fullscreenImageBitmap = null }
             )
         }
+
+        if (showRemindersDialog) {
+            val targetIdClean = person.technicalIdentityHash.ifBlank { person.id }
+            RecurringRemindersDialog(
+                reminders = recurringReminders.filter {
+                    it.targetId == targetIdClean || it.targetId == person.id || it.targetAlias.equals(person.alias, ignoreCase = true)
+                },
+                connectedPeople = listOf(person),
+                initialRecipient = person,
+                onSaveReminder = onSaveReminder,
+                onDeleteReminder = onDeleteReminder,
+                onToggleReminder = onToggleReminder,
+                onDismiss = { showRemindersDialog = false }
+            )
+        }
     }
 }
 
@@ -1287,3 +1329,4 @@ fun FullscreenImageViewerDialog(
         }
     }
 }
+
