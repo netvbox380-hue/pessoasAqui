@@ -82,12 +82,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        (application as? PessoasAquiApp)?.repository?.callRingtoneWakeManager?.isAppInForeground = true
+        val repo = (application as? PessoasAquiApp)?.repository
+        repo?.callRingtoneWakeManager?.isAppInForeground = true
+        repo?.playBillingManager?.queryActivePurchases()
     }
 
     override fun onPause() {
         super.onPause()
         (application as? PessoasAquiApp)?.repository?.callRingtoneWakeManager?.isAppInForeground = false
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        (application as? PessoasAquiApp)?.repository?.playBillingManager?.destroy()
     }
 
     override fun onNewIntent(intent: Intent) {

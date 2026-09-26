@@ -83,6 +83,9 @@ dependencies {
     // QR Code Generation & Scanning
     implementation(libs.zxing.core)
 
+    // Google Play Billing In-App Purchases & Subscriptions
+    implementation(libs.google.billing.ktx)
+
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

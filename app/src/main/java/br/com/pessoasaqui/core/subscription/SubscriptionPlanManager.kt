@@ -35,6 +35,7 @@ class SubscriptionPlanManager(
         private const val KEY_LAST_BROADCAST_MS = "last_broadcast_epoch_ms"
         private const val KEY_BROADCAST_COUNT_TODAY = "broadcast_count_today"
         private const val KEY_LAST_BROADCAST_DAY = "last_broadcast_day"
+        private const val KEY_TEST_OVERRIDE = "subscription_test_override"
 
         // Cooldowns de proteção anti-abuso e anti-spam
         const val COOLDOWN_FREE_MS = 15 * 60 * 1000L // 15 minutos entre transmissões no Gratuito
@@ -105,5 +106,24 @@ class SubscriptionPlanManager(
         val now = System.currentTimeMillis()
         inMemoryLastBroadcastMs = now
         prefs?.edit()?.putLong(KEY_LAST_BROADCAST_MS, now)?.apply()
+    }
+
+    /**
+     * Verifica se o usuário/desenvolvedor ativou o modo de simulação/teste local para o VIP.
+     */
+    fun isTestOverrideActive(): Boolean {
+        return prefs?.getBoolean(KEY_TEST_OVERRIDE, false) ?: false
+    }
+
+    /**
+     * Define ou remove o override de teste.
+     */
+    fun setTestOverride(enabled: Boolean) {
+        prefs?.edit()?.putBoolean(KEY_TEST_OVERRIDE, enabled)?.apply()
+        if (enabled) {
+            setSubscriptionTier(SubscriptionTier.PRO_VIP)
+        } else {
+            setSubscriptionTier(SubscriptionTier.FREE)
+        }
     }
 }

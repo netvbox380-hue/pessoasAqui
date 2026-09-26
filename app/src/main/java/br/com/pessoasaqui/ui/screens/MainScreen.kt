@@ -54,6 +54,7 @@ fun MainScreen(
     val recurringReminders by repository.recurringReminders.collectAsState()
     val subscriptionTier by (repository.subscriptionManager?.currentTier ?: MutableStateFlow(SubscriptionTier.FREE)).collectAsState()
     val scope = rememberCoroutineScope()
+    var showVipDialog by remember { mutableStateOf(false) }
 
     // Pessoas que são conexões mútuas ou familiares
     val connectedPeople = remember(people) {
@@ -83,11 +84,11 @@ fun MainScreen(
                     if (subscriptionTier == SubscriptionTier.PRO_VIP) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = EmeraldGreen.copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.45f)),
+                            color = WarningAmber.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, WarningAmber.copy(alpha = 0.45f)),
                             modifier = Modifier
                                 .clickable {
-                                    showTopMenu = true
+                                    showVipDialog = true
                                 }
                                 .padding(end = 6.dp)
                         ) {
@@ -185,24 +186,20 @@ fun MainScreen(
                             DropdownMenuItem(
                                 text = {
                                     Text(
-                                        if (subscriptionTier == SubscriptionTier.PRO_VIP) "Plano VIP Ativo (R$ 5/mês)" else "Ativar Plano VIP (R$ 5/mês)",
-                                        color = if (subscriptionTier == SubscriptionTier.PRO_VIP) EmeraldGreen else RadarCyan
+                                        if (subscriptionTier == SubscriptionTier.PRO_VIP) "Gerenciar Plano VIP ⭐" else "Assinar Plano VIP (Google Play)",
+                                        color = if (subscriptionTier == SubscriptionTier.PRO_VIP) EmeraldGreen else WarningAmber
                                     )
                                 },
                                 leadingIcon = {
                                     Icon(
                                         Icons.Default.WorkspacePremium,
                                         contentDescription = null,
-                                        tint = if (subscriptionTier == SubscriptionTier.PRO_VIP) EmeraldGreen else RadarCyan
+                                        tint = if (subscriptionTier == SubscriptionTier.PRO_VIP) EmeraldGreen else WarningAmber
                                     )
                                 },
                                 onClick = {
                                     showTopMenu = false
-                                    if (subscriptionTier == SubscriptionTier.PRO_VIP) {
-                                        repository.setSubscriptionTier(SubscriptionTier.FREE)
-                                    } else {
-                                        repository.setSubscriptionTier(SubscriptionTier.PRO_VIP)
-                                    }
+                                    showVipDialog = true
                                 }
                             )
                             DropdownMenuItem(
@@ -395,7 +392,7 @@ fun MainScreen(
                             }
                         },
                         onUpgradeToVip = {
-                            repository.setSubscriptionTier(SubscriptionTier.PRO_VIP)
+                            showVipDialog = true
                         },
                         isCreatingInvite = isCreatingInvite,
                         onCreateInviteLink = {
@@ -567,6 +564,14 @@ fun MainScreen(
                     person = person,
                     authorization = auth,
                     onDismiss = { activeFamilyRecoveryAuth = null }
+                )
+            }
+
+            // Diálogo Oficial de Assinatura e Gerenciamento do Plano VIP
+            if (showVipDialog) {
+                VipSubscriptionDialog(
+                    repository = repository,
+                    onDismissRequest = { showVipDialog = false }
                 )
             }
         }

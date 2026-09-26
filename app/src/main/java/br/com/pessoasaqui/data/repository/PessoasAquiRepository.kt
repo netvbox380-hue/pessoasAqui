@@ -18,6 +18,7 @@ import br.com.pessoasaqui.core.reminder.RecurringReminderManager
 import br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager
 import br.com.pessoasaqui.core.subscription.SubscriptionPlanManager
 import br.com.pessoasaqui.core.subscription.SubscriptionTier
+import br.com.pessoasaqui.core.subscription.PlayBillingManager
 import br.com.pessoasaqui.domain.model.RecurringReminder
 import br.com.pessoasaqui.domain.model.ActiveCallState
 import br.com.pessoasaqui.domain.model.ChatMessage
@@ -91,6 +92,10 @@ class PessoasAquiRepository(
     val subscriptionManager: SubscriptionPlanManager? = context?.let { ctx ->
         SubscriptionPlanManager(ctx)
     }
+
+    val playBillingManager: PlayBillingManager? = if (context != null && subscriptionManager != null) {
+        PlayBillingManager(context, subscriptionManager)
+    } else null
 
     val chatPersistence: ChatMessagePersistenceManager? = context?.let { ctx ->
         ChatMessagePersistenceManager(ctx)
@@ -1948,6 +1953,24 @@ class PessoasAquiRepository(
 
     fun setSubscriptionTier(tier: SubscriptionTier) {
         subscriptionManager?.setSubscriptionTier(tier)
+    }
+
+    fun launchVipPurchaseFlow(activity: android.app.Activity): Result<Unit> {
+        val billing = playBillingManager ?: return Result.failure(Exception("Serviço de faturamento não inicializado."))
+        return billing.launchPurchaseFlow(activity)
+    }
+
+    fun restoreVipPurchases(onFinished: (Boolean, String) -> Unit) {
+        val billing = playBillingManager
+        if (billing != null) {
+            billing.restorePurchases(onFinished)
+        } else {
+            onFinished(false, "Serviço de faturamento indisponível.")
+        }
+    }
+
+    fun setVipTestOverride(enabled: Boolean) {
+        subscriptionManager?.setTestOverride(enabled)
     }
 }
 

@@ -73,4 +73,18 @@ class SubscriptionPlanManagerTest {
         assertTrue(manager.canCreateMoreReminders(100))
         assertFalse(manager.canCreateMoreReminders(999))
     }
+
+    @Test
+    fun testSubscriptionTestOverride() {
+        val manager = SubscriptionPlanManager()
+        assertFalse(manager.isTestOverrideActive())
+
+        manager.setTestOverride(true)
+        assertTrue(manager.isVip())
+        assertEquals(SubscriptionTier.PRO_VIP, manager.currentTier.value)
+
+        manager.setTestOverride(false)
+        assertFalse(manager.isVip())
+        assertEquals(SubscriptionTier.FREE, manager.currentTier.value)
+    }
 }

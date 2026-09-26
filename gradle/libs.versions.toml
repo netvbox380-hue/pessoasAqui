@@ -15,8 +15,10 @@ kotlinxCoroutines = "1.9.0"
 kotlinxSerialization = "1.7.3"
 okhttp = "4.12.0"
 zxing = "3.5.3"
+billing = "7.1.1"
 
 [libraries]
+google-billing-ktx = { group = "com.android.billingclient", name = "billing-ktx", version.ref = "billing" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }

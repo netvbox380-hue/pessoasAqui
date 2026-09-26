@@ -29,8 +29,7 @@ class VoiceNoteManager {
      */
     fun startRecording(context: Context): Boolean {
         return try {
-            stopRecording() // Garante liberação de gravações anteriores
-            cancelRecording()
+            cancelRecording() // Limpa e libera gravações anteriores de forma segura
 
             val tempFile = File.createTempFile("voice_note_", ".m4a", context.cacheDir)
             currentRecordingFile = tempFile
@@ -65,27 +64,50 @@ class VoiceNoteManager {
 
     /**
      * Finaliza a gravação e retorna a duração em segundos e o áudio codificado em Base64.
+     * Inclui proteção contra RuntimeException: stop failed em gravações rápidas (< 800ms) no Android 14/16.
      */
     fun stopRecording(): Pair<Int, String>? {
         val recorder = mediaRecorder ?: return null
         val file = currentRecordingFile ?: return null
 
         return try {
+            val elapsedMs = System.currentTimeMillis() - recordingStartTimeMs
+            if (elapsedMs < 800L) {
+                try {
+                    Thread.sleep(800L - elapsedMs)
+                } catch (_: Exception) {}
+            }
+
             recorder.stop()
             recorder.release()
             mediaRecorder = null
 
             val elapsedSecs = ((System.currentTimeMillis() - recordingStartTimeMs) / 1000).toInt().coerceAtLeast(1)
-            val bytes = file.readBytes()
-            file.delete()
-            currentRecordingFile = null
-
-            val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-            Pair(elapsedSecs, base64)
+            if (file.exists() && file.length() > 0) {
+                val bytes = file.readBytes()
+                file.delete()
+                currentRecordingFile = null
+                val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                Pair(elapsedSecs, base64)
+            } else {
+                cancelRecording()
+                null
+            }
         } catch (e: Exception) {
             Log.e("VoiceNoteManager", "Erro ao finalizar gravação", e)
             cancelRecording()
             null
+        }
+    }
+
+    /**
+     * Retorna a amplitude máxima de som para animações de onda de áudio.
+     */
+    fun getMaxAmplitude(): Int {
+        return try {
+            mediaRecorder?.maxAmplitude ?: 0
+        } catch (_: Exception) {
+            0
         }
     }
 

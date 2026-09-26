@@ -9,6 +9,7 @@ import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import android.widget.Toast
 import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.media.DocumentViewerHelper
 import androidx.compose.animation.AnimatedVisibility
@@ -978,10 +979,41 @@ fun ChatDetailScreen(
                 }
             }
 
-            // Barra de Gravação de Áudio Ativa
+            // Barra de Gravação de Áudio Ativa Responsiva (Android 14 & 16)
             if (isRecordingAudio) {
+                val infiniteTransition = rememberInfiniteTransition(label = "recording_pulse")
+                val pulseAlpha by infiniteTransition.animateFloat(
+                    initialValue = 0.35f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(600, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "pulse_alpha"
+                )
+                val pulseScale by infiniteTransition.animateFloat(
+                    initialValue = 0.85f,
+                    targetValue = 1.15f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(600, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "pulse_scale"
+                )
+                val wavePhase by infiniteTransition.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 6.28f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1200, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart
+                    ),
+                    label = "wave_phase"
+                )
+
                 Surface(
                     color = DarkSurface,
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                    border = BorderStroke(1.dp, AlertRed.copy(alpha = 0.35f)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
@@ -989,60 +1021,108 @@ fun ChatDetailScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Lado Esquerdo: Ponto vermelho pulsante + Timer 00:08
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(end = 6.dp)
+                        ) {
                             Box(
                                 modifier = Modifier
                                     .size(12.dp)
+                                    .graphicsLayer(scaleX = pulseScale, scaleY = pulseScale)
                                     .clip(CircleShape)
-                                    .background(AlertRed)
+                                    .background(AlertRed.copy(alpha = pulseAlpha))
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            val minutes = recordingSeconds / 60
+                            val seconds = recordingSeconds % 60
                             Text(
-                                text = "Gravando áudio seguro: 0:${String.format("%02d", recordingSeconds)}",
+                                text = String.format("%02d:%02d", minutes, seconds),
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     color = TextPrimary,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp
                                 )
                             )
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(
+                        // Centro: Visualizador de Ondas de Áudio (Soundwave bars oscilantes com weight flexível)
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(26.dp)
+                                .padding(horizontal = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            val barCount = 9
+                            for (i in 0 until barCount) {
+                                val sinFactor = kotlin.math.sin(wavePhase + i * 0.7f)
+                                val normalizedHeight = (6.dp + (sinFactor.coerceAtLeast(0.1f) * 16).dp)
+                                Box(
+                                    modifier = Modifier
+                                        .width(3.dp)
+                                        .height(normalizedHeight)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(
+                                            if (i % 2 == 0) RadarCyan.copy(alpha = 0.85f) else AlertRed.copy(alpha = 0.75f)
+                                        )
+                                )
+                            }
+                        }
+
+                        // Lado Direito: Botão Descartar (Lixeira vermelha) + Botão Enviar (Ciano circular)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Descartar / Cancelar
+                            IconButton(
                                 onClick = {
                                     isRecordingAudio = false
                                     recordingSeconds = 0
                                     voiceNoteManager.cancelRecording()
-                                }
+                                },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(AlertRed.copy(alpha = 0.15f))
                             ) {
-                                Text("Cancelar", color = AlertRed)
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Cancelar Gravação",
+                                    tint = AlertRed,
+                                    modifier = Modifier.size(20.dp)
+                                )
                             }
 
-                            Button(
+                            // Enviar
+                            IconButton(
                                 onClick = {
-                                    val finalDur = recordingSeconds.coerceAtLeast(1)
                                     isRecordingAudio = false
                                     recordingSeconds = 0
                                     val recorded = voiceNoteManager.stopRecording()
                                     if (recorded != null) {
                                         onSendAudioMessage(person, recorded.first, recorded.second)
                                     } else {
-                                        onSendAudioMessage(person, finalDur, null)
+                                        Toast.makeText(context, "Não foi possível gravar áudio. Tente novamente.", Toast.LENGTH_SHORT).show()
                                     }
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = RadarCyan)
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(RadarCyan)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Send,
-                                    contentDescription = "Enviar Áudio",
+                                    contentDescription = "Enviar Áudio Cifrado",
                                     tint = DeepBlack,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Enviar", color = DeepBlack, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
