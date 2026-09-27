@@ -20,10 +20,31 @@ class ContentModerationManager {
         "golpe pix", "cartao clonado", "hackear", "invasao"
     )
 
+    // Termos de Phishing e Engenharia Social (Tentativa de roubo de PIN ou 12 palavras)
+    private val phishingKeywords = listOf(
+        "12 palavras", "doze palavras", "palavras-semente", "palavra-semente",
+        "seed phrase", "passe seu pin", "envie seu pin", "digite seu pin",
+        "informe seu pin", "suporte oficial", "atendimento oficial"
+    )
+
+    // Nomes reservados de sistema proibidos para apelido de usuários comuns
+    private val reservedAliases = listOf(
+        "suporte", "support", "admin", "administrador", "pessoasaqui",
+        "oficial", "moderacao", "moderador", "atendimento", "equipe"
+    )
+
+    fun isReservedAlias(alias: String): Boolean {
+        val normalized = java.text.Normalizer.normalize(alias.trim().lowercase(), java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+        val clean = normalized.replace(Regex("[^a-z0-9]"), "")
+        return reservedAliases.any { clean.contains(it) }
+    }
+
     data class ModerationResult(
         val isAllowed: Boolean,
         val reason: String? = null,
-        val isZeroTolerance: Boolean = false
+        val isZeroTolerance: Boolean = false,
+        val isPhishingAlert: Boolean = false
     )
 
     /**
@@ -47,6 +68,17 @@ class ContentModerationManager {
                 reason = "Violação crítica de segurança: Conteúdo proibido por lei.",
                 isZeroTolerance = true
             )
+        }
+
+        // Anti-Phishing: Bloqueio imediato de tentativas de obtenção de chaves ou PIN
+        for (phishingTerm in phishingKeywords) {
+            if (lower.contains(phishingTerm)) {
+                return ModerationResult(
+                    isAllowed = false,
+                    reason = "Alerta de Segurança: Tentativa de phishing detectada. O PessoasAqui nunca solicita PIN ou 12 palavras.",
+                    isPhishingAlert = true
+                )
+            }
         }
 
         // Moderação de termos abusivos/spam

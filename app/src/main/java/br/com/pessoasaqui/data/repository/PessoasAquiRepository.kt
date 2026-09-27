@@ -1304,14 +1304,19 @@ class PessoasAquiRepository(
         startNativeBleHardware()
     }
 
-    fun setAlias(newAlias: String) {
+    fun setAlias(newAlias: String): Boolean {
         if (newAlias.isNotBlank()) {
             val trimmed = newAlias.trim()
+            if (moderationManager.isReservedAlias(trimmed)) {
+                return false
+            }
             _currentAlias.value = trimmed
             prefs?.edit()?.putString("user_alias", trimmed)?.apply()
             registerIdentityOnBackend()
             startNativeBleHardware()
+            return true
         }
+        return false
     }
 
     fun setIntent(intent: UserIntent) {

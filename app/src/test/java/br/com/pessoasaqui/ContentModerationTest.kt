@@ -47,4 +47,30 @@ class ContentModerationTest {
         assertFalse(res3.isAllowed)
         assertTrue("Após 3 avisos deve ser bloqueado permanentemente", moderation.isUserBlocked(userId))
     }
+
+    @Test
+    fun testReservedAliasesBlocked() {
+        assertTrue(moderation.isReservedAlias("Suporte"))
+        assertTrue(moderation.isReservedAlias("Suporte Oficial"))
+        assertTrue(moderation.isReservedAlias("Admin_123"))
+        assertTrue(moderation.isReservedAlias("pessoasaqui_ajuda"))
+        assertTrue(moderation.isReservedAlias("Moderação"))
+        
+        // Nomes legítimos permitidos
+        assertFalse(moderation.isReservedAlias("Maria Silva"))
+        assertFalse(moderation.isReservedAlias("Carlos Tech"))
+        assertFalse(moderation.isReservedAlias("João"))
+    }
+
+    @Test
+    fun testPhishingKeywordsBlocked() {
+        val res1 = moderation.evaluateContent("golpista", "Olá, envie suas 12 palavras para validação da conta")
+        assertFalse(res1.isAllowed)
+        assertTrue(res1.isPhishingAlert)
+        assertTrue(res1.reason?.contains("phishing") == true)
+
+        val res2 = moderation.evaluateContent("golpista", "Sou do suporte oficial, passe seu pin")
+        assertFalse(res2.isAllowed)
+        assertTrue(res2.isPhishingAlert)
+    }
 }
