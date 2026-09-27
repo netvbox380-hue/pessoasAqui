@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PessoasAqui — Central Jurídica, Privacidade & Termos</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'] },
+          colors: {
+            brand: {
+              primary: '#00E676',
+              cyan: '#00E5FF',
+              dark: '#08080A',
+              card: '#121318',
+              surface: '#181A20',
+              border: '#272B35'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; background-color: #08080A; color: #E2E8F0; }
+    .custom-scroll::-webkit-scrollbar { width: 6px; }
+    .custom-scroll::-webkit-scrollbar-track { background: #121318; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #272B35; border-radius: 4px; }
+    .prose h2 { color: #FFFFFF; font-weight: 700; margin-top: 1.75rem; margin-bottom: 0.75rem; font-size: 1.25rem; border-bottom: 1px solid #272B35; padding-bottom: 0.5rem; }
+    .prose h3 { color: #00E676; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.05rem; }
+    .prose p { margin-top: 0.6rem; margin-bottom: 0.6rem; line-height: 1.7; color: #CBD5E1; font-size: 0.925rem; }
+    .prose ul, .prose ol { margin-top: 0.5rem; margin-bottom: 0.75rem; padding-left: 1.5rem; font-size: 0.925rem; color: #CBD5E1; }
+    .prose li { margin-bottom: 0.4rem; line-height: 1.6; }
+    .prose strong { color: #FFFFFF; }
+    .prose table { width: 100%; text-align: left; border-collapse: collapse; margin-top: 1rem; margin-bottom: 1rem; font-size: 0.85rem; }
+    .prose th { background-color: #181A20; color: #00E676; padding: 0.6rem 0.8rem; border: 1px solid #272B35; font-weight: 600; }
+    .prose td { padding: 0.6rem 0.8rem; border: 1px solid #272B35; }
+    .prose blockquote { border-left: 3px solid #00E676; background-color: #121318; padding: 0.75rem 1rem; border-radius: 0.5rem; margin-top: 1rem; margin-bottom: 1rem; color: #94A3B8; font-style: italic; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased selection:bg-emerald-500 selection:text-black">
+
+  <!-- Header Institucional -->
+  <header class="bg-brand-card border-b border-brand-border sticky top-0 z-40 backdrop-blur-md bg-opacity-95">
+    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-black font-extrabold text-xl shadow-lg">
+          <i class="fa-solid fa-shield-halved"></i>
+        </div>
+        <div>
+          <a href="/legal" class="text-lg font-bold text-white tracking-tight flex items-center space-x-2">
+            <span>PessoasAqui</span>
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800">Portal Jurídico</span>
+          </a>
+          <p class="text-[11px] text-gray-400">Transparência, Criptografia Ponta a Ponta & Conformidade Legal</p>
+        </div>
+      </div>
+
+      <div class="flex items-center space-x-3">
+        <a href="/admin" class="hidden sm:inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-brand-surface hover:bg-brand-border text-gray-300 text-xs font-medium border border-brand-border transition">
+          <i class="fa-solid fa-lock text-[10px] text-emerald-400"></i>
+          <span>Painel de Moderação</span>
+        </a>
+        <button onclick="window.print()" class="px-3 py-1.5 rounded-xl bg-brand-surface hover:bg-brand-border text-gray-300 text-xs font-medium border border-brand-border transition flex items-center space-x-1.5">
+          <i class="fa-solid fa-print text-[10px]"></i>
+          <span>Imprimir / PDF</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Selos de Conformidade -->
+  <div class="bg-brand-surface/70 border-b border-brand-border py-2 px-6">
+    <div class="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-400">
+      <div class="flex items-center space-x-4">
+        <span class="flex items-center space-x-1 text-emerald-400"><i class="fa-solid fa-circle-check text-[10px]"></i> <span>LGPD (Lei 13.709/2018)</span></span>
+        <span class="flex items-center space-x-1 text-cyan-400"><i class="fa-solid fa-circle-check text-[10px]"></i> <span>Marco Civil da Internet (Lei 12.965/2014)</span></span>
+        <span class="flex items-center space-x-1 text-amber-400"><i class="fa-solid fa-key text-[10px]"></i> <span>Criptografia E2EE (X25519 & AES-256-GCM)</span></span>
+      </div>
+      <span class="text-gray-500">Última revisão formal: Setembro de 2026</span>
+    </div>
+  </div>
+
+  <!-- Conteúdo Principal com Barra Lateral / Abas -->
+  <div class="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8 flex flex-col md:flex-row gap-8">
+    
+    <!-- Menu Lateral Fixo -->
+    <aside class="w-full md:w-64 shrink-0">
+      <div class="sticky top-24 space-y-2">
+        <div class="text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 mb-2">Documentos Oficiais</div>
+        
+        <button onclick="setTab('termos')" id="btn-termos" class="nav-tab w-full text-left px-4 py-3 rounded-xl text-xs font-semibold flex items-center space-x-3 transition bg-brand-card text-emerald-400 border border-emerald-800 shadow">
+          <i class="fa-solid fa-file-contract text-sm w-4"></i>
+          <span>Termos de Uso (ToS)</span>
+        </button>
+
+        <button onclick="setTab('privacidade')" id="btn-privacidade" class="nav-tab w-full text-left px-4 py-3 rounded-xl text-xs font-semibold flex items-center space-x-3 transition text-gray-400 hover:text-white hover:bg-brand-surface border border-transparent">
+          <i class="fa-solid fa-user-shield text-sm w-4"></i>
+          <span>Política de Privacidade</span>
+        </button>
+
+        <button onclick="setTab('autoridades')" id="btn-autoridades" class="nav-tab w-full text-left px-4 py-3 rounded-xl text-xs font-semibold flex items-center space-x-3 transition text-gray-400 hover:text-white hover:bg-brand-surface border border-transparent">
+          <i class="fa-solid fa-building-columns text-sm w-4"></i>
+          <span>Guia para Autoridades</span>
+        </button>
+
+        <button onclick="setTab('moderacao')" id="btn-moderacao" class="nav-tab w-full text-left px-4 py-3 rounded-xl text-xs font-semibold flex items-center space-x-3 transition text-gray-400 hover:text-white hover:bg-brand-surface border border-transparent">
+          <i class="fa-solid fa-triangle-exclamation text-sm w-4"></i>
+          <span>Moderação & Denúncias</span>
+        </button>
+
+        <!-- Card de Suporte -->
+        <div class="mt-8 p-4 bg-brand-surface rounded-2xl border border-brand-border text-xs space-y-2">
+          <div class="font-bold text-white flex items-center space-x-1.5">
+            <i class="fa-solid fa-headset text-emerald-400"></i>
+            <span>Dúvidas Jurídicas?</span>
+          </div>
+          <p class="text-gray-400 text-[11px] leading-relaxed">
+            Ordens judiciais e notificações extrajudiciais devem ser dirigidas exclusivamente pelo canal formal.
+          </p>
+          <div class="pt-1">
+            <code class="text-[10px] text-emerald-400 bg-black/50 px-2 py-1 rounded block truncate select-all">juridico@pessoasaqui.com.br</code>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Área de Leitura dos Documentos -->
+    <main class="flex-1 bg-brand-card border border-brand-border rounded-2xl p-6 sm:p-10 shadow-xl prose max-w-none">
+
+      <!-- ================= 1. TERMOS DE USO ================= -->
+      <section id="doc-termos" class="doc-section space-y-4">
+        <div class="pb-4 border-b border-brand-border mb-6">
+          <span class="text-xs font-semibold text-emerald-400 uppercase tracking-wide">Documento Oficial 01</span>
+          <h1 class="text-2xl sm:text-3xl font-extrabold text-white mt-1">Termos de Uso e Condições Gerais</h1>
+          <p class="text-xs text-gray-400 mt-1">Regras de convivência, mecânica de conexão criptográfica e isenções de responsabilidade.</p>
+        </div>
+
+        <h2>1. Visão Geral e Princípios Fundamentais</h2>
+        <p>Bem-vindo ao <strong>PessoasAqui</strong>. O PessoasAqui é uma plataforma de comunicação em tempo real orientada à <strong>proximidade física</strong>, <strong>privacidade técnica</strong> e <strong>criptografia de ponta a ponta (E2EE)</strong>.</p>
+        <p>Ao instalar, acessar ou utilizar o aplicativo PessoasAqui ("Aplicativo" ou "Plataforma"), você ("Usuário") concorda de forma expressa, irrevogável e integral com estes <strong>Termos de Uso</strong>. Caso não concorde com qualquer disposição aqui estabelecida, solicitamos que desinstale o Aplicativo e não utilize nossos serviços.</p>
+        
+        <blockquote>
+          <strong>Sem Cadastro Tradicional:</strong> Não solicitamos, exigimos ou armazenamos seu nome civil, CPF, número de telefone celular ou e-mail. A sua conta é constituída exclusivamente por um par de chaves criptográficas assimétricas (Ed25519 e X25519) geradas no seu aparelho.
+        </blockquote>
+
+        <h2>2. Capacidade Civil e Requisito de Maioridade (+18)</h2>
+        <p>O uso do PessoasAqui é restrito a <strong>indivíduos plenamente capazes com idade igual ou superior a 18 (dezoito) anos</strong>. A Plataforma implementa uma barreira inicial de declaração de maioridade (<em>Age-Gate</em>). O Usuário declara e garante formalmente, sob as penas da lei, ter 18 anos completos ou mais. Contas identificadas em violação a este dispositivo serão banidas sumariamente.</p>
+
+        <h2>3. A Mecânica de Proximidade (10 Metros) e Conexões Mútuas</h2>
+        <p>O Aplicativo utiliza sinais locais de rádio Bluetooth Low Energy (BLE) para indicar a presença efêmera de outras pessoas no raio aproximado de 10 (dez) metros. Essa presença cessa quando o Usuário desliga o recurso ou se afasta fisicamente do local.</p>
+        <p>Recursos multimídia avançados (como chamadas de voz, vídeo, áudios e envio de documentos) e a comunicação a qualquer distância dependem <strong>obrigatoriamente de autorização mútua</strong>:</p>
+        <ul>
+          <li>Ambos os usuários marcarem interesse mútuo; OU</li>
+          <li>Confirmação mútua de vínculo familiar na Rede de Confiança; OU</li>
+          <li>Resgate de um Convite Criptografado de Uso Único emitido por uma das partes.</li>
+        </ul>
+        <p><strong>Isenção quanto a Encontros e Negócios Físicos:</strong> O Usuário é o único e exclusivo responsável por seus deslocamentos, encontros presenciais, transações financeiras e comportamentos fora do ambiente virtual.</p>
+
+        <h2>4. Custódia Exclusiva de Chaves, PIN e Recuperação</h2>
+        <p>A sua chave privada criptográfica permanece gravada no armazenamento isolado do seu aparelho e <strong>nunca é transmitida aos servidores da Plataforma</strong>. A segurança e a recuperação do acesso ao Aplicativo dependem exclusivamente de guardar seu <strong>PIN numérico pessoal</strong> e configurar sua <strong>Rede Familiar de Confiança ("Entre na Sua")</strong>. O PessoasAqui não possui custódia das suas conversas e não tem capacidade de redefinir senhas ou recuperar chats de usuários desprovidos de rede familiar ativa.</p>
+
+        <h2>5. Regras de Conduta e Usos Proibidos</h2>
+        <p>É expressamente proibido:</p>
+        <ul>
+          <li><strong>Tolerância Zero:</strong> Produzir, transmitir ou solicitar Exploração Sexual Infantil (CSAM/CSEA), apologia ao terrorismo, homicídio, automutilação ou tráfico de pessoas e armas ilegais;</li>
+          <li><strong>Violação de Intimidade:</strong> Divulgar imagens ou vídeos com nudez ou atos sexuais sem consentimento de seus participantes (Art. 21 do Marco Civil da Internet);</li>
+          <li><strong>Golpes e Phishing:</strong> Aplicar fraudes financeiras (como golpes do PIX) ou solicitar PINs e palavras-semente de outros usuários;</li>
+          <li><strong>Assédio e Perseguição:</strong> Praticar perseguição física ou virtual (<em>stalking</em>) ou intimidação contra usuários;</li>
+          <li><strong>Fraude de Identidade:</strong> Simular apelidos oficiais como "Suporte", "Admin", "Moderação".</li>
+        </ul>
+
+        <h2>6. Limitações de Responsabilidade e Foro</h2>
+        <p>Nos termos do Art. 19 do Marco Civil da Internet (Lei 12.965/2014), o PessoasAqui não responde civilmente por danos decorrentes de conteúdos gerados por seus usuários, salvo se descumprir ordem judicial específica ou notificação válida do Art. 21. Estes Termos são regidos pelas leis da República Federativa do Brasil, elegendo-se o foro de domicílio do consumidor para dirimir controvérsias.</p>
+      </section>
+
+      <!-- ================= 2. POLÍTICA DE PRIVACIDADE ================= -->
+      <section id="doc-privacidade" class="doc-section hidden space-y-4">
+        <div class="pb-4 border-b border-brand-border mb-6">
+          <span class="text-xs font-semibold text-emerald-400 uppercase tracking-wide">Documento Oficial 02</span>
+          <h1 class="text-2xl sm:text-3xl font-extrabold text-white mt-1">Política de Privacidade e Proteção de Dados</h1>
+          <p class="text-xs text-gray-400 mt-1">Minimização de dados sob a LGPD, registros do Marco Civil e inviolabilidade da criptografia E2EE.</p>
+        </div>
+
+        <h2>1. Princípio da Minimização de Dados (Art. 6º, III da LGPD)</h2>
+        <p>O PessoasAqui foi concebido sob a premissa de <em>Privacy by Design</em>. Em conformidade com o princípio da necessidade da Lei nº 13.709/2018 (LGPD), a Plataforma <strong>NÃO coleta, não solicita e não armazena</strong>:</p>
+        <ul>
+          <li>❌ Nome completo civil, filiação, RG ou CPF;</li>
+          <li>❌ Número de telefone celular (linha móvel) ou e-mail;</li>
+          <li>❌ Agenda telefônica ou lista de contatos do aparelho;</li>
+          <li>❌ Senhas em texto claro (o PIN é salgado no hardware local);</li>
+          <li>❌ Rastreamento contínuo de localização em segundo plano (GPS histórico).</li>
+        </ul>
+
+        <h2>2. Registros de Acesso Obrigatórios (Art. 15 do Marco Civil da Internet)</h2>
+        <p>Em cumprimento estrito ao <strong>Artigo 15 da Lei Federal nº 12.965/2014</strong>, mantemos sob sigilo e em ambiente controlado os registros de conexão à aplicação:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Metadado Retido</th>
+              <th>Finalidade Legal</th>
+              <th>Prazo de Guarda</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Endereço IP de Origem e Porta Lógica</td>
+              <td>Cumprimento de ordem judicial (Art. 15, Lei 12.965/14)</td>
+              <td><strong>6 (seis) meses</strong></td>
+            </tr>
+            <tr>
+              <td>Data e Hora UTC de Início e Término</td>
+              <td>Cumprimento de ordem judicial (Art. 15, Lei 12.965/14)</td>
+              <td><strong>6 (seis) meses</strong></td>
+            </tr>
+            <tr>
+              <td>Identificador da Sessão e Chave Pública</td>
+              <td>Roteamento técnico e aplicação de banimentos por abuso</td>
+              <td>Durante a vigência da conta</td>
+            </tr>
+            <tr>
+              <td>Assinatura do Dispositivo (<em>Device Fingerprint</em>)</td>
+              <td>Prevenção anti-evasão de banimentos por abusadores</td>
+              <td>Enquanto persistir o banimento</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>3. Criptografia de Ponta a Ponta (E2EE) Inviolável</h2>
+        <p>Todas as mensagens privadas de texto, áudio, fotos, documentos e chamadas são protegidas por <strong>criptografia de ponta a ponta</strong>:</p>
+        <ul>
+          <li>Troca de chaves efêmeras via algoritmo Diffie-Hellman sobre curvas elípticas Curve25519 (X25519);</li>
+          <li>Cifragem de conteúdo em <strong>AES-256-GCM</strong> (Galois/Counter Mode);</li>
+          <li>Servidores operam como <strong>Envelopes Cegos (<em>Blind Relays</em>)</strong>: não possuem as chaves e eliminam mensagens de suas filas assim que entregues ao destinatário;</li>
+          <li>As chaves privadas nunca saem do celular do usuário.</li>
+        </ul>
+
+        <h2>4. Exceção de Moderação por Denúncia Formal</h2>
+        <p>A única circunstância em que mensagens privadas são transmitidas à moderação é quando o próprio participante clica em <strong>"Denunciar abuso"</strong>. O aplicativo anexa as últimas 5 mensagens daquela conversa específica como pacote de prova assinado digitalmente, para coibir crimes e assédio sem violar a privacidade das demais conversas da rede.</p>
+
+        <h2>5. Direitos do Titular sob a LGPD (Art. 18)</h2>
+        <p>O usuário pode, a qualquer instante, solicitar a exclusão integral de sua identidade técnica e dados associados diretamente pelo aplicativo ("Excluir Conta"). Dúvidas podem ser encaminhadas ao Encarregado de Dados (DPO) através da aba <em>Petição & Suporte Oficial</em> no app.</p>
+      </section>
+
+      <!-- ================= 3. GUIA PARA AUTORIDADES ================= -->
+      <section id="doc-autoridades" class="doc-section hidden space-y-4">
+        <div class="pb-4 border-b border-brand-border mb-6">
+          <span class="text-xs font-semibold text-emerald-400 uppercase tracking-wide">Documento Oficial 03</span>
+          <h1 class="text-2xl sm:text-3xl font-extrabold text-white mt-1">Guia para Autoridades Policiais e Judiciais</h1>
+          <p class="text-xs text-gray-400 mt-1">Orientações periciais para juizados, varas criminais, Ministério Público e delegacias de polícia.</p>
+        </div>
+
+        <h2>1. Apresentação Institucional e Modelo Zero-Knowledge</h2>
+        <p>Este guia destina-se a orientar magistrados, membros do Ministério Público e autoridades policiais sobre os aspectos técnicos, periciais e legais do <strong>PessoasAqui</strong>. A plataforma adota política de colaboração irrestrita com a Justiça brasileira, fornecendo prontamente os dados mantidos em conformidade com o Marco Civil da Internet (Lei 12.965/2014).</p>
+
+        <h2>2. Impossibilidade Técnica de Interceptação ou Decifração</h2>
+        <p>A comunicação privada no PessoasAqui é protegida por Criptografia de Ponta a Ponta (E2EE) utilizando cifras X25519 e AES-256-GCM. <strong>A plataforma não possui chaves-mestras, backdoors ou mecanismos de interceptação telemática em tempo real</strong>.</p>
+        <blockquote>
+          <strong>Princípio Jurídico <em>Impossibilium Nulla Obligatio Est</em>:</strong> O fornecimento do conteúdo de mensagens privadas cifradas é de cumprimento materialmente impossível pelo provedor de aplicação (<em>ad impossibilia nemo tenetur</em>). Essa restrição advém da matemática dos algoritmos criptográficos empregados, e não de recusa ou desobediência a determinações judiciais.
+        </blockquote>
+        <p><strong>Orientação Pericial:</strong> A extração de conversas em investigações criminais deve ser realizada mediante busca e apreensão do aparelho móvel do investigado (Art. 240 do CPP) e perícia forense direta na memória física do dispositivo.</p>
+
+        <h2>3. O que a Plataforma PODE Fornecer Mediante Ordem Judicial</h2>
+        <p>Mediante ordem judicial fundamentada (Art. 22 do Marco Civil), o PessoasAqui fornecerá:</p>
+        <ul>
+          <li><strong>Registros de Conexão à Aplicação (Art. 15 da Lei 12.965/14):</strong> Endereços IP de conexão, portas lógicas e horários UTC de início e término das sessões vinculadas à Identidade Técnica investigada (dos últimos 6 meses);</li>
+          <li><strong>Data e Hora de Criação:</strong> Momento em que a chave pública foi inserida na rede;</li>
+          <li><strong>Assinatura do Aparelho (<em>Fingerprint</em>):</strong> Identificador de hardware associado;</li>
+          <li><strong>Ofertas Públicas no Mural:</strong> Textos, anúncios e preços publicados pelo investigado;</li>
+          <li><strong>Histórico Disciplinar:</strong> Registros de denúncias recebidas ou banimentos por moderação.</li>
+        </ul>
+
+        <h2>4. O que a Plataforma NÃO POSSUI</h2>
+        <p>O PessoasAqui não possui em seus bancos de dados: conteúdo de mensagens privadas, gravações de voz/vídeo, chaves privadas, nomes civis, CPFs, números de telefone celular ou histórico de localização GPS contínua.</p>
+
+        <h2>5. Canal Oficial para Envio de Ordens Judiciais</h2>
+        <p>Ordens judiciais e ofícios de preservação cautelar de registros (Art. 15, § 2º da Lei 12.965/14) devem ser encaminhados com assinatura digital ICP-Brasil para:</p>
+        <p><code class="text-emerald-400 font-bold bg-black/60 px-3 py-1.5 rounded-lg border border-emerald-900 inline-block select-all">autoridades@pessoasaqui.com.br</code></p>
+        <p class="text-xs text-gray-400"><em>(Mensagens aceitas estritamente de domínios oficiais: @tjsp.jus.br, @pf.gov.br, @policiacivil.sp.gov.br, @mpf.mp.br, etc.)</em></p>
+      </section>
+
+      <!-- ================= 4. POLÍTICA DE MODERAÇÃO ================= -->
+      <section id="doc-moderacao" class="doc-section hidden space-y-4">
+        <div class="pb-4 border-b border-brand-border mb-6">
+          <span class="text-xs font-semibold text-emerald-400 uppercase tracking-wide">Documento Oficial 04</span>
+          <h1 class="text-2xl sm:text-3xl font-extrabold text-white mt-1">Política de Moderação, Denúncias e Diretrizes</h1>
+          <p class="text-xs text-gray-400 mt-1">Prazos de resposta, regras da comunidade e procedimento especial do Art. 21 do Marco Civil.</p>
+        </div>
+
+        <h2>1. Diretrizes da Comunidade e Filosofia de Moderação</h2>
+        <p>O PessoasAqui adota a diretriz: <em>"Liberdade para entrar. Consequências para quem cometer abusos."</em> O aplicativo combina filtros heurísticos automatizados no aparelho com moderação humana no Painel Administrativo.</p>
+
+        <h2>2. Prazos Estritos de Análise e Resposta</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Natureza da Violação</th>
+              <th>Prazo Máximo</th>
+              <th>Medida Disciplinar</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Violação de Intimidade</strong> (Art. 21 Marco Civil)</td>
+              <td><strong>Até 24 horas</strong></td>
+              <td>Derrubada imediata de conteúdos, banimento definitivo da chave e bloqueio de hardware.</td>
+            </tr>
+            <tr>
+              <td><strong>Tolerância Zero</strong> (CSAM, Terrorismo, Risco de Morte)</td>
+              <td><strong>Até 4 horas</strong></td>
+              <td>Expulsão sumária, banimento de <em>fingerprint</em> e preservação de registros para a polícia.</td>
+            </tr>
+            <tr>
+              <td><strong>Golpes Financeiros, Phishing e Fraudes</strong></td>
+              <td><strong>Até 48 horas</strong></td>
+              <td>Suspensão cautelar de 24h ou banimento permanente com cancelamento de ofertas.</td>
+            </tr>
+            <tr>
+              <td><strong>Assédio e Perseguição</strong></td>
+              <td><strong>Até 48 horas</strong></td>
+              <td>Advertência formal (Strike) ou suspensão progressiva de 7 dias.</td>
+            </tr>
+            <tr>
+              <td><strong>Spam e Anúncios Repetitivos</strong></td>
+              <td><strong>Até 72 horas</strong></td>
+              <td>Remoção da oferta no mural e bloqueio temporário de publicação.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>3. Procedimento Obrigatório do Art. 21 do Marco Civil (Violação de Intimidade)</h2>
+        <p>Nos termos do <strong>Artigo 21 da Lei nº 12.965/2014</strong>, qualquer pessoa que tome conhecimento da divulgação não consentida de imagens ou vídeos contendo nudez ou atos sexuais de caráter privado que a envolvam poderá notificar a plataforma por:</p>
+        <ul>
+          <li>Canal direto no chat: opção <em>"Denunciar abuso"</em> → <em>"Violação de Intimidade"</em>;</li>
+          <li>E-mail expresso de urgência: <code class="text-red-400">urgente@pessoasaqui.com.br</code> com o assunto <em>"NOTIFICAÇÃO ART. 21 MARCO CIVIL"</em>.</li>
+        </ul>
+        <p>A plataforma promoverá a remoção de qualquer material público e a expulsão definitiva do agressor no <strong>prazo legal improrrogável de até 24 horas</strong>.</p>
+
+        <h2>4. Escala de Punições e Banimento por Hardware</h2>
+        <p>As penalidades aplicadas pela moderação seguem a proporção do agravo:</p>
+        <ol>
+          <li><strong>Advertência Formal (Strike):</strong> Notificação oficial de advertência no aplicativo;</li>
+          <li><strong>Suspensão Temporária:</strong> Bloqueio de comunicação e ofertas por 24 horas a 7 dias;</li>
+          <li><strong>Banimento Permanente de Dispositivo (<em>Hardware Ban</em>):</strong> Revogação da chave Ed25519 e inclusão da assinatura de hardware (<em>device fingerprint</em>) na lista negra, impedindo que o infrator utilize a rede mesmo reinstalando o aplicativo.</li>
+        </ol>
+
+        <h2>5. Direito de Defesa e Processo de Recurso</h2>
+        <p>O usuário que considerar que foi penalizado por equívoco pode abrir uma contestação através do menu superior do app: <em>"Petição & Suporte Oficial"</em>. A equipe de moderação revisará o histórico em até <strong>5 (cinco) dias úteis</strong>.</p>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Rodapé Institucional -->
+  <footer class="bg-brand-card border-t border-brand-border py-8 px-6 mt-12 text-center text-xs text-gray-500">
+    <div class="max-w-6xl mx-auto space-y-3">
+      <div class="flex items-center justify-center space-x-2 text-gray-400 font-semibold">
+        <i class="fa-solid fa-shield-halved text-emerald-400"></i>
+        <span>PessoasAqui — converse com quem está perto.</span>
+      </div>
+      <p class="text-[11px] text-gray-500 max-w-xl mx-auto">
+        Plataforma desenvolvida sob arquitetura de Criptografia de Ponta a Ponta (E2EE), Conhecimento Zero e cumprimento integral ao Marco Civil da Internet (Lei 12.965/14) e LGPD (Lei 13.709/18).
+      </p>
+      <div class="pt-2 text-[10px] text-gray-600">
+        © 2026 PessoasAqui. Todos os direitos reservados.
+      </div>
+    </div>
+  </footer>
+
+  <!-- Script de Navegação entre Documentos -->
+  <script>
+    function setTab(tabName) {
+      document.querySelectorAll('.doc-section').forEach(sec => sec.classList.add('hidden'));
+      document.querySelectorAll('.nav-tab').forEach(btn => {
+        btn.classList.remove('bg-brand-card', 'text-emerald-400', 'border-emerald-800', 'shadow');
+        btn.classList.add('text-gray-400', 'border-transparent');
+      });
+
+      const activeSec = document.getElementById(`doc-${tabName}`);
+      const activeBtn = document.getElementById(`btn-${tabName}`);
+
+      if (activeSec) activeSec.classList.remove('hidden');
+      if (activeBtn) {
+        activeBtn.classList.add('bg-brand-card', 'text-emerald-400', 'border-emerald-800', 'shadow');
+        activeBtn.classList.remove('text-gray-400', 'border-transparent');
+      }
+
+      history.replaceState(null, null, `#${tabName}`);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // Inicialização baseada na hash da URL (#privacidade, #termos, #autoridades, #moderacao)
+    window.addEventListener('DOMContentLoaded', () => {
+      const hash = window.location.hash.replace('#', '').toLowerCase();
+      if (['termos', 'privacidade', 'autoridades', 'moderacao'].includes(hash)) {
+        setTab(hash);
+      } else {
+        setTab('termos');
+      }
+    });
+
+    window.addEventListener('hashchange', () => {
+      const hash = window.location.hash.replace('#', '').toLowerCase();
+      if (['termos', 'privacidade', 'autoridades', 'moderacao'].includes(hash)) {
+        setTab(hash);
+      }
+    });
+  </script>
+</body>
+</html>

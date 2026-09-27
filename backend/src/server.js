@@ -50,6 +50,13 @@ initDatabase();
 app.get(['/admin', '/admin/'], (req, res) => res.sendFile(path.join(__dirname, '../public/admin/index.html')));
 app.use('/admin', express.static(path.join(__dirname, '../public/admin')));
 
+// Servir o Portal Jurídico, Termos de Uso e Política de Privacidade (Conformidade Google Play & LGPD)
+app.get(['/legal', '/legal/'], (req, res) => res.sendFile(path.join(__dirname, '../public/legal/index.html')));
+app.get(['/privacy', '/politica-de-privacidade'], (req, res) => res.redirect('/legal#privacidade'));
+app.get(['/terms', '/termos-de-uso'], (req, res) => res.redirect('/legal#termos'));
+app.get(['/law-enforcement', '/autoridades'], (req, res) => res.redirect('/legal#autoridades'));
+app.use('/legal', express.static(path.join(__dirname, '../public/legal')));
+
 // Garante tabelas persistentes se estiver conectado ao PostgreSQL
 setTimeout(async () => {
   if (isPostgres()) {
