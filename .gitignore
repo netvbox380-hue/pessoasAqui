@@ -17,3 +17,7 @@ local.properties
 # OS / Temporary
 .DS_Store
 Thumbs.db
+
+# Signing Keystores (keep private)
+*.jks
+*.keystore

@@ -22,9 +22,19 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("pessoasaqui-release-key.jks")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "pessoasaqui2026"
+            keyAlias = "pessoasaqui"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "pessoasaqui2026"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
