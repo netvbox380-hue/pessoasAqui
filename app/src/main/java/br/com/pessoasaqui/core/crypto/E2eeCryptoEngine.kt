@@ -29,19 +29,39 @@ object E2eeCryptoEngine {
      * Utilitário multiplataforma para codificação Base64 (compatível com Android Runtime e JVM Unit Tests)
      */
     object Base64Helper {
+        private val isAndroidRuntime: Boolean = try {
+            val test = android.util.Base64.encodeToString(byteArrayOf(1), android.util.Base64.NO_WRAP)
+            !test.isNullOrBlank()
+        } catch (_: Throwable) {
+            false
+        }
+
         fun encode(bytes: ByteArray): String {
-            return try {
-                android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-            } catch (_: Throwable) {
+            return if (isAndroidRuntime) {
+                try {
+                    android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                } catch (_: Throwable) {
+                    java.util.Base64.getEncoder().encodeToString(bytes)
+                }
+            } else {
                 java.util.Base64.getEncoder().encodeToString(bytes)
             }
         }
 
         fun decode(str: String): ByteArray {
-            return try {
-                android.util.Base64.decode(str.trim(), android.util.Base64.NO_WRAP)
-            } catch (_: Throwable) {
-                java.util.Base64.getDecoder().decode(str.trim())
+            val clean = str.trim().replace("\r", "").replace("\n", "")
+            return if (isAndroidRuntime) {
+                try {
+                    android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
+                } catch (_: Throwable) {
+                    java.util.Base64.getDecoder().decode(clean)
+                }
+            } else {
+                try {
+                    java.util.Base64.getDecoder().decode(clean)
+                } catch (_: Throwable) {
+                    java.util.Base64.getMimeDecoder().decode(clean)
+                }
             }
         }
     }

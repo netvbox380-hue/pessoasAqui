@@ -1,5 +1,6 @@
 package br.com.pessoasaqui.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -35,6 +36,7 @@ fun EntreNaSuaRecoveryScreen(
     pinSecurityManager: PinSecurityManager,
     onFindAuthorization: (String) -> RecoveryAuthorization?,
     onClaimRecovery: (suspend (recoveryKey: String, pin: String) -> Result<String>)? = null,
+    onRestoreConversations: (suspend (pin: String) -> Result<Int>)? = null,
     onRecoverySuccess: (String) -> Unit,
     onBack: () -> Unit
 ) {
@@ -353,6 +355,70 @@ fun EntreNaSuaRecoveryScreen(
                         modifier = Modifier.padding(12.dp),
                         textAlign = TextAlign.Center
                     )
+                }
+            }
+
+            // Oferta de Restauração de Conversas a partir dos Familiares
+            if (isSuccess && onRestoreConversations != null) {
+                var isRestoringVault by remember { mutableStateOf(false) }
+                var vaultStatus by remember { mutableStateOf<String?>(null) }
+
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "💬 Restaurar Histórico de Conversas?",
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = RadarCyan
+                            )
+                        )
+                        Text(
+                            text = "O cofre silencioso criptografado pode ser resgatado dos seus familiares de confiança agora.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        )
+                        if (vaultStatus != null) {
+                            Text(
+                                text = vaultStatus ?: "",
+                                style = MaterialTheme.typography.bodySmall.copy(color = EmeraldGreen)
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                isRestoringVault = true
+                                coroutineScope.launch {
+                                    val res = onRestoreConversations(pinInput)
+                                    isRestoringVault = false
+                                    if (res.isSuccess) {
+                                        val count = res.getOrNull() ?: 0
+                                        vaultStatus = "✨ $count mensagens restauradas dos familiares com sucesso!"
+                                    } else {
+                                        vaultStatus = res.exceptionOrNull()?.message ?: "Falha ao consultar familiares."
+                                    }
+                                }
+                            },
+                            enabled = !isRestoringVault,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen, contentColor = DeepBlack)
+                        ) {
+                            if (isRestoringVault) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = DeepBlack, strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Buscando cofre nos familiares...", fontWeight = FontWeight.Bold)
+                            } else {
+                                Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Baixar e Restaurar Conversas dos Familiares", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
                 }
             }
 

@@ -55,6 +55,7 @@ fun MainScreen(
     val subscriptionTier by (repository.subscriptionManager?.currentTier ?: MutableStateFlow(SubscriptionTier.FREE)).collectAsState()
     val scope = rememberCoroutineScope()
     var showVipDialog by remember { mutableStateOf(false) }
+    var showBackupDialog by remember { mutableStateOf(false) }
 
     // Pessoas que são conexões mútuas ou familiares
     val connectedPeople = remember(people) {
@@ -200,6 +201,22 @@ fun MainScreen(
                                 onClick = {
                                     showTopMenu = false
                                     showVipDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text("Cofre & Backup Familiar 🔒", color = RadarCyan)
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Shield,
+                                        contentDescription = null,
+                                        tint = RadarCyan
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    showBackupDialog = true
                                 }
                             )
                             DropdownMenuItem(
@@ -572,6 +589,14 @@ fun MainScreen(
                 VipSubscriptionDialog(
                     repository = repository,
                     onDismissRequest = { showVipDialog = false }
+                )
+            }
+
+            // Diálogo de Gestão do Cofre P2P Distribuído entre Familiares
+            if (showBackupDialog) {
+                DistributedBackupDialog(
+                    repository = repository,
+                    onDismissRequest = { showBackupDialog = false }
                 )
             }
         }

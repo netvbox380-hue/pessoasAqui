@@ -19,7 +19,10 @@ import br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager
 import br.com.pessoasaqui.core.subscription.SubscriptionPlanManager
 import br.com.pessoasaqui.core.subscription.SubscriptionTier
 import br.com.pessoasaqui.core.subscription.PlayBillingManager
+import br.com.pessoasaqui.core.backup.P2PVaultManager
+import br.com.pessoasaqui.core.backup.EncryptedVaultPackage
 import br.com.pessoasaqui.domain.model.RecurringReminder
+import android.util.Base64
 import br.com.pessoasaqui.domain.model.ActiveCallState
 import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.FamilyRole
@@ -100,6 +103,16 @@ class PessoasAquiRepository(
     val chatPersistence: ChatMessagePersistenceManager? = context?.let { ctx ->
         ChatMessagePersistenceManager(ctx)
     }
+
+    val p2pVaultManager: P2PVaultManager? = context?.let { ctx ->
+        P2PVaultManager(ctx)
+    }
+
+    private val _receivedVaultResponses = MutableStateFlow<List<EncryptedVaultPackage>>(emptyList())
+    val receivedVaultResponses: StateFlow<List<EncryptedVaultPackage>> = _receivedVaultResponses.asStateFlow()
+
+    private val _vaultAckCount = MutableStateFlow(0)
+    val vaultAckCount: StateFlow<Int> = _vaultAckCount.asStateFlow()
 
     // Estado do usuário atual neste aparelho persistido com SharedPreferences
     private val _isAgeVerified = MutableStateFlow(prefs?.getBoolean("is_age_verified", false) ?: false)
@@ -723,6 +736,55 @@ class PessoasAquiRepository(
                     "✨ Conexão Mútua Estabelecida com ${updatedPeer.alias}! Comunicação à distância, chamadas e mídia liberadas.",
                     messageId
                 )
+            }
+            payload.startsWith("[VAULT_STORE:") -> {
+                val b64 = payload.removePrefix("[VAULT_STORE:").removeSuffix("]")
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val jsonStr = String(E2eeCryptoEngine.Base64Helper.decode(b64), Charsets.UTF_8)
+                        val vault = p2pVaultManager?.deserializeVaultFromJson(jsonStr)
+                        if (vault != null) {
+                            val stored = p2pVaultManager?.storePeerVault(vault) ?: false
+                            if (stored) {
+                                sendPrivateMessage(cleanSender, "[VAULT_ACK:${vault.version}]")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w("PessoasAqui", "Falha ao processar VAULT_STORE silencioso: ${e.message}")
+                    }
+                }
+            }
+            payload.startsWith("[VAULT_ACK:") -> {
+                val ackVersion = payload.removePrefix("[VAULT_ACK:").removeSuffix("]").toLongOrNull() ?: 0L
+                Log.i("PessoasAqui", "Cofre v$ackVersion confirmado silenciosamente pelo contato $cleanSender")
+                _vaultAckCount.value = _vaultAckCount.value + 1
+            }
+            payload.startsWith("[VAULT_QUERY:") -> {
+                val targetOwnerHash = payload.removePrefix("[VAULT_QUERY:").removeSuffix("]").trim().lowercase()
+                scope.launch(Dispatchers.IO) {
+                    val vault = p2pVaultManager?.getStoredPeerVault(targetOwnerHash)
+                    if (vault != null) {
+                        val jsonStr = p2pVaultManager?.serializeVaultToJson(vault) ?: ""
+                        val b64 = E2eeCryptoEngine.Base64Helper.encode(jsonStr.toByteArray(Charsets.UTF_8))
+                        sendPrivateMessage(cleanSender, "[VAULT_RESP:$b64]")
+                    }
+                }
+            }
+            payload.startsWith("[VAULT_RESP:") -> {
+                val b64 = payload.removePrefix("[VAULT_RESP:").removeSuffix("]")
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val jsonStr = String(E2eeCryptoEngine.Base64Helper.decode(b64), Charsets.UTF_8)
+                        val vault = p2pVaultManager?.deserializeVaultFromJson(jsonStr)
+                        if (vault != null) {
+                            val current = _receivedVaultResponses.value.toMutableList()
+                            current.add(vault)
+                            _receivedVaultResponses.value = current
+                        }
+                    } catch (e: Exception) {
+                        Log.w("PessoasAqui", "Falha ao processar VAULT_RESP: ${e.message}")
+                    }
+                }
             }
             else -> {
                 proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload, messageId)
@@ -1971,6 +2033,173 @@ class PessoasAquiRepository(
 
     fun setVipTestOverride(enabled: Boolean) {
         subscriptionManager?.setTestOverride(enabled)
+    }
+
+    /**
+     * Executa o backup silencioso distribuído com replicação redundante 3x em contatos de confiança.
+     */
+    suspend fun executeDistributedBackup(
+        pin: String,
+        onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> }
+    ): Result<Int> {
+        val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
+        val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
+
+        val privateChats = cp.loadAllPrivateChats()
+        val localMural = cp.loadLocalMural()
+        val myIdentity = cryptoIdentityManager.getTechnicalIdentity()
+        val myAlias = _currentAlias.value
+
+        val vault = vm.createVaultPackage(
+            pin = pin,
+            ownerIdentityHash = myIdentity,
+            ownerAlias = myAlias,
+            privateChats = privateChats,
+            localMural = localMural
+        )
+
+        val jsonStr = vm.serializeVaultToJson(vault)
+        val b64 = E2eeCryptoEngine.Base64Helper.encode(jsonStr.toByteArray(Charsets.UTF_8))
+        val payload = "[VAULT_STORE:$b64]"
+
+        // Seleciona prioritariamente até 3 contatos de confiança (família ou conexões mútuas)
+        val allPeers = discoveredPeople.value
+        val targetPeers = allPeers
+            .filter { it.isFamily || it.isMutualConnection }
+            .distinctBy { it.technicalIdentityHash }
+            .sortedByDescending { if (it.isFamily) 1 else 0 }
+            .take(3)
+
+        if (targetPeers.isEmpty()) {
+            // Se ainda não há contatos mútuos conectados, salva localmente o registro da versão
+            vm.recordBackupSuccess(vault.version, 0, vault.totalMessagesCount)
+            return Result.failure(Exception("Nenhum familiar ou contato mútuo disponível para replicação. Utilize a 'Exportação de Arquivo' para backup pessoal."))
+        }
+
+        var sentCount = 0
+        for (i in targetPeers.indices) {
+            val peer = targetPeers[i]
+            try {
+                sendPrivateMessage(peer.technicalIdentityHash, payload)
+                sentCount++
+                onProgress(sentCount, targetPeers.size)
+                delay(60L)
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Falha ao enviar cofre silencioso para ${peer.alias}: ${e.message}")
+            }
+        }
+
+        vm.recordBackupSuccess(vault.version, sentCount, vault.totalMessagesCount)
+        return Result.success(sentCount)
+    }
+
+    /**
+     * Consulta os familiares conectados, elege o backup mais recente e restaura com o PIN do usuário.
+     */
+    suspend fun queryAndRestoreFromFamilyVault(
+        pin: String,
+        onStatusUpdate: (String) -> Unit = {}
+    ): Result<Int> {
+        val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
+        val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
+
+        _receivedVaultResponses.value = emptyList()
+        onStatusUpdate("Consultando familiares e conexões de confiança...")
+
+        val myIdentity = cryptoIdentityManager.getTechnicalIdentity().removePrefix("peer-").trim().lowercase()
+        val allPeers = discoveredPeople.value
+        val targets = allPeers.filter { it.isFamily || it.isMutualConnection }
+
+        if (targets.isEmpty()) {
+            return Result.failure(Exception("Nenhum familiar ou conexão mútua conectada no momento. Utilize a restauração por arquivo de backup (.backup)."))
+        }
+
+        for (p in targets) {
+            sendPrivateMessage(p.technicalIdentityHash, "[VAULT_QUERY:$myIdentity]")
+        }
+
+        // Aguarda respostas silenciosas dos aparelhos por até 3.5 segundos
+        var waitMs = 0
+        while (waitMs < 3500 && _receivedVaultResponses.value.isEmpty()) {
+            delay(200)
+            waitMs += 200
+        }
+
+        val responses = _receivedVaultResponses.value
+        if (responses.isEmpty()) {
+            return Result.failure(Exception("Nenhum familiar possui um cofre salvo para esta conta ou os contatos estão indisponíveis."))
+        }
+
+        // Eleição do backup mais recente (maior versão e timestamp)
+        val bestVault = responses.maxWithOrNull(compareBy({ it.version }, { it.timestampEpochMs }))
+            ?: return Result.failure(Exception("Cofre inválido recebido."))
+
+        onStatusUpdate("Cofre versão ${bestVault.version} localizado! Descriptografando...")
+
+        val restoreResult = vm.restoreFromVaultPackage(bestVault, pin)
+        if (restoreResult.isFailure) {
+            return Result.failure(restoreResult.exceptionOrNull() ?: Exception("Falha na descriptografia"))
+        }
+
+        val content = restoreResult.getOrThrow()
+        for ((peerId, msgs) in content.privateChats) {
+            cp.savePrivateChat(peerId, msgs)
+        }
+        cp.saveLocalMural(content.localMural)
+        proximitySimulator.loadPersistedMessages()
+
+        val totalMsgs = content.privateChats.values.sumOf { it.size } + content.localMural.size
+        return Result.success(totalMsgs)
+    }
+
+    /**
+     * Exporta o cofre em formato texto/JSON cifrado para contingência pessoal.
+     */
+    fun exportLocalBackupJson(pin: String): Result<String> {
+        val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
+        val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
+
+        val privateChats = cp.loadAllPrivateChats()
+        val localMural = cp.loadLocalMural()
+        val myIdentity = cryptoIdentityManager.getTechnicalIdentity()
+        val myAlias = _currentAlias.value
+
+        val vault = vm.createVaultPackage(
+            pin = pin,
+            ownerIdentityHash = myIdentity,
+            ownerAlias = myAlias,
+            privateChats = privateChats,
+            localMural = localMural
+        )
+
+        val jsonStr = vm.serializeVaultToJson(vault)
+        return Result.success(jsonStr)
+    }
+
+    /**
+     * Restaura o cofre a partir de um arquivo/JSON de backup local.
+     */
+    fun restoreFromLocalBackupJson(jsonString: String, pin: String): Result<Int> {
+        val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
+        val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
+
+        val vault = vm.deserializeVaultFromJson(jsonString)
+            ?: return Result.failure(Exception("Arquivo de backup inválido ou incompatível."))
+
+        val restoreResult = vm.restoreFromVaultPackage(vault, pin)
+        if (restoreResult.isFailure) {
+            return Result.failure(restoreResult.exceptionOrNull() ?: Exception("PIN incorreto ou falha na descriptografia."))
+        }
+
+        val content = restoreResult.getOrThrow()
+        for ((peerId, msgs) in content.privateChats) {
+            cp.savePrivateChat(peerId, msgs)
+        }
+        cp.saveLocalMural(content.localMural)
+        proximitySimulator.loadPersistedMessages()
+
+        val totalMsgs = content.privateChats.values.sumOf { it.size } + content.localMural.size
+        return Result.success(totalMsgs)
     }
 }
 
