@@ -18,6 +18,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -159,6 +161,7 @@ fun ChatDetailScreen(
     onGenerateFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
     onBlockUser: (String) -> Unit = { _ -> },
     onReportUser: (String) -> Unit = { _ -> },
+    onReportUserWithDetails: ((String, String, String, List<ChatMessage>) -> Unit)? = null,
     recurringReminders: List<RecurringReminder> = emptyList(),
     onSaveReminder: (RecurringReminder) -> Unit = {},
     onDeleteReminder: (String) -> Unit = {},
@@ -167,6 +170,7 @@ fun ChatDetailScreen(
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
     var menuExpanded by remember { mutableStateOf(false) }
+    var showReportDialog by remember { mutableStateOf(false) }
     var showFamilyRoleDialog by remember { mutableStateOf(false) }
     var showRemindersDialog by remember { mutableStateOf(false) }
     var showAttachmentOptions by remember { mutableStateOf(false) }
@@ -490,7 +494,7 @@ fun ChatDetailScreen(
                             text = { Text("Denunciar abuso", color = AlertRed) },
                             onClick = {
                                 menuExpanded = false
-                                onReportUser(person.id)
+                                showReportDialog = true
                             }
                         )
                     }
@@ -1418,6 +1422,127 @@ fun ChatDetailScreen(
                 onDeleteReminder = onDeleteReminder,
                 onToggleReminder = onToggleReminder,
                 onDismiss = { showRemindersDialog = false }
+            )
+        }
+
+        if (showReportDialog) {
+            var selectedViolationType by remember { mutableStateOf("HARASSMENT") }
+            var reportReasonText by remember { mutableStateOf("") }
+            var attachEvidence by remember { mutableStateOf(true) }
+
+            val violationOptions = listOf(
+                "HARASSMENT" to "Assédio ou Inconveniente",
+                "SCAM_FRAUD" to "Golpe, Fraude ou Venda Ilícita",
+                "PHISHING" to "Phishing (Tentativa de roubo de PIN / Chave)",
+                "ILLICIT_CONTENT" to "Conteúdo Ilegal ou Perigoso",
+                "SPAM" to "Spam ou Propaganda",
+                "OTHER" to "Outro Motivo"
+            )
+
+            AlertDialog(
+                onDismissRequest = { showReportDialog = false },
+                title = {
+                    Text(
+                        text = "🚨 Denunciar e Bloquear",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
+                },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            text = "Sua denúncia será enviada sigilosamente para a moderação. O usuário será bloqueado imediatamente.",
+                            color = Color.LightGray,
+                            fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Text(
+                            text = "Motivo da denúncia:",
+                            color = EmeraldGreen,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        violationOptions.forEach { (typeKey, label) ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selectedViolationType = typeKey }
+                                    .padding(vertical = 3.dp)
+                            ) {
+                                RadioButton(
+                                    selected = (selectedViolationType == typeKey),
+                                    onClick = { selectedViolationType = typeKey },
+                                    colors = RadioButtonDefaults.colors(selectedColor = EmeraldGreen)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(text = label, color = Color.White, fontSize = 12.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = reportReasonText,
+                            onValueChange = { reportReasonText = it },
+                            label = { Text("Detalhes (opcional)", color = Color.Gray, fontSize = 12.sp) },
+                            modifier = Modifier.fillMaxWidth(),
+                            maxLines = 2,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = EmeraldGreen,
+                                unfocusedBorderColor = DarkCardElevated,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            )
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = attachEvidence,
+                                onCheckedChange = { attachEvidence = it },
+                                colors = CheckboxDefaults.colors(checkedColor = EmeraldGreen)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Anexar últimas mensagens como prova",
+                                color = Color.Gray,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val evidenceList: List<ChatMessage> = if (attachEvidence) messages.takeLast(5) else emptyList()
+                            val finalReason = if (reportReasonText.isNotBlank()) reportReasonText else "Denúncia enviada pelo usuário"
+                            if (onReportUserWithDetails != null) {
+                                onReportUserWithDetails(person.id, selectedViolationType, finalReason, evidenceList)
+                            } else {
+                                onReportUser(person.id)
+                            }
+                            Toast.makeText(context, "Denúncia enviada à moderação. Contato bloqueado.", Toast.LENGTH_SHORT).show()
+                            showReportDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AlertRed)
+                    ) {
+                        Text("Bloquear & Denunciar", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showReportDialog = false }) {
+                        Text("Cancelar", color = Color.Gray, fontSize = 12.sp)
+                    }
+                },
+                containerColor = DarkSurface
             )
         }
     }

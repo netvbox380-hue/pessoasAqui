@@ -719,6 +719,82 @@ class PessoasAquiNetworkClient(
         }
     }
 
+    /**
+     * Envia formalmente uma denúncia de abuso ou violação para o servidor de moderação
+     */
+    suspend fun submitReport(
+        reporterIdentity: String,
+        accusedIdentity: String,
+        violationType: String,
+        reason: String,
+        evidenceMessages: List<Map<String, String>> = emptyList()
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("reporterIdentity", reporterIdentity)
+                put("accusedIdentity", accusedIdentity)
+                put("violationType", violationType)
+                put("reason", reason)
+                val arr = org.json.JSONArray()
+                for (ev in evidenceMessages) {
+                    val evObj = JSONObject()
+                    ev.forEach { (k, v) -> evObj.put(k, v) }
+                    arr.put(evObj)
+                }
+                put("evidenceMessages", arr)
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/reports")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    Result.failure(IOException("Erro HTTP ${response.code} ao enviar denúncia."))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Abre uma petição ou chamado de suporte com a equipe do PessoasAqui
+     */
+    suspend fun submitSupportTicket(
+        authorIdentity: String,
+        authorAlias: String,
+        category: String,
+        subject: String,
+        message: String
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("authorIdentity", authorIdentity)
+                put("authorAlias", authorAlias)
+                put("category", category)
+                put("subject", subject)
+                put("message", message)
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/tickets")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    Result.failure(IOException("Erro HTTP ${response.code} ao abrir chamado de suporte."))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun disconnectSocket() {
         try {
             activeWebSocket?.close(1000, "App closed")

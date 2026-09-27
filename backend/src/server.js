@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
@@ -45,7 +46,11 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 // Inicia conexão com banco (Supabase PostgreSQL ou local)
 initDatabase();
 
-// Garante tabela persistente de convites se estiver conectado ao PostgreSQL
+// Servir o Painel Administrativo Web Integrado
+app.get(['/admin', '/admin/'], (req, res) => res.sendFile(path.join(__dirname, '../public/admin/index.html')));
+app.use('/admin', express.static(path.join(__dirname, '../public/admin')));
+
+// Garante tabelas persistentes se estiver conectado ao PostgreSQL
 setTimeout(async () => {
   if (isPostgres()) {
     try {
@@ -61,9 +66,40 @@ setTimeout(async () => {
         used_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )`);
-      console.log('[DB] Tabela persistente de convites criptografados verificada.');
+
+      await query(`CREATE TABLE IF NOT EXISTS moderation_reports (
+        id VARCHAR(64) PRIMARY KEY,
+        reporter_identity VARCHAR(64),
+        accused_identity VARCHAR(64),
+        violation_type VARCHAR(64) DEFAULT 'ABUSE',
+        reason TEXT NOT NULL,
+        evidence_payload TEXT,
+        status VARCHAR(32) DEFAULT 'PENDING',
+        moderator_notes TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        resolved_at TIMESTAMPTZ
+      )`);
+
+      await query(`CREATE TABLE IF NOT EXISTS support_tickets (
+        id VARCHAR(64) PRIMARY KEY,
+        author_identity VARCHAR(64) NOT NULL,
+        author_alias VARCHAR(64),
+        subject VARCHAR(128) NOT NULL,
+        category VARCHAR(64) DEFAULT 'GERAL',
+        message TEXT NOT NULL,
+        status VARCHAR(32) DEFAULT 'OPEN',
+        moderator_reply TEXT,
+        replied_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )`);
+
+      const bannedRes = await query(`SELECT id FROM identities WHERE is_banned = TRUE`);
+      for (const row of bannedRes.rows) {
+        bannedIdentities.add(String(row.id).toLowerCase());
+      }
+      console.log(`[DB] Tabelas de moderação, tickets e convites verificadas (${bannedIdentities.size} banimentos ativos).`);
     } catch (err) {
-      console.warn('[DB] Nota ao verificar tabela de convites:', err.message);
+      console.warn('[DB] Nota ao verificar tabelas de moderação:', err.message);
     }
   }
 }, 500);
@@ -80,6 +116,8 @@ const activeInvites = new Map();
 const pendingMessages = new Map();
 // Cache de deduplicação de mensagens (evita mensagens repetidas/duplicadas)
 const recentMessageIds = new Map();
+// Conjunto de identidades banidas da rede (rejeição em tempo real)
+const bannedIdentities = new Set();
 
 function isDuplicateMessage(msgId) {
   if (!msgId) return false;
@@ -250,6 +288,17 @@ wss.on('connection', (ws, req) => {
         authenticatedIdentity = cleanId(msg.identityHash);
         const incomingAlias = (msg.alias || 'Usuário PessoasAqui').trim();
         const kAuth = keyId(authenticatedIdentity);
+
+        // Bloqueio imediato para usuários banidos pela moderação
+        if (bannedIdentities.has(kAuth)) {
+          console.warn(`[WS] Conexão rejeitada: ${kAuth} está banido.`);
+          ws.send(JSON.stringify({
+            type: 'ACCOUNT_BANNED',
+            message: 'Sua identidade foi suspensa por violação das Diretrizes da Comunidade.'
+          }));
+          setTimeout(() => { try { ws.close(4003, 'Banned'); } catch (_) {} }, 200);
+          return;
+        }
 
         // Regra 18: 1 Identidade = 1 Dispositivo Ativo. Fecha socket anterior se houver
         if (activeSockets.has(kAuth)) {
@@ -1307,9 +1356,527 @@ app.post('/api/family/recovery/claim', async (req, res) => {
   });
 });
 
+// =========================================================================
+// SISTEMA INTEGRADO DE MODERAÇÃO, SUPORTE E PAINEL ADMINISTRATIVO (WEB)
+// =========================================================================
+
+const ADMIN_USERNAME = process.env.ADMIN_USER || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'pessoasaqui2026';
+const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'pa_admin_secret_key_987654321_2026';
+
+function generateAdminToken(username) {
+  const payload = `${username}:${Date.now()}`;
+  const sig = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(payload).digest('hex');
+  return Buffer.from(`${payload}:${sig}`).toString('base64');
+}
+
+function verifyAdminToken(token) {
+  if (!token) return null;
+  try {
+    const decoded = Buffer.from(token, 'base64').toString('utf8');
+    const parts = decoded.split(':');
+    if (parts.length !== 3) return null;
+    const [username, timestamp, sig] = parts;
+    const expected = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(`${username}:${timestamp}`).digest('hex');
+    if (sig !== expected) return null;
+    // Validade de 7 dias
+    if (Date.now() - parseInt(timestamp, 10) > 7 * 24 * 3600 * 1000) return null;
+    return { username, role: 'SUPER_ADMIN' };
+  } catch (_) {
+    return null;
+  }
+}
+
+function requireAdminAuth(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.query.admin_token;
+  const verified = verifyAdminToken(token);
+  if (!verified) {
+    return res.status(401).json({ error: 'Acesso não autorizado ao painel de moderação.' });
+  }
+  req.adminUser = verified;
+  next();
+}
+
+// -------------------------------------------------------------
+// 1. ENDPOINTS PÚBLICOS DE SEGURANÇA E SUPORTE (App Android)
+// -------------------------------------------------------------
+
+/**
+ * Registro de Denúncia de Abuso / Violação (Enviado pelo App)
+ */
+app.post('/api/reports', async (req, res) => {
+  const { reporterIdentity, accusedIdentity, violationType, reason, evidenceMessages } = req.body;
+  if (!accusedIdentity || !reason) {
+    return res.status(400).json({ error: 'accusedIdentity e reason são obrigatórios.' });
+  }
+
+  const reportId = 'rep_' + Date.now().toString(36) + '_' + crypto.randomBytes(3).toString('hex');
+  const cleanReporter = cleanId(reporterIdentity);
+  const cleanAccused = cleanId(accusedIdentity);
+  const vType = (violationType || 'ABUSE').toUpperCase();
+  const evidencePayloadStr = typeof evidenceMessages === 'object' ? JSON.stringify(evidenceMessages) : (evidenceMessages || '');
+
+  const reportObj = {
+    id: reportId,
+    reporter_identity: cleanReporter,
+    accused_identity: cleanAccused,
+    violation_type: vType,
+    reason: reason.trim(),
+    evidence_payload: evidencePayloadStr,
+    status: 'PENDING',
+    moderator_notes: null,
+    created_at: new Date().toISOString(),
+    resolved_at: null
+  };
+
+  localStore.moderationReports.unshift(reportObj);
+  if (localStore.moderationReports.length > 500) localStore.moderationReports.pop();
+
+  if (isPostgres()) {
+    try {
+      await query(
+        `INSERT INTO moderation_reports (id, reporter_identity, accused_identity, violation_type, reason, evidence_payload, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'PENDING')`,
+        [reportId, cleanReporter, cleanAccused, vType, reason.trim(), evidencePayloadStr]
+      );
+    } catch (e) {
+      console.warn('[DB] Nota ao registrar denúncia no PostgreSQL:', e.message);
+    }
+  }
+
+  console.log(`[MODERAÇÃO] Nova denúncia ${reportId}: ${cleanReporter} denunciou ${cleanAccused} (${vType})`);
+  res.json({
+    success: true,
+    reportId,
+    message: 'Denúncia registrada com sucesso. Nossa equipe de moderação analisará as evidências com prioridade.'
+  });
+});
+
+/**
+ * Abertura de Petição / Chamado de Suporte (Enviado pelo App)
+ */
+app.post('/api/tickets', async (req, res) => {
+  const { authorIdentity, authorAlias, category, subject, message } = req.body;
+  if (!authorIdentity || !message) {
+    return res.status(400).json({ error: 'authorIdentity e message são obrigatórios.' });
+  }
+
+  const ticketId = 'tkt_' + Date.now().toString(36) + '_' + crypto.randomBytes(3).toString('hex');
+  const cleanAuthor = cleanId(authorIdentity);
+  const cat = (category || 'GERAL').toUpperCase();
+  const subj = (subject || 'Solicitação de Suporte').trim();
+
+  const ticketObj = {
+    id: ticketId,
+    author_identity: cleanAuthor,
+    author_alias: authorAlias || 'Usuário',
+    category: cat,
+    subject: subj,
+    message: message.trim(),
+    status: 'OPEN',
+    moderator_reply: null,
+    replied_at: null,
+    created_at: new Date().toISOString()
+  };
+
+  localStore.supportTickets.unshift(ticketObj);
+  if (localStore.supportTickets.length > 500) localStore.supportTickets.pop();
+
+  if (isPostgres()) {
+    try {
+      await query(
+        `INSERT INTO support_tickets (id, author_identity, author_alias, category, subject, message, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'OPEN')`,
+        [ticketId, cleanAuthor, authorAlias || 'Usuário', cat, subj, message.trim()]
+      );
+    } catch (e) {
+      console.warn('[DB] Nota ao gravar ticket no PostgreSQL:', e.message);
+    }
+  }
+
+  console.log(`[SUPORTE] Novo chamado ${ticketId} de ${cleanAuthor} (${subj})`);
+  res.json({
+    success: true,
+    ticketId,
+    message: 'Chamado de suporte recebido com sucesso. Responderemos em breve.'
+  });
+});
+
+/**
+ * Consulta de Chamados do Usuário (Para o App exibir respostas)
+ */
+app.get('/api/tickets/my', async (req, res) => {
+  const identity = cleanId(req.query.identity);
+  if (!identity) {
+    return res.status(400).json({ error: 'identity é obrigatório.' });
+  }
+
+  let tickets = localStore.supportTickets.filter(t => keyId(t.author_identity) === keyId(identity));
+
+  if (isPostgres()) {
+    try {
+      const dbRes = await query(
+        `SELECT * FROM support_tickets WHERE LOWER(author_identity) = LOWER($1) ORDER BY created_at DESC LIMIT 50`,
+        [identity]
+      );
+      if (dbRes.rows.length > 0) {
+        tickets = dbRes.rows;
+      }
+    } catch (_) {}
+  }
+
+  res.json({ success: true, tickets });
+});
+
+// -------------------------------------------------------------
+// 2. ENDPOINTS DA API DO PAINEL ADMINISTRATIVO (/admin/api)
+// -------------------------------------------------------------
+
+/**
+ * Login no Painel de Moderação / Admin
+ */
+app.post('/admin/api/login', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Usuário e senha são obrigatórios.' });
+  }
+
+  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+    const token = generateAdminToken(username);
+    console.log(`[ADMIN] Login realizado com sucesso por ${username}`);
+    return res.json({
+      success: true,
+      token,
+      user: { username, role: 'SUPER_ADMIN' }
+    });
+  }
+
+  console.warn(`[ADMIN] Tentativa de login inválida: usuário "${username}"`);
+  return res.status(401).json({ error: 'Credenciais de administrador incorretas.' });
+});
+
+/**
+ * Estatísticas e Métricas em Tempo Real
+ */
+app.get('/admin/api/stats', requireAdminAuth, async (req, res) => {
+  let totalIdentities = localStore.identities.size;
+  if (isPostgres()) {
+    try {
+      const countRes = await query('SELECT COUNT(*) as count FROM identities');
+      totalIdentities = parseInt(countRes.rows[0]?.count || 0, 10);
+    } catch (_) {}
+  }
+
+  const pendingReports = localStore.moderationReports.filter(r => r.status === 'PENDING').length;
+  const openTickets = localStore.supportTickets.filter(t => t.status === 'OPEN').length;
+
+  res.json({
+    onlineSockets: activeSockets.size,
+    activePresences: activePresence.size,
+    activeOffersCount: activeOffers.size,
+    totalIdentities,
+    pendingReports,
+    openTickets,
+    bannedIdentitiesCount: bannedIdentities.size,
+    serverUptimeSeconds: Math.floor(process.uptime()),
+    databaseMode: isPostgres() ? 'PostgreSQL (Supabase/Render)' : 'Memória Local (Dev Resiliente)'
+  });
+});
+
+/**
+ * Fila de Denúncias
+ */
+app.get('/admin/api/reports', requireAdminAuth, async (req, res) => {
+  let reports = [...localStore.moderationReports];
+
+  if (isPostgres()) {
+    try {
+      const dbRes = await query(`SELECT * FROM moderation_reports ORDER BY created_at DESC LIMIT 100`);
+      if (dbRes.rows.length > 0) {
+        reports = dbRes.rows;
+      }
+    } catch (_) {}
+  }
+
+  res.json({ success: true, reports });
+});
+
+/**
+ * Ações de Moderação sobre Denúncias (BAN, STRIKE, DISMISS)
+ */
+app.post('/admin/api/reports/:id/action', requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  const { action, notes } = req.body;
+
+  if (!['BAN', 'STRIKE', 'DISMISS'].includes(action)) {
+    return res.status(400).json({ error: 'Ação inválida. Use BAN, STRIKE ou DISMISS.' });
+  }
+
+  let report = localStore.moderationReports.find(r => r.id === id);
+  if (isPostgres()) {
+    try {
+      const rRes = await query(`SELECT * FROM moderation_reports WHERE id = $1`, [id]);
+      if (rRes.rows.length > 0) report = rRes.rows[0];
+    } catch (_) {}
+  }
+
+  if (!report) {
+    return res.status(404).json({ error: 'Denúncia não encontrada.' });
+  }
+
+  const accused = cleanId(report.accused_identity);
+  const kAccused = keyId(accused);
+  let newStatus = 'REVIEWED';
+
+  if (action === 'BAN') {
+    newStatus = 'BANNED';
+    bannedIdentities.add(kAccused);
+
+    if (isPostgres()) {
+      try {
+        await query(`UPDATE identities SET is_banned = TRUE WHERE LOWER(id) = LOWER($1)`, [accused]);
+        await query(`UPDATE devices SET is_active = FALSE, revoked_at = NOW() WHERE LOWER(identity_id) = LOWER($1)`, [accused]);
+      } catch (e) {
+        console.warn('[DB] Erro ao aplicar banimento no DB:', e.message);
+      }
+    }
+
+    // Derruba conexão ativa WebSocket se houver
+    const targetWs = activeSockets.get(kAccused);
+    if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+      try {
+        targetWs.send(JSON.stringify({
+          type: 'ACCOUNT_BANNED',
+          message: 'Sua conta foi permanentemente banida por descumprimento das regras de segurança e convivência.'
+        }));
+        setTimeout(() => { try { targetWs.close(4003, 'Banned by Moderator'); } catch (_) {} }, 200);
+      } catch (_) {}
+    }
+    activeSockets.delete(kAccused);
+
+    // Remove do radar de presença
+    if (activePresence.has(kAccused)) {
+      activePresence.delete(kAccused);
+      wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ type: 'PEER_OFFLINE', identityHash: accused }));
+        }
+      });
+    }
+
+    // Remove ofertas criadas por este usuário
+    for (const [offId, offData] of activeOffers.entries()) {
+      if (keyId(offData.authorId || offData.authorIdentity) === kAccused) {
+        activeOffers.delete(offId);
+      }
+    }
+
+    console.log(`[MODERAÇÃO] Identidade banida com sucesso: ${accused}`);
+
+  } else if (action === 'STRIKE') {
+    newStatus = 'STRIKE_ISSUED';
+    const targetWs = activeSockets.get(kAccused);
+    if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+      try {
+        targetWs.send(JSON.stringify({
+          type: 'MODERATION_WARNING',
+          message: '⚠️ Alerta da Moderação: Você recebeu um aviso por comportamento incompatível com as Diretrizes da Comunidade.'
+        }));
+      } catch (_) {}
+    }
+  } else if (action === 'DISMISS') {
+    newStatus = 'DISMISSED';
+  }
+
+  const resolvedAt = new Date().toISOString();
+  if (report) {
+    report.status = newStatus;
+    report.moderator_notes = notes || null;
+    report.resolved_at = resolvedAt;
+  }
+
+  if (isPostgres()) {
+    try {
+      await query(
+        `UPDATE moderation_reports SET status = $1, moderator_notes = $2, resolved_at = NOW() WHERE id = $3`,
+        [newStatus, notes || null, id]
+      );
+    } catch (_) {}
+  }
+
+  res.json({ success: true, status: newStatus, message: `Ação ${action} aplicada à denúncia ${id}.` });
+});
+
+/**
+ * Listagem de Ofertas Ativas no Mural para Auditoria
+ */
+app.get('/admin/api/offers', requireAdminAuth, (req, res) => {
+  const offersList = Array.from(activeOffers.values());
+  res.json({ success: true, offers: offersList });
+});
+
+/**
+ * Exclusão / Derrubada de Oferta Imprópria pelo Moderador
+ */
+app.delete('/admin/api/offers/:id', requireAdminAuth, (req, res) => {
+  const { id } = req.params;
+  if (!activeOffers.has(id)) {
+    return res.status(404).json({ error: 'Oferta não encontrada ou já expirou.' });
+  }
+
+  activeOffers.delete(id);
+
+  // Notifica todos os clientes conectados sobre a remoção da oferta
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(JSON.stringify({ type: 'OFFER_REMOVED', offerId: id }));
+      } catch (_) {}
+    }
+  });
+
+  console.log(`[MODERAÇÃO] Oferta ${id} removida pelo moderador.`);
+  res.json({ success: true, message: `Oferta ${id} removida do ar com sucesso.` });
+});
+
+/**
+ * Fila de Petições / Suporte de Clientes
+ */
+app.get('/admin/api/tickets', requireAdminAuth, async (req, res) => {
+  let tickets = [...localStore.supportTickets];
+
+  if (isPostgres()) {
+    try {
+      const dbRes = await query(`SELECT * FROM support_tickets ORDER BY created_at DESC LIMIT 100`);
+      if (dbRes.rows.length > 0) {
+        tickets = dbRes.rows;
+      }
+    } catch (_) {}
+  }
+
+  res.json({ success: true, tickets });
+});
+
+/**
+ * Resposta do Moderador a uma Petição de Cliente
+ */
+app.post('/admin/api/tickets/:id/reply', requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  const { reply } = req.body;
+
+  if (!reply || !reply.trim()) {
+    return res.status(400).json({ error: 'O texto da resposta é obrigatório.' });
+  }
+
+  let ticket = localStore.supportTickets.find(t => t.id === id);
+  if (isPostgres()) {
+    try {
+      const tRes = await query(`SELECT * FROM support_tickets WHERE id = $1`, [id]);
+      if (tRes.rows.length > 0) ticket = tRes.rows[0];
+    } catch (_) {}
+  }
+
+  if (!ticket) {
+    return res.status(404).json({ error: 'Petição/chamado não encontrado.' });
+  }
+
+  const nowIso = new Date().toISOString();
+  if (ticket) {
+    ticket.status = 'ANSWERED';
+    ticket.moderator_reply = reply.trim();
+    ticket.replied_at = nowIso;
+  }
+
+  if (isPostgres()) {
+    try {
+      await query(
+        `UPDATE support_tickets SET status = 'ANSWERED', moderator_reply = $1, replied_at = NOW() WHERE id = $2`,
+        [reply.trim(), id]
+      );
+    } catch (_) {}
+  }
+
+  const authorKey = keyId(ticket.author_identity);
+  const targetWs = activeSockets.get(authorKey);
+  const replyPayload = {
+    type: 'SUPPORT_TICKET_REPLIED',
+    ticketId: id,
+    subject: ticket.subject,
+    reply: reply.trim(),
+    timestamp: Date.now()
+  };
+
+  if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+    try {
+      targetWs.send(JSON.stringify(replyPayload));
+    } catch (_) {}
+  } else {
+    if (!pendingMessages.has(authorKey)) {
+      pendingMessages.set(authorKey, []);
+    }
+    pendingMessages.get(authorKey).push(replyPayload);
+  }
+
+  console.log(`[SUPORTE] Resposta enviada ao chamado ${id} para ${ticket.author_identity}`);
+  res.json({ success: true, message: 'Resposta enviada com sucesso ao cliente.' });
+});
+
+/**
+ * Consulta e Gestão de Usuários
+ */
+app.get('/admin/api/users', requireAdminAuth, async (req, res) => {
+  const usersList = [];
+  for (const [id, idData] of localStore.identities.entries()) {
+    const k = keyId(id);
+    usersList.push({
+      identity: id,
+      alias: idData.alias || 'Eu',
+      isOnline: activeSockets.has(k),
+      isBanned: bannedIdentities.has(k)
+    });
+  }
+
+  if (isPostgres() && usersList.length === 0) {
+    try {
+      const dbRes = await query(`SELECT id, alias, is_banned, created_at FROM identities LIMIT 100`);
+      for (const row of dbRes.rows) {
+        usersList.push({
+          identity: row.id,
+          alias: row.alias,
+          isOnline: activeSockets.has(keyId(row.id)),
+          isBanned: row.is_banned || bannedIdentities.has(keyId(row.id))
+        });
+      }
+    } catch (_) {}
+  }
+
+  res.json({ success: true, users: usersList });
+});
+
+/**
+ * Desbanir Usuário (Reverter Banimento)
+ */
+app.post('/admin/api/users/:id/unban', requireAdminAuth, async (req, res) => {
+  const id = cleanId(req.params.id);
+  const kId = keyId(id);
+
+  bannedIdentities.delete(kId);
+
+  if (isPostgres()) {
+    try {
+      await query(`UPDATE identities SET is_banned = FALSE WHERE LOWER(id) = LOWER($1)`, [id]);
+    } catch (_) {}
+  }
+
+  console.log(`[ADMIN] Banimento revertido para a identidade: ${id}`);
+  res.json({ success: true, message: `A identidade ${id} foi desbanida com sucesso.` });
+});
+
 if (require.main === module) {
   server.listen(PORT, () => {
     console.log(`[PessoasAqui Backend] Servidor rodando na porta ${PORT}`);
+    console.log(`[PessoasAqui Backend] Painel Administrativo disponível em http://localhost:${PORT}/admin`);
     console.log(`[PessoasAqui Backend] Pronto para desenvolvimento local ou deploy no Render/Supabase.`);
   });
 }

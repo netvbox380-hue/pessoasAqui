@@ -98,9 +98,26 @@ CREATE TABLE IF NOT EXISTS moderation_reports (
     id VARCHAR(64) PRIMARY KEY,
     reporter_identity VARCHAR(64),
     accused_identity VARCHAR(64),
+    violation_type VARCHAR(64) DEFAULT 'ABUSE',  -- HARASSMENT, SCAM_FRAUD, ILLICIT_CONTENT, SPAM, OTHER
     reason TEXT NOT NULL,
-    evidence_payload TEXT,                       -- Pacote de evidências criptografadas
-    status VARCHAR(32) DEFAULT 'PENDING',        -- PENDING, REVIEWED, RESOLVED, BANNED
+    evidence_payload TEXT,                       -- Pacote de evidências / mensagens
+    status VARCHAR(32) DEFAULT 'PENDING',        -- PENDING, UNDER_REVIEW, STRIKE_ISSUED, BANNED, DISMISSED
+    moderator_notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ
+);
+
+-- 9. PETIÇÕES E CHAMADOS DE SUPORTE AO CLIENTE (Helpdesk Integrado)
+CREATE TABLE IF NOT EXISTS support_tickets (
+    id VARCHAR(64) PRIMARY KEY,
+    author_identity VARCHAR(64) NOT NULL,
+    author_alias VARCHAR(64),
+    subject VARCHAR(128) NOT NULL,
+    category VARCHAR(64) DEFAULT 'GERAL',        -- GERAL, DUVIDA, RECUPERACAO, BUG, OUTRO
+    message TEXT NOT NULL,
+    status VARCHAR(32) DEFAULT 'OPEN',           -- OPEN, ANSWERED, CLOSED
+    moderator_reply TEXT,
+    replied_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

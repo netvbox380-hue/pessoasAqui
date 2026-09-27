@@ -2206,5 +2206,52 @@ class PessoasAquiRepository(
         val totalMsgs = content.privateChats.values.sumOf { it.size } + content.localMural.size
         return Result.success(totalMsgs)
     }
+
+    /**
+     * Envia formalmente denúncia de abuso ou conduta imprópria e bloqueia localmente o contato.
+     */
+    fun reportAndBlockUser(
+        accusedIdentity: String,
+        violationType: String,
+        reason: String,
+        evidenceMessages: List<ChatMessage> = emptyList()
+    ) {
+        moderationManager.blockUser(accusedIdentity)
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        val evidenceMaps = evidenceMessages.map { m ->
+            mapOf(
+                "senderAlias" to m.senderAlias,
+                "text" to (m.text ?: "")
+            )
+        }
+        scope.launch {
+            networkClient.submitReport(
+                reporterIdentity = myId,
+                accusedIdentity = accusedIdentity,
+                violationType = violationType,
+                reason = reason,
+                evidenceMessages = evidenceMaps
+            )
+        }
+    }
+
+    /**
+     * Abre uma petição ou chamado de suporte com a equipe.
+     */
+    suspend fun openSupportTicket(
+        category: String,
+        subject: String,
+        message: String
+    ): Result<Boolean> {
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        val myAlias = _currentAlias.value
+        return networkClient.submitSupportTicket(
+            authorIdentity = myId,
+            authorAlias = myAlias,
+            category = category,
+            subject = subject,
+            message = message
+        )
+    }
 }
 

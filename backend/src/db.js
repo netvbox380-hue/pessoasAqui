@@ -19,7 +19,8 @@ const localStore = {
   recoveryAuthorizations: new Map(),
   invites: new Map(),
   messages: [],
-  moderationReports: []
+  moderationReports: [],
+  supportTickets: []
 };
 
 function isFatalDbError(err) {

@@ -40,6 +40,7 @@ fun MainScreen(
     var tempAliasInput by remember { mutableStateOf("") }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
     var isCreatingInvite by remember { mutableStateOf(false) }
+    var showSupportDialog by remember { mutableStateOf(false) }
 
     val people by repository.discoveredPeople.collectAsState()
     val offers by repository.localOffers.collectAsState()
@@ -236,6 +237,16 @@ fun MainScreen(
                                 onClick = {
                                     showTopMenu = false
                                     repository.toggleDemoMode()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Petição & Suporte Oficial", color = TextPrimary) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Headset, contentDescription = null, tint = EmeraldGreen)
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    showSupportDialog = true
                                 }
                             )
                         }
@@ -597,6 +608,16 @@ fun MainScreen(
                 DistributedBackupDialog(
                     repository = repository,
                     onDismissRequest = { showBackupDialog = false }
+                )
+            }
+
+            // Diálogo de Petição e Suporte Oficial
+            if (showSupportDialog) {
+                SupportTicketDialog(
+                    onDismiss = { showSupportDialog = false },
+                    onSubmitTicket = { category, subject, message ->
+                        repository.openSupportTicket(category, subject, message)
+                    }
                 )
             }
         }

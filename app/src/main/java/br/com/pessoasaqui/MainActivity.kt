@@ -330,7 +330,20 @@ fun PessoasAquiNavHost(
                     currentScreen = Screen.Main
                 },
                 onReportUser = { userId ->
-                    repository.moderationManager.blockUser(userId)
+                    repository.reportAndBlockUser(
+                        accusedIdentity = userId,
+                        violationType = "ABUSE",
+                        reason = "Denúncia de abuso enviada pelo usuário"
+                    )
+                    currentScreen = Screen.Main
+                },
+                onReportUserWithDetails = { accusedId, vType, reason, evidence ->
+                    repository.reportAndBlockUser(
+                        accusedIdentity = accusedId,
+                        violationType = vType,
+                        reason = reason,
+                        evidenceMessages = evidence
+                    )
                     currentScreen = Screen.Main
                 },
                 recurringReminders = recurringReminders,

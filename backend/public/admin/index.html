@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PessoasAqui — Painel de Gestão e Moderação</title>
+  <!-- Tailwind CSS & FontAwesome -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'] },
+          colors: {
+            brand: {
+              50: '#ecfdf5',
+              500: '#10b981',
+              600: '#059669',
+              primary: '#00E676',
+              dark: '#08080A',
+              card: '#121318',
+              surface: '#181A20',
+              border: '#272B35'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; background-color: #08080A; color: #E2E8F0; }
+    .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scroll::-webkit-scrollbar-track { background: #121318; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #272B35; border-radius: 4px; }
+    .custom-scroll::-webkit-scrollbar-thumb:hover { background: #374151; }
+    .neon-glow { box-shadow: 0 0 15px rgba(0, 230, 118, 0.2); }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased selection:bg-emerald-500 selection:text-black">
+
+  <!-- ================= TELINHA DE LOGIN ================= -->
+  <div id="login-container" class="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4">
+    <div class="w-full max-w-md bg-brand-card border border-brand-border rounded-2xl p-8 shadow-2xl neon-glow">
+      <div class="flex items-center space-x-3 mb-6">
+        <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-black font-bold text-2xl shadow-lg">
+          <i class="fa-solid fa-shield-halved"></i>
+        </div>
+        <div>
+          <h1 class="text-xl font-bold text-white tracking-tight">PessoasAqui</h1>
+          <p class="text-xs text-emerald-400 font-medium tracking-wide uppercase">Centro de Moderação & Gestão</p>
+        </div>
+      </div>
+
+      <div id="login-error" class="hidden mb-4 p-3 bg-red-950/50 border border-red-800 text-red-300 rounded-lg text-sm"></div>
+
+      <form id="login-form" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-400 mb-1">Usuário Moderador / Admin</label>
+          <div class="relative">
+            <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500"><i class="fa-solid fa-user text-sm"></i></span>
+            <input type="text" id="username" class="w-full pl-9 pr-3 py-2.5 bg-brand-surface border border-brand-border rounded-xl text-white text-sm focus:outline-none focus:border-emerald-500 transition" placeholder="admin" required autofocus>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-400 mb-1">Senha de Acesso</label>
+          <div class="relative">
+            <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500"><i class="fa-solid fa-key text-sm"></i></span>
+            <input type="password" id="password" class="w-full pl-9 pr-3 py-2.5 bg-brand-surface border border-brand-border rounded-xl text-white text-sm focus:outline-none focus:border-emerald-500 transition" placeholder="••••••••" required>
+          </div>
+        </div>
+
+        <button type="submit" id="btn-login" class="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-sm rounded-xl transition flex items-center justify-center space-x-2">
+          <span>Acessar Painel</span>
+          <i class="fa-solid fa-arrow-right text-xs"></i>
+        </button>
+      </form>
+      <p class="text-center text-xs text-gray-600 mt-6">PessoasAqui — Rede Descentralizada Local 2026</p>
+    </div>
+  </div>
+
+  <!-- ================= PAINEL PRINCIPAL (APÓS LOGIN) ================= -->
+  <div id="app-container" class="hidden flex-1 flex flex-col min-h-screen">
+    
+    <!-- Topbar -->
+    <header class="bg-brand-card border-b border-brand-border px-6 py-3.5 flex items-center justify-between sticky top-0 z-40 backdrop-blur-md bg-opacity-90">
+      <div class="flex items-center space-x-4">
+        <div class="flex items-center space-x-3">
+          <div class="w-9 h-9 rounded-lg bg-emerald-500 flex items-center justify-center text-black font-extrabold text-lg">
+            <i class="fa-solid fa-shield-halved"></i>
+          </div>
+          <div>
+            <span class="font-bold text-white text-base tracking-tight">PessoasAqui <span class="text-emerald-400 text-xs font-medium px-2 py-0.5 bg-emerald-950/60 rounded border border-emerald-800">Admin</span></span>
+            <p class="text-[11px] text-gray-400" id="db-status-badge">Carregando status do servidor...</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Abas de Navegação -->
+      <nav class="hidden md:flex items-center space-x-1 bg-brand-surface p-1 rounded-xl border border-brand-border">
+        <button onclick="switchTab('dashboard')" id="nav-dashboard" class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium text-emerald-400 bg-brand-card shadow flex items-center space-x-2">
+          <i class="fa-solid fa-chart-pie text-xs"></i>
+          <span>Dashboard</span>
+        </button>
+        <button onclick="switchTab('reports')" id="nav-reports" class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium text-gray-400 hover:text-white flex items-center space-x-2">
+          <i class="fa-solid fa-triangle-exclamation text-xs"></i>
+          <span>Denúncias</span>
+          <span id="badge-reports" class="hidden px-1.5 py-0.2 bg-red-600 text-white text-[10px] font-bold rounded-full">0</span>
+        </button>
+        <button onclick="switchTab('offers')" id="nav-offers" class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium text-gray-400 hover:text-white flex items-center space-x-2">
+          <i class="fa-solid fa-bullhorn text-xs"></i>
+          <span>Ofertas no Ar</span>
+          <span id="badge-offers" class="hidden px-1.5 py-0.2 bg-blue-600 text-white text-[10px] font-bold rounded-full">0</span>
+        </button>
+        <button onclick="switchTab('tickets')" id="nav-tickets" class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium text-gray-400 hover:text-white flex items-center space-x-2">
+          <i class="fa-solid fa-headset text-xs"></i>
+          <span>Petições & Suporte</span>
+          <span id="badge-tickets" class="hidden px-1.5 py-0.2 bg-amber-500 text-black text-[10px] font-bold rounded-full">0</span>
+        </button>
+        <button onclick="switchTab('users')" id="nav-users" class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium text-gray-400 hover:text-white flex items-center space-x-2">
+          <i class="fa-solid fa-users text-xs"></i>
+          <span>Usuários</span>
+        </button>
+      </nav>
+
+      <!-- Ações Usuário -->
+      <div class="flex items-center space-x-3">
+        <button onclick="fetchStats(true)" title="Atualizar agora" class="p-2 text-gray-400 hover:text-white bg-brand-surface hover:bg-brand-border rounded-lg transition text-sm">
+          <i class="fa-solid fa-rotate"></i>
+        </button>
+        <div class="flex items-center space-x-2 pl-3 border-l border-brand-border">
+          <div class="w-8 h-8 rounded-full bg-emerald-950 border border-emerald-700 flex items-center justify-center text-emerald-400 text-xs font-bold" id="user-avatar">
+            AD
+          </div>
+          <button onclick="logout()" class="text-xs text-red-400 hover:text-red-300 font-medium py-1 px-2.5 rounded-lg border border-red-950 hover:bg-red-950/40 transition">
+            <i class="fa-solid fa-right-from-bracket mr-1"></i> Sair
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Mobile Nav Bar -->
+    <div class="md:hidden flex overflow-x-auto bg-brand-card border-b border-brand-border px-4 py-2 space-x-2">
+      <button onclick="switchTab('dashboard')" class="px-3 py-1 text-xs rounded-lg bg-brand-surface text-white shrink-0">Dashboard</button>
+      <button onclick="switchTab('reports')" class="px-3 py-1 text-xs rounded-lg bg-brand-surface text-gray-300 shrink-0">Denúncias</button>
+      <button onclick="switchTab('offers')" class="px-3 py-1 text-xs rounded-lg bg-brand-surface text-gray-300 shrink-0">Ofertas</button>
+      <button onclick="switchTab('tickets')" class="px-3 py-1 text-xs rounded-lg bg-brand-surface text-gray-300 shrink-0">Petições</button>
+      <button onclick="switchTab('users')" class="px-3 py-1 text-xs rounded-lg bg-brand-surface text-gray-300 shrink-0">Usuários</button>
+    </div>
+
+    <!-- Conteúdo Dinâmico -->
+    <main class="flex-1 p-6 max-w-7xl w-full mx-auto space-y-6">
+
+      <!-- ================= ABA 1: DASHBOARD ================= -->
+      <section id="view-dashboard" class="space-y-6">
+        <!-- Cards de Métricas Principais -->
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          <!-- Usuários Online -->
+          <div class="bg-brand-card border border-brand-border rounded-xl p-4 flex flex-col justify-between">
+            <div class="flex items-center justify-between text-gray-400 text-xs mb-2">
+              <span>Aparelhos Ativos</span>
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            </div>
+            <div class="text-2xl font-bold text-white tracking-tight" id="stat-online">0</div>
+            <span class="text-[11px] text-emerald-400 mt-1">Conectados agora</span>
+          </div>
+
+          <!-- Presenças no Radar -->
+          <div class="bg-brand-card border border-brand-border rounded-xl p-4 flex flex-col justify-between">
+            <div class="flex items-center justify-between text-gray-400 text-xs mb-2">
+              <span>Radar 10m Ativo</span>
+              <i class="fa-solid fa-location-crosshairs text-emerald-400"></i>
+            </div>
+            <div class="text-2xl font-bold text-white tracking-tight" id="stat-presence">0</div>
+            <span class="text-[11px] text-gray-400 mt-1">Pessoas em raio físico</span>
+          </div>
+
+          <!-- Ofertas Ativas -->
+          <div class="bg-brand-card border border-brand-border rounded-xl p-4 flex flex-col justify-between">
+            <div class="flex items-center justify-between text-gray-400 text-xs mb-2">
+              <span>Mural de Ofertas</span>
+              <i class="fa-solid fa-bullhorn text-blue-400"></i>
+            </div>
+            <div class="text-2xl font-bold text-white tracking-tight" id="stat-offers">0</div>
+            <span class="text-[11px] text-blue-400 mt-1">Divulgações locais</span>
+          </div>
+
+          <!-- Denúncias Pendentes -->
+          <div class="bg-brand-card border border-brand-border rounded-xl p-4 flex flex-col justify-between">
+            <div class="flex items-center justify-between text-gray-400 text-xs mb-2">
+              <span>Denúncias</span>
+              <i class="fa-solid fa-triangle-exclamation text-red-400"></i>
+            </div>
+            <div class="text-2xl font-bold text-red-400 tracking-tight" id="stat-reports">0</div>
+            <span class="text-[11px] text-red-400/80 mt-1">Aguardando moderação</span>
+          </div>
+
+          <!-- Petições de Clientes -->
+          <div class="bg-brand-card border border-brand-border rounded-xl p-4 flex flex-col justify-between">
+            <div class="flex items-center justify-between text-gray-400 text-xs mb-2">
+              <span>Petições / Suporte</span>
+              <i class="fa-solid fa-headset text-amber-400"></i>
+            </div>
+            <div class="text-2xl font-bold text-amber-400 tracking-tight" id="stat-tickets">0</div>
+            <span class="text-[11px] text-amber-400/80 mt-1">Chamados em aberto</span>
+          </div>
+
+          <!-- Banimentos Efetuados -->
+          <div class="bg-brand-card border border-brand-border rounded-xl p-4 flex flex-col justify-between">
+            <div class="flex items-center justify-between text-gray-400 text-xs mb-2">
+              <span>Contas Banidas</span>
+              <i class="fa-solid fa-ban text-gray-400"></i>
+            </div>
+            <div class="text-2xl font-bold text-gray-300 tracking-tight" id="stat-banned">0</div>
+            <span class="text-[11px] text-gray-500 mt-1">Tolerância zero ativa</span>
+          </div>
+        </div>
+
+        <!-- Banner de Diretrizes & Resumo Operacional -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div class="lg:col-span-2 bg-brand-card border border-brand-border rounded-2xl p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+              <h2 class="text-base font-bold text-white flex items-center space-x-2">
+                <i class="fa-solid fa-clipboard-check text-emerald-400"></i>
+                <span>Diretrizes de Moderação PessoasAqui</span>
+              </h2>
+              <span class="text-xs px-2.5 py-1 bg-brand-surface rounded-full text-gray-400 border border-brand-border">Regras Oficiais</span>
+            </div>
+            <div class="space-y-3 text-sm text-gray-300 leading-relaxed">
+              <div class="flex items-start space-x-3 p-3 bg-brand-surface/60 rounded-xl border border-brand-border/60">
+                <div class="w-6 h-6 rounded-md bg-red-950 border border-red-800 text-red-400 flex items-center justify-center shrink-0 text-xs font-bold">1</div>
+                <div>
+                  <h4 class="font-semibold text-white text-xs uppercase tracking-wide">Tolerância Zero (CSAM & Crimes Graves)</h4>
+                  <p class="text-xs text-gray-400 mt-0.5">Banimento imediato e irreversível de chaves e fingerprint do aparelho, com preservação de registros para as autoridades legais.</p>
+                </div>
+              </div>
+              <div class="flex items-start space-x-3 p-3 bg-brand-surface/60 rounded-xl border border-brand-border/60">
+                <div class="w-6 h-6 rounded-md bg-amber-950 border border-amber-800 text-amber-400 flex items-center justify-center shrink-0 text-xs font-bold">2</div>
+                <div>
+                  <h4 class="font-semibold text-white text-xs uppercase tracking-wide">Proteção Anti-Golpes & Phishing (PIN / 12 Palavras)</h4>
+                  <p class="text-xs text-gray-400 mt-0.5">Qualquer tentativa de induzir outro usuário a informar seu PIN ou palavras-semente acarreta suspensão sumária.</p>
+                </div>
+              </div>
+              <div class="flex items-start space-x-3 p-3 bg-brand-surface/60 rounded-xl border border-brand-border/60">
+                <div class="w-6 h-6 rounded-md bg-emerald-950 border border-emerald-800 text-emerald-400 flex items-center justify-center shrink-0 text-xs font-bold">3</div>
+                <div>
+                  <h4 class="font-semibold text-white text-xs uppercase tracking-wide">Privacidade E2EE Respeitada</h4>
+                  <p class="text-xs text-gray-400 mt-0.5">Mensagens normais não são interceptadas. O moderador só tem acesso ao trecho anexado formalmente pelo usuário denunciante como prova.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Informações de Sistema -->
+          <div class="bg-brand-card border border-brand-border rounded-2xl p-6 flex flex-col justify-between">
+            <div>
+              <h2 class="text-base font-bold text-white mb-4 flex items-center space-x-2">
+                <i class="fa-solid fa-server text-emerald-400"></i>
+                <span>Status da Infraestrutura</span>
+              </h2>
+              <dl class="space-y-3 text-xs">
+                <div class="flex justify-between py-1 border-b border-brand-border">
+                  <dt class="text-gray-400">Persistência:</dt>
+                  <dd class="text-white font-medium" id="info-db-mode">Detectando...</dd>
+                </div>
+                <div class="flex justify-between py-1 border-b border-brand-border">
+                  <dt class="text-gray-400">Tempo de Atividade:</dt>
+                  <dd class="text-white font-medium" id="info-uptime">0s</dd>
+                </div>
+                <div class="flex justify-between py-1 border-b border-brand-border">
+                  <dt class="text-gray-400">Total de Identidades:</dt>
+                  <dd class="text-white font-medium" id="info-total-ids">0</dd>
+                </div>
+                <div class="flex justify-between py-1 border-b border-brand-border">
+                  <dt class="text-gray-400">Protocolo em Tempo Real:</dt>
+                  <dd class="text-emerald-400 font-medium">WebSocket WSS / RFC 6455</dd>
+                </div>
+              </dl>
+            </div>
+
+            <div class="mt-6 pt-4 border-t border-brand-border flex items-center justify-between">
+              <span class="text-xs text-gray-500">PessoasAqui v1.0 Backend</span>
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-950 text-emerald-400 border border-emerald-800">Operacional</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= ABA 2: DENÚNCIAS ================= -->
+      <section id="view-reports" class="hidden space-y-6">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+              <i class="fa-solid fa-triangle-exclamation text-red-500"></i>
+              <span>Fila de Denúncias de Abuso</span>
+            </h2>
+            <p class="text-xs text-gray-400 mt-1">Analise os relatos enviados pelos usuários e decida as punições com base nas evidências.</p>
+          </div>
+          <div class="flex items-center space-x-2">
+            <select id="filter-report-status" onchange="renderReports()" class="bg-brand-surface border border-brand-border text-xs rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500">
+              <option value="ALL">Todas as denúncias</option>
+              <option value="PENDING" selected>Apenas Pendentes</option>
+              <option value="BANNED">Usuários Banidos</option>
+              <option value="DISMISSED">Descartadas</option>
+            </select>
+            <button onclick="loadReports()" class="px-3 py-2 bg-brand-surface hover:bg-brand-border text-gray-300 rounded-xl text-xs transition">
+              <i class="fa-solid fa-rotate mr-1"></i> Atualizar
+            </button>
+          </div>
+        </div>
+
+        <!-- Lista de Denúncias -->
+        <div id="reports-list-container" class="space-y-4">
+          <div class="p-8 text-center text-gray-500 text-sm">Carregando denúncias...</div>
+        </div>
+      </section>
+
+      <!-- ================= ABA 3: AUDITORIA DE OFERTAS ================= -->
+      <section id="view-offers" class="hidden space-y-6">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+              <i class="fa-solid fa-bullhorn text-blue-400"></i>
+              <span>Mural de Ofertas & Divulgações Ativas</span>
+            </h2>
+            <p class="text-xs text-gray-400 mt-1">Monitore e derrube anúncios inadequados, golpes ou spam postados no radar local.</p>
+          </div>
+          <button onclick="loadOffers()" class="px-3 py-2 bg-brand-surface hover:bg-brand-border text-gray-300 rounded-xl text-xs transition">
+            <i class="fa-solid fa-rotate mr-1"></i> Atualizar Mural
+          </button>
+        </div>
+
+        <!-- Grade de Ofertas -->
+        <div id="offers-grid-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div class="col-span-full p-8 text-center text-gray-500 text-sm">Carregando ofertas no ar...</div>
+        </div>
+      </section>
+
+      <!-- ================= ABA 4: PETIÇÕES & SUPORTE ================= -->
+      <section id="view-tickets" class="hidden space-y-6">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+              <i class="fa-solid fa-headset text-amber-400"></i>
+              <span>Petições & Chamados de Clientes</span>
+            </h2>
+            <p class="text-xs text-gray-400 mt-1">Dúvidas, pedidos de ajuda com PIN e solicitações enviadas diretamente do app.</p>
+          </div>
+          <button onclick="loadTickets()" class="px-3 py-2 bg-brand-surface hover:bg-brand-border text-gray-300 rounded-xl text-xs transition">
+            <i class="fa-solid fa-rotate mr-1"></i> Atualizar Chamados
+          </button>
+        </div>
+
+        <div id="tickets-list-container" class="space-y-4">
+          <div class="p-8 text-center text-gray-500 text-sm">Carregando chamados...</div>
+        </div>
+      </section>
+
+      <!-- ================= ABA 5: USUÁRIOS & BANIMENTOS ================= -->
+      <section id="view-users" class="hidden space-y-6">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+              <i class="fa-solid fa-users text-emerald-400"></i>
+              <span>Gestão de Identidades</span>
+            </h2>
+            <p class="text-xs text-gray-400 mt-1">Consulte status de conexão e reverta banimentos aplicados incorretamente.</p>
+          </div>
+          <div class="relative w-full md:w-64">
+            <input type="text" id="search-user" oninput="renderUsers()" placeholder="Buscar por hash ou apelido..." class="w-full pl-9 pr-3 py-2 bg-brand-surface border border-brand-border rounded-xl text-xs text-white focus:outline-none focus:border-emerald-500">
+            <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-gray-500 text-xs"></i>
+          </div>
+        </div>
+
+        <div class="bg-brand-card border border-brand-border rounded-2xl overflow-hidden shadow-sm">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-brand-surface text-gray-400 uppercase tracking-wider text-[10px] border-b border-brand-border">
+                <tr>
+                  <th class="py-3 px-4">Identidade Criptográfica</th>
+                  <th class="py-3 px-4">Apelido</th>
+                  <th class="py-3 px-4">Presença Online</th>
+                  <th class="py-3 px-4">Status de Moderação</th>
+                  <th class="py-3 px-4 text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="users-table-body" class="divide-y divide-brand-border">
+                <tr><td colspan="5" class="p-6 text-center text-gray-500">Carregando usuários...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ================= MODAL DE RESPOSTA A PETIÇÃO ================= -->
+  <div id="modal-reply-ticket" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+    <div class="w-full max-w-lg bg-brand-card border border-brand-border rounded-2xl p-6 shadow-2xl">
+      <div class="flex items-center justify-between mb-4 pb-3 border-b border-brand-border">
+        <h3 class="font-bold text-white text-base flex items-center space-x-2">
+          <i class="fa-solid fa-reply text-emerald-400"></i>
+          <span>Responder Chamado</span>
+        </h3>
+        <button onclick="closeReplyModal()" class="text-gray-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="space-y-4">
+        <div class="p-3 bg-brand-surface rounded-xl border border-brand-border text-xs">
+          <div class="font-semibold text-emerald-400 mb-1" id="modal-ticket-subject">Assunto</div>
+          <p class="text-gray-300 leading-relaxed" id="modal-ticket-msg">Mensagem...</p>
+          <div class="text-[10px] text-gray-500 mt-2" id="modal-ticket-meta">Autor: ...</div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-300 mb-1">Sua Resposta Oficial (será entregue no app do cliente):</label>
+          <textarea id="modal-ticket-reply-text" rows="4" class="w-full p-3 bg-brand-surface border border-brand-border rounded-xl text-xs text-white focus:outline-none focus:border-emerald-500" placeholder="Olá! Analisamos sua solicitação..."></textarea>
+        </div>
+
+        <div class="flex items-center justify-end space-x-3 pt-2">
+          <button onclick="closeReplyModal()" class="px-4 py-2 bg-brand-surface hover:bg-brand-border text-gray-300 text-xs rounded-xl transition">Cancelar</button>
+          <button onclick="sendTicketReply()" class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-xs rounded-xl transition flex items-center space-x-2">
+            <span>Enviar Resposta ao App</span>
+            <i class="fa-solid fa-paper-plane text-[10px]"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- JAVASCRIPT DO PAINEL -->
+  <script>
+    let authToken = localStorage.getItem('pa_admin_token') || '';
+    let currentTab = 'dashboard';
+    let rawReports = [];
+    let rawOffers = [];
+    let rawTickets = [];
+    let rawUsers = [];
+    let activeTicketId = null;
+
+    // Inicialização
+    document.addEventListener('DOMContentLoaded', () => {
+      if (authToken) {
+        showApp();
+      } else {
+        showLogin();
+      }
+
+      document.getElementById('login-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value.trim();
+        const errEl = document.getElementById('login-error');
+        errEl.classList.add('hidden');
+
+        try {
+          const res = await fetch('/admin/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+          });
+          const data = await res.json();
+          if (res.ok && data.token) {
+            authToken = data.token;
+            localStorage.setItem('pa_admin_token', authToken);
+            showApp();
+          } else {
+            errEl.textContent = data.error || 'Credenciais inválidas.';
+            errEl.classList.remove('hidden');
+          }
+        } catch (err) {
+          errEl.textContent = 'Erro ao conectar ao servidor.';
+          errEl.classList.remove('hidden');
+        }
+      });
+    });
+
+    function showLogin() {
+      document.getElementById('login-container').classList.remove('hidden');
+      document.getElementById('app-container').classList.add('hidden');
+    }
+
+    function showApp() {
+      document.getElementById('login-container').classList.add('hidden');
+      document.getElementById('app-container').classList.remove('hidden');
+      fetchStats();
+      // Polling a cada 10 segundos para atualização em tempo real
+      setInterval(() => {
+        if (authToken && !document.hidden) fetchStats(false);
+      }, 10000);
+    }
+
+    function logout() {
+      authToken = '';
+      localStorage.removeItem('pa_admin_token');
+      showLogin();
+    }
+
+    function switchTab(tabId) {
+      currentTab = tabId;
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('text-emerald-400', 'bg-brand-card', 'shadow');
+        btn.classList.add('text-gray-400');
+      });
+      const activeBtn = document.getElementById(`nav-${tabId}`);
+      if (activeBtn) {
+        activeBtn.classList.remove('text-gray-400');
+        activeBtn.classList.add('text-emerald-400', 'bg-brand-card', 'shadow');
+      }
+
+      ['dashboard', 'reports', 'offers', 'tickets', 'users'].forEach(t => {
+        const sec = document.getElementById(`view-${t}`);
+        if (sec) sec.classList.toggle('hidden', t !== tabId);
+      });
+
+      if (tabId === 'reports') loadReports();
+      if (tabId === 'offers') loadOffers();
+      if (tabId === 'tickets') loadTickets();
+      if (tabId === 'users') loadUsers();
+    }
+
+    async function apiRequest(endpoint, options = {}) {
+      options.headers = options.headers || {};
+      options.headers['Authorization'] = `Bearer ${authToken}`;
+      options.headers['Content-Type'] = options.headers['Content-Type'] || 'application/json';
+
+      const res = await fetch(endpoint, options);
+      if (res.status === 401) {
+        logout();
+        throw new Error('Sessão expirada. Faça login novamente.');
+      }
+      return res.json();
+    }
+
+    async function fetchStats(showFeedback = false) {
+      try {
+        const data = await apiRequest('/admin/api/stats');
+        document.getElementById('stat-online').textContent = data.onlineSockets ?? 0;
+        document.getElementById('stat-presence').textContent = data.activePresences ?? 0;
+        document.getElementById('stat-offers').textContent = data.activeOffersCount ?? 0;
+        document.getElementById('stat-reports').textContent = data.pendingReports ?? 0;
+        document.getElementById('stat-tickets').textContent = data.openTickets ?? 0;
+        document.getElementById('stat-banned').textContent = data.bannedIdentitiesCount ?? 0;
+
+        // Atualiza Badges
+        const repBadge = document.getElementById('badge-reports');
+        if (data.pendingReports > 0) {
+          repBadge.textContent = data.pendingReports;
+          repBadge.classList.remove('hidden');
+        } else {
+          repBadge.classList.add('hidden');
+        }
+
+        const tktBadge = document.getElementById('badge-tickets');
+        if (data.openTickets > 0) {
+          tktBadge.textContent = data.openTickets;
+          tktBadge.classList.remove('hidden');
+        } else {
+          tktBadge.classList.add('hidden');
+        }
+
+        const offBadge = document.getElementById('badge-offers');
+        if (data.activeOffersCount > 0) {
+          offBadge.textContent = data.activeOffersCount;
+          offBadge.classList.remove('hidden');
+        } else {
+          offBadge.classList.add('hidden');
+        }
+
+        // Informações de Infraestrutura
+        document.getElementById('db-status-badge').textContent = `Conectado ao servidor • ${data.databaseMode}`;
+        document.getElementById('info-db-mode').textContent = data.databaseMode;
+        document.getElementById('info-total-ids').textContent = data.totalIdentities ?? 0;
+        
+        const uptimeMins = Math.floor((data.serverUptimeSeconds || 0) / 60);
+        document.getElementById('info-uptime').textContent = `${uptimeMins} min`;
+
+        if (showFeedback) alert('Métricas atualizadas com sucesso.');
+      } catch (err) {
+        console.error('Erro ao buscar estatísticas:', err);
+      }
+    }
+
+    // ================= CARREGAR DENÚNCIAS =================
+    async function loadReports() {
+      const container = document.getElementById('reports-list-container');
+      try {
+        const res = await apiRequest('/admin/api/reports');
+        rawReports = res.reports || [];
+        renderReports();
+      } catch (err) {
+        container.innerHTML = `<div class="p-6 text-center text-red-400 text-xs">Erro ao carregar denúncias: ${err.message}</div>`;
+      }
+    }
+
+    function renderReports() {
+      const container = document.getElementById('reports-list-container');
+      const filter = document.getElementById('filter-report-status').value;
+
+      let filtered = rawReports;
+      if (filter !== 'ALL') {
+        filtered = rawReports.filter(r => r.status === filter);
+      }
+
+      if (filtered.length === 0) {
+        container.innerHTML = `
+          <div class="bg-brand-card border border-brand-border rounded-2xl p-12 text-center">
+            <div class="w-12 h-12 rounded-full bg-emerald-950/60 border border-emerald-800 text-emerald-400 flex items-center justify-center mx-auto mb-3 text-lg">
+              <i class="fa-solid fa-check"></i>
+            </div>
+            <h4 class="font-bold text-white text-sm">Nenhuma denúncia nesta categoria</h4>
+            <p class="text-xs text-gray-500 mt-1">O ecossistema PessoasAqui está tranquilo no momento.</p>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = filtered.map(rep => {
+        let evidenceHtml = '<span class="text-gray-500 italic">Sem evidência textual anexada</span>';
+        if (rep.evidence_payload) {
+          try {
+            const parsed = JSON.parse(rep.evidence_payload);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              evidenceHtml = `
+                <div class="mt-2 p-3 bg-brand-surface rounded-xl border border-brand-border space-y-1.5 text-xs">
+                  <div class="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide">Mensagens Anexadas como Prova:</div>
+                  ${parsed.map(m => `
+                    <div class="p-1.5 rounded bg-black/40 text-gray-300">
+                      <span class="text-gray-500 text-[10px]">${m.senderAlias || 'Usuário'}:</span> ${escapeHtml(m.text || m.ciphertextPayload || '')}
+                    </div>
+                  `).join('')}
+                </div>
+              `;
+            } else if (typeof parsed === 'string') {
+              evidenceHtml = `<div class="mt-2 p-2 bg-brand-surface rounded text-xs text-gray-300">${escapeHtml(parsed)}</div>`;
+            }
+          } catch (_) {
+            evidenceHtml = `<div class="mt-2 p-2 bg-brand-surface rounded text-xs text-gray-300">${escapeHtml(rep.evidence_payload)}</div>`;
+          }
+        }
+
+        const isPending = rep.status === 'PENDING';
+        const statusBadge = rep.status === 'BANNED' 
+          ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-950 text-red-400 border border-red-800">USUÁRIO BANIDO</span>'
+          : rep.status === 'STRIKE_ISSUED'
+          ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800">AVISO APLICADO</span>'
+          : rep.status === 'DISMISSED'
+          ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-gray-800 text-gray-400 border border-gray-700">DESCARTADA</span>'
+          : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-yellow-950 text-yellow-400 border border-yellow-800">PENDENTE</span>';
+
+        return `
+          <div class="bg-brand-card border border-brand-border rounded-2xl p-5 shadow-sm space-y-3">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-brand-border/60 pb-3">
+              <div class="flex items-center space-x-2">
+                <span class="px-2.5 py-0.5 rounded-md text-[11px] font-extrabold uppercase bg-red-950/70 border border-red-800 text-red-300">
+                  ${escapeHtml(rep.violation_type || 'ABUSO')}
+                </span>
+                <span class="text-xs text-gray-400">• ID: <code class="text-gray-300">${rep.id}</code></span>
+                <span class="text-xs text-gray-500">• ${new Date(rep.created_at).toLocaleString('pt-BR')}</span>
+              </div>
+              <div>${statusBadge}</div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div class="p-2.5 bg-brand-surface/40 rounded-xl border border-brand-border/40">
+                <span class="text-gray-500 block text-[10px] uppercase">Usuário Acusado (Infrator):</span>
+                <span class="font-mono text-white font-semibold select-all">${escapeHtml(rep.accused_identity || 'N/A')}</span>
+              </div>
+              <div class="p-2.5 bg-brand-surface/40 rounded-xl border border-brand-border/40">
+                <span class="text-gray-500 block text-[10px] uppercase">Denunciante:</span>
+                <span class="font-mono text-gray-300 select-all">${escapeHtml(rep.reporter_identity || 'Anônimo')}</span>
+              </div>
+            </div>
+
+            <div class="text-xs">
+              <span class="text-gray-400 font-semibold block mb-1">Motivo do Relato:</span>
+              <p class="p-2.5 bg-brand-surface/80 rounded-xl border border-brand-border text-gray-200">${escapeHtml(rep.reason)}</p>
+            </div>
+
+            ${evidenceHtml}
+
+            ${rep.moderator_notes ? `
+              <div class="text-[11px] text-amber-300/80 bg-amber-950/30 p-2 rounded border border-amber-900/50">
+                <strong>Nota do Moderador:</strong> ${escapeHtml(rep.moderator_notes)}
+              </div>
+            ` : ''}
+
+            ${isPending ? `
+              <div class="pt-3 border-t border-brand-border flex items-center justify-end space-x-2">
+                <button onclick="handleReportAction('${rep.id}', 'DISMISS')" class="px-3 py-1.5 rounded-xl border border-gray-700 text-gray-300 hover:bg-gray-800 text-xs transition">
+                  <i class="fa-solid fa-xmark mr-1"></i> Descartar
+                </button>
+                <button onclick="handleReportAction('${rep.id}', 'STRIKE')" class="px-3 py-1.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 text-xs transition">
+                  <i class="fa-solid fa-bell mr-1"></i> Aplicar Aviso (Strike)
+                </button>
+                <button onclick="handleReportAction('${rep.id}', 'BAN')" class="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-semibold text-xs transition shadow-lg">
+                  <i class="fa-solid fa-ban mr-1"></i> Banir Usuário
+                </button>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function handleReportAction(reportId, action) {
+      let confirmMsg = 'Confirma esta ação?';
+      if (action === 'BAN') confirmMsg = 'ATENÇÃO: Deseja banir definitivamente este usuário? Ele será desconectado e não poderá mais usar o app.';
+      if (!confirm(confirmMsg)) return;
+
+      const notes = prompt('Insira uma justificativa interna (opcional):') || '';
+
+      try {
+        const res = await apiRequest(`/admin/api/reports/${reportId}/action`, {
+          method: 'POST',
+          body: JSON.stringify({ action, notes })
+        });
+        alert(res.message || 'Ação aplicada com sucesso!');
+        loadReports();
+        fetchStats();
+      } catch (err) {
+        alert('Erro ao aplicar ação: ' + err.message);
+      }
+    }
+
+    // ================= CARREGAR OFERTAS =================
+    async function loadOffers() {
+      const container = document.getElementById('offers-grid-container');
+      try {
+        const res = await apiRequest('/admin/api/offers');
+        rawOffers = res.offers || [];
+        renderOffers();
+      } catch (err) {
+        container.innerHTML = `<div class="col-span-full p-6 text-center text-red-400 text-xs">Erro: ${err.message}</div>`;
+      }
+    }
+
+    function renderOffers() {
+      const container = document.getElementById('offers-grid-container');
+      if (rawOffers.length === 0) {
+        container.innerHTML = `
+          <div class="col-span-full bg-brand-card border border-brand-border rounded-2xl p-12 text-center">
+            <div class="w-12 h-12 rounded-full bg-blue-950/60 border border-blue-800 text-blue-400 flex items-center justify-center mx-auto mb-3 text-lg">
+              <i class="fa-solid fa-bullhorn"></i>
+            </div>
+            <h4 class="font-bold text-white text-sm">Nenhuma oferta ou divulgação ativa no momento</h4>
+            <p class="text-xs text-gray-500 mt-1">Quando os usuários postarem no radar local, elas aparecerão aqui para auditoria.</p>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = rawOffers.map(off => {
+        return `
+          <div class="bg-brand-card border border-brand-border rounded-2xl p-4 flex flex-col justify-between space-y-3">
+            <div>
+              <div class="flex items-center justify-between text-xs text-gray-400 mb-2">
+                <span class="px-2 py-0.5 bg-blue-950 border border-blue-800 text-blue-300 rounded text-[10px] font-bold uppercase">
+                  ${escapeHtml(off.category || 'MURAL')}
+                </span>
+                <span class="text-[10px] text-gray-500">${new Date(off.createdAt || Date.now()).toLocaleTimeString()}</span>
+              </div>
+              <h4 class="font-bold text-white text-sm tracking-tight">${escapeHtml(off.title || 'Sem título')}</h4>
+              <p class="text-xs text-gray-300 mt-1 line-clamp-3 leading-relaxed">${escapeHtml(off.description || off.content || '')}</p>
+              ${off.price ? `<div class="text-emerald-400 font-bold text-xs mt-2">R$ ${escapeHtml(String(off.price))}</div>` : ''}
+            </div>
+
+            <div class="pt-3 border-t border-brand-border flex items-center justify-between text-xs">
+              <span class="text-gray-500 text-[10px] font-mono truncate max-w-[120px]" title="${off.authorId || off.authorIdentity || ''}">
+                Por: ${escapeHtml(off.authorAlias || off.authorId || 'Anônimo')}
+              </span>
+              <button onclick="deleteOffer('${off.id}')" class="px-2.5 py-1 rounded-lg bg-red-950 border border-red-800 text-red-300 hover:bg-red-900 text-xs transition">
+                <i class="fa-solid fa-trash-can mr-1"></i> Derrubar
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function deleteOffer(offerId) {
+      if (!confirm('Deseja derrubar e remover esta oferta do ar imediatamente?')) return;
+      try {
+        const res = await apiRequest(`/admin/api/offers/${offerId}`, { method: 'DELETE' });
+        alert(res.message);
+        loadOffers();
+        fetchStats();
+      } catch (err) {
+        alert('Erro ao excluir oferta: ' + err.message);
+      }
+    }
+
+    // ================= CARREGAR PETIÇÕES / SUPORTE =================
+    async function loadTickets() {
+      const container = document.getElementById('tickets-list-container');
+      try {
+        const res = await apiRequest('/admin/api/tickets');
+        rawTickets = res.tickets || [];
+        renderTickets();
+      } catch (err) {
+        container.innerHTML = `<div class="p-6 text-center text-red-400 text-xs">Erro: ${err.message}</div>`;
+      }
+    }
+
+    function renderTickets() {
+      const container = document.getElementById('tickets-list-container');
+      if (rawTickets.length === 0) {
+        container.innerHTML = `
+          <div class="bg-brand-card border border-brand-border rounded-2xl p-12 text-center">
+            <div class="w-12 h-12 rounded-full bg-amber-950/60 border border-amber-800 text-amber-400 flex items-center justify-center mx-auto mb-3 text-lg">
+              <i class="fa-solid fa-headset"></i>
+            </div>
+            <h4 class="font-bold text-white text-sm">Nenhum chamado de suporte aberto</h4>
+            <p class="text-xs text-gray-500 mt-1">Os chamados e petições abertos pelos usuários no app aparecerão aqui.</p>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = rawTickets.map(tkt => {
+        const isOpen = tkt.status === 'OPEN';
+        return `
+          <div class="bg-brand-card border border-brand-border rounded-2xl p-5 shadow-sm space-y-3">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-brand-border/60 pb-3">
+              <div class="flex items-center space-x-2">
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase ${isOpen ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-emerald-950 text-emerald-400 border border-emerald-800'}">
+                  ${isOpen ? 'ABERTO' : 'RESPONDIDO'}
+                </span>
+                <span class="font-bold text-white text-sm">${escapeHtml(tkt.subject || 'Sem assunto')}</span>
+                <span class="text-xs text-gray-500">• ${new Date(tkt.created_at).toLocaleString('pt-BR')}</span>
+              </div>
+              <div class="text-xs text-gray-400 font-mono">
+                Autor: <span class="text-gray-300 font-semibold">${escapeHtml(tkt.author_alias || 'Usuário')}</span> (${escapeHtml(tkt.author_identity?.substring(0, 12))}...)
+              </div>
+            </div>
+
+            <p class="text-xs text-gray-200 p-3 bg-brand-surface rounded-xl border border-brand-border leading-relaxed whitespace-pre-wrap">${escapeHtml(tkt.message)}</p>
+
+            ${tkt.moderator_reply ? `
+              <div class="p-3 bg-emerald-950/20 border border-emerald-800/60 rounded-xl text-xs space-y-1">
+                <div class="text-emerald-400 font-bold text-[11px] flex items-center space-x-1.5">
+                  <i class="fa-solid fa-circle-check"></i>
+                  <span>Resposta enviada ao cliente (${new Date(tkt.replied_at).toLocaleString('pt-BR')}):</span>
+                </div>
+                <p class="text-gray-300 whitespace-pre-wrap">${escapeHtml(tkt.moderator_reply)}</p>
+              </div>
+            ` : ''}
+
+            <div class="pt-2 flex justify-end">
+              <button onclick="openReplyModal('${tkt.id}')" class="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-xs transition flex items-center space-x-1.5">
+                <i class="fa-solid fa-reply"></i>
+                <span>${isOpen ? 'Responder ao Cliente' : 'Enviar Nova Resposta'}</span>
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function openReplyModal(ticketId) {
+      activeTicketId = ticketId;
+      const tkt = rawTickets.find(t => t.id === ticketId);
+      if (!tkt) return;
+      document.getElementById('modal-ticket-subject').textContent = tkt.subject;
+      document.getElementById('modal-ticket-msg').textContent = tkt.message;
+      document.getElementById('modal-ticket-meta').textContent = `Autor: ${tkt.author_alias || 'Usuário'} (${tkt.author_identity})`;
+      document.getElementById('modal-ticket-reply-text').value = '';
+      document.getElementById('modal-reply-ticket').classList.remove('hidden');
+    }
+
+    function closeReplyModal() {
+      document.getElementById('modal-reply-ticket').classList.add('hidden');
+      activeTicketId = null;
+    }
+
+    async function sendTicketReply() {
+      const text = document.getElementById('modal-ticket-reply-text').value.trim();
+      if (!text) {
+        alert('Por favor digite uma resposta.');
+        return;
+      }
+
+      try {
+        const res = await apiRequest(`/admin/api/tickets/${activeTicketId}/reply`, {
+          method: 'POST',
+          body: JSON.stringify({ reply: text })
+        });
+        alert(res.message);
+        closeReplyModal();
+        loadTickets();
+        fetchStats();
+      } catch (err) {
+        alert('Erro ao responder chamado: ' + err.message);
+      }
+    }
+
+    // ================= CARREGAR USUÁRIOS =================
+    async function loadUsers() {
+      try {
+        const res = await apiRequest('/admin/api/users');
+        rawUsers = res.users || [];
+        renderUsers();
+      } catch (err) {
+        document.getElementById('users-table-body').innerHTML = `<tr><td colspan="5" class="p-6 text-center text-red-400">Erro: ${err.message}</td></tr>`;
+      }
+    }
+
+    function renderUsers() {
+      const tbody = document.getElementById('users-table-body');
+      const q = (document.getElementById('search-user').value || '').toLowerCase().trim();
+
+      const filtered = rawUsers.filter(u => 
+        (u.identity && u.identity.toLowerCase().includes(q)) || 
+        (u.alias && u.alias.toLowerCase().includes(q))
+      );
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="p-8 text-center text-gray-500">Nenhum usuário encontrado.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(u => {
+        return `
+          <tr class="hover:bg-brand-surface/40 transition">
+            <td class="py-3 px-4 font-mono text-gray-300 select-all">${escapeHtml(u.identity)}</td>
+            <td class="py-3 px-4 font-semibold text-white">${escapeHtml(u.alias || 'Eu')}</td>
+            <td class="py-3 px-4">
+              ${u.isOnline ? '<span class="inline-flex items-center text-emerald-400"><span class="w-2 h-2 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span> Online</span>' : '<span class="text-gray-500">Offline</span>'}
+            </td>
+            <td class="py-3 px-4">
+              ${u.isBanned 
+                ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-950 text-red-400 border border-red-800">BANIDO</span>' 
+                : '<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-950 text-emerald-400 border border-emerald-800">Regular</span>'}
+            </td>
+            <td class="py-3 px-4 text-right">
+              ${u.isBanned ? `
+                <button onclick="unbanUser('${u.identity}')" class="px-2.5 py-1 rounded bg-brand-surface hover:bg-emerald-950 text-emerald-400 border border-emerald-800 text-xs transition">
+                  <i class="fa-solid fa-unlock mr-1"></i> Desbanir
+                </button>
+              ` : `
+                <span class="text-gray-600 text-xs">—</span>
+              `}
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function unbanUser(identity) {
+      if (!confirm(`Deseja revogar o banimento da identidade ${identity}?`)) return;
+      try {
+        const res = await apiRequest(`/admin/api/users/${identity}/unban`, { method: 'POST' });
+        alert(res.message);
+        loadUsers();
+        fetchStats();
+      } catch (err) {
+        alert('Erro: ' + err.message);
+      }
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+  </script>
+</body>
+</html>
