@@ -76,10 +76,17 @@ Baixe agora o PessoasAqui e experimente o futuro da comunicação por proximidad
 
 ---
 
-## 🎨 3. Especificações dos Recursos Gráficos da Loja
+## 🎨 3. Recursos Gráficos Prontos para Envio na Loja
 
-| Recurso | Dimensões | Formato | Dicas de Design |
+Todos os arquivos visuais estão gerados e prontos na pasta `docs/store/`:
+
+| Recurso na Play Console | Dimensões | Arquivo Pronto para Envio | Detalhes |
 | :--- | :--- | :--- | :--- |
-| **Ícone do App** | 512 × 512 px | PNG 32-bit (sem transparência) | Fundo escuro (#08080A), escudo central verde (#00E676) com ondas de radar ciano (#00E5FF). |
-| **Gráfico de Recursos (Feature Graphic)** | 1024 × 500 px | PNG ou JPEG | Banner principal da loja. Dizeres: *"PessoasAqui — Converse com quem está perto. 100% Criptografado."* |
-| **Screenshots para Telefone** | 1080 × 2400 px (mínimo 2, ideal 4 a 6) | PNG ou JPEG | 1. Radar de Pessoas a 10m<br>2. Chat Criptografado E2EE<br>3. Mural de Ofertas Locais<br>4. Rede Familiar de Confiança |
+| **Ícone do App (Obrigatório)** | 512 × 512 px | [`docs/store/assets/icon_512x512.png`](file:///c:/Users/fabio/Downloads/pessoasaAQUI/docs/store/assets/icon_512x512.png) | Fundo escuro moderno, escudo verde esmeralda e radar ciano pulsante com monograma PA. |
+| **Gráfico de Recursos (Feature Graphic)** | 1024 × 500 px | [`docs/store/assets/feature_graphic_1024x500.png`](file:///c:/Users/fabio/Downloads/pessoasaAQUI/docs/store/assets/feature_graphic_1024x500.png) | Banner cinematográfico de destaque da loja com radar 10m e escudo E2EE. |
+| **Screenshot 1 — Radar 10m** | 483 × 1024 px | [`docs/store/screenshots/screenshot_1_radar_proximidade.jpg`](file:///c:/Users/fabio/Downloads/pessoasaAQUI/docs/store/screenshots/screenshot_1_radar_proximidade.jpg) | Tela "Pessoas por perto" com radar ativo a 10 metros e intenção de conversa. |
+| **Screenshot 2 — Mural Local** | 483 × 1024 px | [`docs/store/screenshots/screenshot_2_mural_local.jpg`](file:///c:/Users/fabio/Downloads/pessoasaAQUI/docs/store/screenshots/screenshot_2_mural_local.jpg) | Tela do Mural Público Local a 10m sem necessidade de telefone. |
+| **Screenshot 3 — Chat & Família** | 483 × 1024 px | [`docs/store/screenshots/screenshot_3_conversas_privadas.jpg`](file:///c:/Users/fabio/Downloads/pessoasaAQUI/docs/store/screenshots/screenshot_3_conversas_privadas.jpg) | Tela de Conversas privadas, conexões mútuas e rede de confiança familiar. |
+| **Screenshot 4 — Menu & Segurança** | 483 × 1024 px | [`docs/store/screenshots/screenshot_4_menu_seguranca.jpg`](file:///c:/Users/fabio/Downloads/pessoasaAQUI/docs/store/screenshots/screenshot_4_menu_seguranca.jpg) | Menu com Cofre & Backup Familiar, restauração em outro celular e plano VIP. |
+| **Screenshot 5 — Ofertas & Serviços** | 483 × 1024 px | [`docs/store/screenshots/screenshot_5_mural_ofertas.jpg`](file:///c:/Users/fabio/Downloads/pessoasaAQUI/docs/store/screenshots/screenshot_5_mural_ofertas.jpg) | Tela de serviços e divulgações locais para profissionais autônomos. |
+
