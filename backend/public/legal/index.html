@@ -117,6 +117,11 @@
           <span>Moderação & Denúncias</span>
         </button>
 
+        <button onclick="setTab('exclusao')" id="btn-exclusao" class="nav-tab w-full text-left px-4 py-3 rounded-xl text-xs font-semibold flex items-center space-x-3 transition text-gray-400 hover:text-white hover:bg-brand-surface border border-transparent">
+          <i class="fa-solid fa-trash-can text-sm w-4"></i>
+          <span>Exclusão de Dados</span>
+        </button>
+
         <!-- Card de Suporte -->
         <div class="mt-8 p-4 bg-brand-surface rounded-2xl border border-brand-border text-xs space-y-2">
           <div class="font-bold text-white flex items-center space-x-1.5">
@@ -356,6 +361,60 @@
         <p>O usuário que considerar que foi penalizado por equívoco pode abrir uma contestação através do menu superior do app: <em>"Petição & Suporte Oficial"</em>. A equipe de moderação revisará o histórico em até <strong>5 (cinco) dias úteis</strong>.</p>
       </section>
 
+      <!-- ================= 5. EXCLUSÃO DE DADOS (DATA DELETION) ================= -->
+      <section id="doc-exclusao" class="doc-section hidden space-y-4">
+        <div class="pb-4 border-b border-brand-border mb-6">
+          <span class="text-xs font-semibold text-emerald-400 uppercase tracking-wide">Documento Oficial 05 — Google Play & LGPD</span>
+          <h1 class="text-2xl sm:text-3xl font-extrabold text-white mt-1">Exclusão de Dados e Contas — PessoasAqui</h1>
+          <p class="text-xs text-gray-400 mt-1">Procedimento formal para solicitação de exclusão de dados pelo usuário do aplicativo PessoasAqui.</p>
+        </div>
+
+        <blockquote>
+          <strong>Compromisso de Privacidade:</strong> O aplicativo <strong>PessoasAqui</strong> (desenvolvido por <strong>PessoasAqui Team</strong>) não exige cadastro com nome civil, CPF, e-mail ou número de telefone. As contas operam exclusivamente por identidade criptográfica de chaves locais (Ed25519 e X25519).
+        </blockquote>
+
+        <h2>1. Como Solicitar a Exclusão dos Dados</h2>
+        <p>Disponibilizamos duas formas para o usuário realizar a exclusão completa de suas informações:</p>
+
+        <h3>Método A: Diretamente pelo Aplicativo PessoasAqui (Imediato)</h3>
+        <ol>
+          <li>Abra o aplicativo <strong>PessoasAqui</strong> no seu dispositivo Android;</li>
+          <li>Toque no <strong>Menu Superior (três pontos)</strong> no canto superior direito;</li>
+          <li>Selecione <strong>"Configurações da Conta"</strong> e em seguida <strong>"Excluir Minha Identidade e Redefinir App"</strong>;</li>
+          <li>Confirme com seu PIN de segurança.</li>
+        </ol>
+        <p><em>Efeito imediato:</em> As suas chaves assimétricas de criptografia são destruídas instantaneamente no hardware, todo o histórico local de conversas é apagado e sua presença no radar de proximidade é cancelada.</p>
+
+        <h3>Método B: Solicitação pela Web (Caso tenha desinstalado o app ou perdido o celular)</h3>
+        <p>Caso não tenha mais acesso ao aplicativo instalado, você pode solicitar a remoção de anúncios do mural ou registros vinculados enviando um e-mail para:</p>
+        <ul>
+          <li><strong>E-mail de Suporte / DPO:</strong> <code>privacidade@pessoasaqui.com.br</code> ou <code>suporte@pessoasaqui.com.br</code></li>
+          <li><strong>Assunto:</strong> Solicitação de Exclusão de Dados — PessoasAqui</li>
+          <li><strong>Informações necessárias:</strong> Envie o apelido utilizado, a sua chave pública (se anotada) ou o conteúdo exato do anúncio no mural de ofertas que deseja expurgar.</li>
+          <li><strong>Prazo de Atendimento:</strong> A moderação processará e confirmará a exclusão em até <strong>48 horas úteis</strong>.</li>
+        </ul>
+
+        <h2>2. Tipos de Dados que são Excluídos</h2>
+        <p>Ao solicitar a exclusão, os seguintes dados são eliminados permanentemente:</p>
+        <ul>
+          <li>✅ Publicações e fotos ativas no Mural Público de Ofertas e Serviços Locais;</li>
+          <li>✅ Identificador de presença efêmera no radar (10 metros);</li>
+          <li>✅ Histórico de tickets e petições de suporte encerradas;</li>
+          <li>✅ Fila de mensagens pendentes criptografadas (se houver alguma não entregue em trânsito).</li>
+        </ul>
+
+        <h2>3. Dados Retidos Temporariamente por Obrigação Legal</h2>
+        <p>Em conformidade estrita com o <strong>Artigo 15 da Lei Federal nº 12.965/2014 (Marco Civil da Internet)</strong>, os registros de conexão à aplicação (endereço IP de origem, porta lógica, data e hora UTC de início e término da conexão):</p>
+        <ul>
+          <li><strong>Prazo de Retenção:</strong> São mantidos sob sigilo em ambiente seguro e controlado pelo prazo improrrogável de <strong>6 (seis) meses</strong>;</li>
+          <li><strong>Finalidade Exclusiva:</strong> Atendimento a eventuais ordens judiciais de autoridades policiais competentes;</li>
+          <li><strong>Expurgo Automático:</strong> Decorrido o prazo legal de 6 meses, os registros são expurgados e destruídos permanentemente de nossos servidores.</li>
+        </ul>
+
+        <h2>4. Mensagens e Conversas de Chat Privadas</h2>
+        <p>O <strong>PessoasAqui</strong> opera com criptografia de ponta a ponta (E2EE) com algoritmo AES-256-GCM. Os servidores da plataforma atuam como envelopes cegos (<em>Zero-Knowledge</em>) e <strong>NÃO armazenam o conteúdo das mensagens trocadas entre usuários</strong>. Portanto, as conversas existem unicamente na memória interna dos aparelhos dos participantes, sendo apagadas ao redefinir o app.</p>
+      </section>
+
     </main>
   </div>
 
@@ -397,10 +456,10 @@
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    // Inicialização baseada na hash da URL (#privacidade, #termos, #autoridades, #moderacao)
+    // Inicialização baseada na hash da URL (#privacidade, #termos, #autoridades, #moderacao, #exclusao)
     window.addEventListener('DOMContentLoaded', () => {
       const hash = window.location.hash.replace('#', '').toLowerCase();
-      if (['termos', 'privacidade', 'autoridades', 'moderacao'].includes(hash)) {
+      if (['termos', 'privacidade', 'autoridades', 'moderacao', 'exclusao'].includes(hash)) {
         setTab(hash);
       } else {
         setTab('termos');
@@ -409,7 +468,7 @@
 
     window.addEventListener('hashchange', () => {
       const hash = window.location.hash.replace('#', '').toLowerCase();
-      if (['termos', 'privacidade', 'autoridades', 'moderacao'].includes(hash)) {
+      if (['termos', 'privacidade', 'autoridades', 'moderacao', 'exclusao'].includes(hash)) {
         setTab(hash);
       }
     });

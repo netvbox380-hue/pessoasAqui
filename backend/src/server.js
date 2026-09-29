@@ -55,6 +55,7 @@ app.get(['/legal', '/legal/'], (req, res) => res.sendFile(path.join(__dirname, '
 app.get(['/privacy', '/politica-de-privacidade'], (req, res) => res.redirect('/legal#privacidade'));
 app.get(['/terms', '/termos-de-uso'], (req, res) => res.redirect('/legal#termos'));
 app.get(['/law-enforcement', '/autoridades'], (req, res) => res.redirect('/legal#autoridades'));
+app.get(['/delete-data', '/exclusao-dados', '/data-deletion', '/delete'], (req, res) => res.redirect('/legal#exclusao'));
 app.use('/legal', express.static(path.join(__dirname, '../public/legal')));
 
 // Garante tabelas persistentes se estiver conectado ao PostgreSQL

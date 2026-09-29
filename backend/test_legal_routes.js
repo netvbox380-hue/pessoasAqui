@@ -70,10 +70,15 @@ async function runTests() {
     assert.strictEqual(termsRes.status, 302);
     assert.ok(termsRes.headers.location.includes('/legal#termos'));
 
-    console.log('[4/4] Testando redirecionamento de Autoridades (/autoridades)...');
+    console.log('[4/5] Testando redirecionamento de Autoridades (/autoridades)...');
     const authRes = await request('/autoridades');
     assert.strictEqual(authRes.status, 302);
     assert.ok(authRes.headers.location.includes('/legal#autoridades'));
+
+    console.log('[5/5] Testando redirecionamento de Exclusão de Dados (/delete-data)...');
+    const delRes = await request('/delete-data');
+    assert.strictEqual(delRes.status, 302);
+    assert.ok(delRes.headers.location.includes('/legal#exclusao'));
 
     console.log('\n======================================================');
     console.log('TODOS OS TESTES DA DOCUMENTAÇÃO LEGAL PASSARAM! ✅');
