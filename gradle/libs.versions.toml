@@ -15,7 +15,7 @@ kotlinxCoroutines = "1.9.0"
 kotlinxSerialization = "1.7.3"
 okhttp = "4.12.0"
 zxing = "3.5.3"
-billing = "7.1.1"
+billing = "8.0.0"
 
 [libraries]
 google-billing-ktx = { group = "com.android.billingclient", name = "billing-ktx", version.ref = "billing" }

@@ -141,9 +141,9 @@ class PlayBillingManager(
             .setProductList(productList)
             .build()
 
-        billingClient.queryProductDetailsAsync(params) { billingResult, productDetailsList ->
+        billingClient.queryProductDetailsAsync(params) { billingResult, queryResult ->
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
-                val details = productDetailsList.firstOrNull { it.productId == VIP_PRODUCT_ID }
+                val details = queryResult.productDetailsList.firstOrNull { it.productId == VIP_PRODUCT_ID }
                 if (details != null) {
                     _vipProductDetails.value = details
                     val pricingPhase = details.subscriptionOfferDetails?.firstOrNull()
