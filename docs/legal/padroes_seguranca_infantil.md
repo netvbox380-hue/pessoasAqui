@@ -6,7 +6,7 @@
 **Identificação do Desenvolvedor:** fabio aquino / PessoasAqui Team  
 **URL Oficial dos Padrões:** `https://pessoasaqui.onrender.com/child-safety`  
 **Ponto de Contato de Segurança Infantil:** `seguranca-infantil@pessoasaqui.com.br` (Canal de Resposta Imediata)  
-**Canal Alternativo Monitorado:** `ninfoboyn@gmail.com`
+**Canal da Conta de Desenvolvedor (Google Play):** `msocorro.nascimentof@gmail.com`
 
 ---
 
