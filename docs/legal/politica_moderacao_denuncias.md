@@ -20,7 +20,7 @@ Esta Política de Moderação e Denúncias estabelece as regras claras de conviv
 Ao utilizar o PessoasAqui, o Usuário concorda em não praticar, incentivar ou tolerar as seguintes condutas:
 
 #### A. Tolerância Zero (Crimes Graves Inafiançáveis)
-- **Exploração e Abuso Sexual Infantil (CSAM/CSEA):** Qualquer menção, compartilhamento, solicitação ou posse de material envolvendo abuso ou exploração sexual de crianças ou adolescentes;
+- **Exploração e Abuso Sexual Infantil (CSAE/CSAM):** Qualquer menção, compartilhamento, solicitação, aliciamento (*grooming*) ou posse de material envolvendo abuso ou exploração sexual de crianças ou adolescentes. Casos dessa natureza são tratados sob nossos [Padrões de Segurança Infantil](https://pessoasaqui.onrender.com/child-safety) com prioridade máxima, banimento de hardware imediato e denúncia às autoridades (Polícia Federal, SaferNet, NCMEC). Canal dedicado: `seguranca-infantil@pessoasaqui.com.br`;
 - **Apologia ou Planejamento de Terrorismo:** Incitação a ataques armados, homicídios em massa ou atos de terrorismo;
 - **Comércio Ilegal Perigoso:** Venda ou intermediação de armas de fogo ilegais, explosivos ou tráfico de entorpecentes;
 - **Ameaças Iminentes à Vida:** Coações com risco direto de morte, sequestro ou incitação ao suicídio e automutilação.

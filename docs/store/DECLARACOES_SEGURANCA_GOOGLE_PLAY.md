@@ -78,3 +78,47 @@ O aplicativo utiliza permissões específicas do Android que devem ser justifica
    - **Justificativa:** *"Necessário para manter o sinal de rádio de proximidade ativo e garantir o recebimento ininterrupto de chamadas de voz e vídeo criptografadas quando o usuário opta por manter o radar ligado."*
 3. **Câmera e Microfone (`CAMERA`, `RECORD_AUDIO`):**  
    - **Justificativa:** *"Utilizados exclusivamente quando o usuário decide iniciar uma chamada de voz/vídeo cifrada ou gravar notas de voz sob demanda."*
+
+---
+
+## 🛡️ 6. Declaração de Padrões de Segurança Infantil (Child Safety Standards) — [NOVO]
+
+Esta declaração tornou-se obrigatória para apps sociais e de mensagens para cumprir a **Política de Padrões de Segurança Infantil (Prevenção ao CSAE)**.
+
+### Onde acessar no Google Play Console:
+1. No menu lateral esquerdo, clique em **Políticas e programas** (ou **Conteúdo do app**).
+2. Na aba de avisos ou na lista de pendências, localize:  
+   👉 **"Padrões de segurança infantil"** (ou clique diretamente na barra vermelha *"Corrija as violações da política"*).
+3. Clique em **"Iniciar declaração"** ou **"Gerenciar"**.
+
+### Respostas e Campos Obrigatórios para Preencher:
+
+1. **O seu aplicativo possui padrões publicados que proíbem o abuso e exploração sexual infantil (CSAE)?**  
+   👉 Selecione **SIM**.
+
+2. **URL dos padrões publicados de segurança infantil:**  
+   👉 Cole exatamente o link público direto:  
+   ```text
+   https://pessoasaqui.onrender.com/child-safety
+   ```
+   *(Link alternativo que também é válido: `https://pessoasaqui.onrender.com/legal#seguranca-infantil`)*
+
+   > **Garantias atendidas por esta página:**
+   > - Carrega em HTML válido (HTTP 200), sem PDFs ou formulários fechados;
+   > - Cita nominalmente o aplicativo: `PessoasAqui — Presença & Chat` e o pacote `br.com.pessoasaqui`;
+   > - Cita nominalmente o desenvolvedor: `fabio aquino` e `PessoasAqui Team`;
+   > - Proíbe expressamente CSAE, CSAM, aliciamento (*grooming*) e pornografia infantil;
+   > - Detalha o processo de denúncia in-app e cooperação com Polícia Federal, SaferNet e NCMEC.
+
+3. **Ponto de contato de segurança infantil (Child safety point of contact):**  
+   👉 Digite o e-mail de contato prioritário de segurança infantil:  
+   ```text
+   seguranca-infantil@pessoasaqui.com.br
+   ```
+   *(Ou, caso o Google exija o e-mail direto da sua conta de desenvolvedor: `ninfoboyn@gmail.com`)*.
+
+4. **Finalização:**  
+   - Clique em **"Salvar"** no canto inferior direito.
+   - Em seguida, vá na **Visão geral da publicação** (Publishing overview) e clique em **"Enviar para análise"** se solicitado.
+   - O aviso de violação com prazo de 19 de outubro será automaticamente resolvido e baixado pela equipe de políticas da Google Play.
+

@@ -34,12 +34,13 @@ function request(path) {
 async function runTests() {
   console.log('--- Verificando Documentação Fundacional e Rotas Legais ---');
 
-  // 1. Verifica integridade dos 4 arquivos Markdown em docs/legal/
+  // 1. Verifica integridade dos 5 arquivos Markdown em docs/legal/
   const legalFiles = [
     'termos_de_uso.md',
     'politica_de_privacidade.md',
     'guia_autoridades_policiais.md',
-    'politica_moderacao_denuncias.md'
+    'politica_moderacao_denuncias.md',
+    'padroes_seguranca_infantil.md'
   ];
 
   for (const f of legalFiles) {
@@ -54,28 +55,37 @@ async function runTests() {
   await new Promise(resolve => server.listen(TEST_PORT, resolve));
 
   try {
-    console.log('[1/4] Testando acesso ao Portal Jurídico (/legal)...');
+    console.log('[1/6] Testando acesso ao Portal Jurídico (/legal)...');
     const legalRes = await request('/legal');
     assert.strictEqual(legalRes.status, 200);
     assert.ok(legalRes.raw.includes('PessoasAqui'));
     assert.ok(legalRes.raw.includes('Portal Jurídico'));
+    assert.ok(legalRes.raw.includes('doc-seguranca-infantil'));
 
-    console.log('[2/4] Testando redirecionamento de Privacidade (/privacy)...');
+    console.log('[2/6] Testando acesso direto aos Padrões de Segurança Infantil (/child-safety)...');
+    const childRes = await request('/child-safety');
+    assert.strictEqual(childRes.status, 200);
+    assert.ok(childRes.raw.includes('PessoasAqui — Presença & Chat'), 'Deve citar o nome completo do app');
+    assert.ok(childRes.raw.includes('fabio aquino'), 'Deve citar o desenvolvedor cadastrado');
+    assert.ok(childRes.raw.includes('CSAE'), 'Deve proibir explicitamente CSAE');
+    assert.ok(childRes.raw.includes('seguranca-infantil@pessoasaqui.com.br'), 'Deve conter o ponto de contato');
+
+    console.log('[3/6] Testando redirecionamento de Privacidade (/privacy)...');
     const privRes = await request('/privacy');
     assert.strictEqual(privRes.status, 302);
     assert.ok(privRes.headers.location.includes('/legal#privacidade'));
 
-    console.log('[3/4] Testando redirecionamento de Termos (/terms)...');
+    console.log('[4/6] Testando redirecionamento de Termos (/terms)...');
     const termsRes = await request('/terms');
     assert.strictEqual(termsRes.status, 302);
     assert.ok(termsRes.headers.location.includes('/legal#termos'));
 
-    console.log('[4/5] Testando redirecionamento de Autoridades (/autoridades)...');
+    console.log('[5/6] Testando redirecionamento de Autoridades (/autoridades)...');
     const authRes = await request('/autoridades');
     assert.strictEqual(authRes.status, 302);
     assert.ok(authRes.headers.location.includes('/legal#autoridades'));
 
-    console.log('[5/5] Testando redirecionamento de Exclusão de Dados (/delete-data)...');
+    console.log('[6/6] Testando redirecionamento de Exclusão de Dados (/delete-data)...');
     const delRes = await request('/delete-data');
     assert.strictEqual(delRes.status, 302);
     assert.ok(delRes.headers.location.includes('/legal#exclusao'));
