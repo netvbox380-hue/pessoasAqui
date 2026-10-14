@@ -49,6 +49,9 @@ class PessoasAquiNetworkClient(
 
     var onOfferPublished: ((OfferItem) -> Unit)? = null
     var onOfferDeleted: ((String) -> Unit)? = null
+    var onSupportTicketReplied: ((ticketId: String, subject: String, reply: String, timestamp: Long) -> Unit)? = null
+    var onModerationWarning: ((message: String) -> Unit)? = null
+    var onAccountBanned: ((message: String) -> Unit)? = null
 
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
@@ -334,11 +337,28 @@ class PessoasAquiNetworkClient(
                                 onOfferPublished?.invoke(item)
                             }
                         }
-                        "OFFER_DELETED" -> {
+                        "OFFER_DELETED", "OFFER_REMOVED" -> {
                             val id = obj.optString("offerId")
                             if (id.isNotBlank()) {
                                 onOfferDeleted?.invoke(id)
                             }
+                        }
+                        "SUPPORT_TICKET_REPLIED" -> {
+                            val tId = obj.optString("ticketId")
+                            val subj = obj.optString("subject", "Suporte")
+                            val rep = obj.optString("reply")
+                            val ts = obj.optLong("timestamp", System.currentTimeMillis())
+                            if (rep.isNotBlank()) {
+                                onSupportTicketReplied?.invoke(tId, subj, rep, ts)
+                            }
+                        }
+                        "MODERATION_WARNING" -> {
+                            val msg = obj.optString("message", "⚠️ Alerta da Moderação: Você recebeu uma advertência formal.")
+                            onModerationWarning?.invoke(msg)
+                        }
+                        "ACCOUNT_BANNED" -> {
+                            val msg = obj.optString("message", "Sua conta foi permanentemente banida por descumprimento das regras de segurança e convivência.")
+                            onAccountBanned?.invoke(msg)
                         }
                     }
                 } catch (e: Exception) {
@@ -490,15 +510,19 @@ class PessoasAquiNetworkClient(
                 if (msgsArray != null) {
                     for (i in 0 until msgsArray.length()) {
                         val m = msgsArray.getJSONObject(i)
-                        list.add(
-                            PendingMessage(
-                                senderHash = m.getString("senderHash"),
-                                senderAlias = m.optString("senderAlias", "Usuário"),
-                                ciphertext = m.getString("ciphertextPayload"),
-                                ivNonce = m.optString("ivNonce", ""),
-                                messageId = m.optString("messageId", "")
+                        val sHash = m.optString("senderHash")
+                        val cPayload = m.optString("ciphertextPayload")
+                        if (sHash.isNotBlank() && cPayload.isNotBlank()) {
+                            list.add(
+                                PendingMessage(
+                                    senderHash = sHash,
+                                    senderAlias = m.optString("senderAlias", "Usuário"),
+                                    ciphertext = cPayload,
+                                    ivNonce = m.optString("ivNonce", ""),
+                                    messageId = m.optString("messageId", "")
+                                )
                             )
-                        )
+                        }
                     }
                 }
                 Result.success(list)
@@ -795,6 +819,48 @@ class PessoasAquiNetworkClient(
         }
     }
 
+    /**
+     * Consulta todos os chamados e petições do usuário para recuperar respostas da moderação
+     */
+    suspend fun fetchMySupportTickets(identityHash: String): Result<List<SupportTicketItem>> = withContext(Dispatchers.IO) {
+        try {
+            val clean = identityHash.trim()
+            val request = Request.Builder()
+                .url("$baseUrl/api/tickets/my?identity=$clean")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string() ?: "{}"
+                val obj = JSONObject(bodyStr)
+                val ticketsArray = obj.optJSONArray("tickets")
+                val list = mutableListOf<SupportTicketItem>()
+                if (ticketsArray != null) {
+                    for (i in 0 until ticketsArray.length()) {
+                        val t = ticketsArray.getJSONObject(i)
+                        list.add(
+                            SupportTicketItem(
+                                id = t.getString("id"),
+                                authorIdentity = t.optString("author_identity"),
+                                authorAlias = t.optString("author_alias", "Usuário"),
+                                category = t.optString("category", "GERAL"),
+                                subject = t.optString("subject", "Suporte"),
+                                message = t.optString("message", ""),
+                                status = t.optString("status", "OPEN"),
+                                moderatorReply = t.optString("moderator_reply").takeIf { it.isNotBlank() && it != "null" },
+                                repliedAt = t.optString("replied_at").takeIf { it.isNotBlank() && it != "null" },
+                                createdAt = t.optString("created_at")
+                            )
+                        )
+                    }
+                }
+                Result.success(list)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun disconnectSocket() {
         try {
             activeWebSocket?.close(1000, "App closed")
@@ -803,6 +869,19 @@ class PessoasAquiNetworkClient(
         isWsConnected = false
     }
 }
+
+data class SupportTicketItem(
+    val id: String,
+    val authorIdentity: String,
+    val authorAlias: String,
+    val category: String,
+    val subject: String,
+    val message: String,
+    val status: String,
+    val moderatorReply: String?,
+    val repliedAt: String?,
+    val createdAt: String?
+)
 
 data class CreateInviteResponse(
     val inviteId: String,

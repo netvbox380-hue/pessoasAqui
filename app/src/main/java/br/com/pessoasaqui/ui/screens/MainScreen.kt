@@ -54,6 +54,9 @@ fun MainScreen(
     val revocationNotice by repository.deviceSessionManager.revocationNotice.collectAsState()
     val recurringReminders by repository.recurringReminders.collectAsState()
     val subscriptionTier by (repository.subscriptionManager?.currentTier ?: MutableStateFlow(SubscriptionTier.FREE)).collectAsState()
+    val mySupportTickets by repository.mySupportTickets.collectAsState()
+    val moderationWarning by repository.moderationWarningAlert.collectAsState()
+    val accountBanned by repository.accountBannedAlert.collectAsState()
     val scope = rememberCoroutineScope()
     var showVipDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
@@ -614,10 +617,92 @@ fun MainScreen(
             // Diálogo de Petição e Suporte Oficial
             if (showSupportDialog) {
                 SupportTicketDialog(
+                    tickets = mySupportTickets,
+                    onRefreshTickets = { scope.launch { repository.refreshMySupportTickets() } },
                     onDismiss = { showSupportDialog = false },
                     onSubmitTicket = { category, subject, message ->
                         repository.openSupportTicket(category, subject, message)
                     }
+                )
+            }
+
+            // Alerta Formal de Moderação (Strike / Advertência emitido pelo painel admin)
+            moderationWarning?.let { warningText ->
+                AlertDialog(
+                    onDismissRequest = { repository.dismissModerationWarning() },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = WarningAmber,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    },
+                    title = {
+                        Text(
+                            text = "Aviso da Moderação",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = warningText,
+                            color = Color.LightGray,
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = { repository.dismissModerationWarning() },
+                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen, contentColor = DeepBlack),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Entendido", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    containerColor = DarkCardElevated
+                )
+            }
+
+            // Alerta de Banimento / Bloqueio de Conta emitido pelo painel admin
+            accountBanned?.let { banText ->
+                AlertDialog(
+                    onDismissRequest = { /* Bloqueante */ },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.Block,
+                            contentDescription = null,
+                            tint = AlertRed,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    },
+                    title = {
+                        Text(
+                            text = "Conta Suspensa",
+                            fontWeight = FontWeight.Bold,
+                            color = AlertRed
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = banText,
+                            color = Color.LightGray,
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = { showSupportDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = AlertRed, contentColor = Color.White),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Contestar Decisão / Suporte", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    containerColor = DarkCardElevated
                 )
             }
         }

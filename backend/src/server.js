@@ -1685,15 +1685,24 @@ app.post('/admin/api/reports/:id/action', requireAdminAuth, async (req, res) => 
 
   } else if (action === 'STRIKE') {
     newStatus = 'STRIKE_ISSUED';
+    const strikeMsg = '⚠️ Alerta da Moderação: Você recebeu um aviso por comportamento incompatível com as Diretrizes da Comunidade.';
     const targetWs = activeSockets.get(kAccused);
     if (targetWs && targetWs.readyState === WebSocket.OPEN) {
       try {
         targetWs.send(JSON.stringify({
           type: 'MODERATION_WARNING',
-          message: '⚠️ Alerta da Moderação: Você recebeu um aviso por comportamento incompatível com as Diretrizes da Comunidade.'
+          message: strikeMsg
         }));
       } catch (_) {}
     }
+    deliverMessageToTarget(
+      'moderacao-oficial',
+      'Moderação PessoasAqui',
+      accused,
+      `⚠️ [AVISO FORMAL DA MODERAÇÃO]\nSua conduta violou as Diretrizes da Comunidade PessoasAqui. A reincidência acarretará em suspensão temporária ou banimento permanente.`,
+      '',
+      `strike_${id}_${Date.now()}`
+    );
   } else if (action === 'DISMISS') {
     newStatus = 'DISMISSED';
   }
@@ -1736,10 +1745,11 @@ app.delete('/admin/api/offers/:id', requireAdminAuth, (req, res) => {
 
   activeOffers.delete(id);
 
-  // Notifica todos os clientes conectados sobre a remoção da oferta
+  // Notifica todos os clientes conectados sobre a remoção da oferta (compatível com ambas versões do app)
   wss.clients.forEach(client => {
     if (client.readyState === WebSocket.OPEN) {
       try {
+        client.send(JSON.stringify({ type: 'OFFER_DELETED', offerId: id }));
         client.send(JSON.stringify({ type: 'OFFER_REMOVED', offerId: id }));
       } catch (_) {}
     }
@@ -1816,16 +1826,22 @@ app.post('/admin/api/tickets/:id/reply', requireAdminAuth, async (req, res) => {
     timestamp: Date.now()
   };
 
+  // 1. Envia sinal em tempo real para o diálogo de suporte do app
   if (targetWs && targetWs.readyState === WebSocket.OPEN) {
     try {
       targetWs.send(JSON.stringify(replyPayload));
     } catch (_) {}
-  } else {
-    if (!pendingMessages.has(authorKey)) {
-      pendingMessages.set(authorKey, []);
-    }
-    pendingMessages.get(authorKey).push(replyPayload);
   }
+
+  // 2. Entrega também no canal de chat oficial em Conversas Privadas (online ou fila offline)
+  deliverMessageToTarget(
+    'suporte-oficial',
+    'Suporte PessoasAqui',
+    ticket.author_identity,
+    `📩 [RESPOSTA DE SUPORTE]\nChamado: ${ticket.subject}\n\n${reply.trim()}`,
+    '',
+    `tkt_reply_${id}_${Date.now()}`
+  );
 
   console.log(`[SUPORTE] Resposta enviada ao chamado ${id} para ${ticket.author_identity}`);
   res.json({ success: true, message: 'Resposta enviada com sucesso ao cliente.' });

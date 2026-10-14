@@ -14,6 +14,7 @@ import br.com.pessoasaqui.core.proximity.DistanceEstimator
 import br.com.pessoasaqui.core.proximity.ProximitySimulator
 import br.com.pessoasaqui.data.remote.PessoasAquiNetworkClient
 import br.com.pessoasaqui.data.remote.RemotePeer
+import br.com.pessoasaqui.data.remote.SupportTicketItem
 import br.com.pessoasaqui.core.reminder.RecurringReminderManager
 import br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager
 import br.com.pessoasaqui.core.subscription.SubscriptionPlanManager
@@ -410,6 +411,18 @@ class PessoasAquiRepository(
     private val _pendingFamilyRequest = MutableStateFlow<Pair<NearbyPerson, FamilyRole>?>(null)
     val pendingFamilyRequest: StateFlow<Pair<NearbyPerson, FamilyRole>?> = _pendingFamilyRequest.asStateFlow()
 
+    // Sistema Integrado de Suporte e Moderação
+    private val _mySupportTickets = MutableStateFlow<List<SupportTicketItem>>(emptyList())
+    val mySupportTickets: StateFlow<List<SupportTicketItem>> = _mySupportTickets.asStateFlow()
+
+    private val _moderationWarningAlert = MutableStateFlow<String?>(null)
+    val moderationWarningAlert: StateFlow<String?> = _moderationWarningAlert.asStateFlow()
+    fun dismissModerationWarning() { _moderationWarningAlert.value = null }
+
+    private val _accountBannedAlert = MutableStateFlow<String?>(null)
+    val accountBannedAlert: StateFlow<String?> = _accountBannedAlert.asStateFlow()
+    private var lastSupportSyncMs = 0L
+
     init {
         chatPersistence?.let { cp ->
             proximitySimulator.setPersistenceManager(cp)
@@ -427,12 +440,37 @@ class PessoasAquiRepository(
         networkClient.onOfferDeleted = { offerId ->
             scope.launch { handleRemoteOfferDeleted(offerId) }
         }
+        networkClient.onSupportTicketReplied = { ticketId, subject, reply, timestamp ->
+            scope.launch { handleSupportTicketReplied(ticketId, subject, reply, timestamp) }
+        }
+        networkClient.onModerationWarning = { warningMsg ->
+            scope.launch {
+                _moderationWarningAlert.value = warningMsg
+                proximitySimulator.receivePrivateMessage(
+                    "moderacao-oficial",
+                    "Moderação PessoasAqui",
+                    warningMsg
+                )
+                callRingtoneWakeManager?.notifyIncomingMessageIfBackground("Moderação PessoasAqui", warningMsg)
+            }
+        }
+        networkClient.onAccountBanned = { banMsg ->
+            scope.launch {
+                _accountBannedAlert.value = banMsg
+                proximitySimulator.receivePrivateMessage(
+                    "moderacao-oficial",
+                    "Moderação PessoasAqui",
+                    "🚫 $banMsg"
+                )
+            }
+        }
 
         startPresencePollingLoop()
 
         // Se o perfil já estiver configurado, registra identidade no Supabase / Render
         if (_hasCompletedProfile.value) {
             registerIdentityOnBackend()
+            scope.launch { refreshMySupportTickets() }
         }
 
         if (_hasGrantedPermissions.value) {
@@ -865,7 +903,13 @@ class PessoasAquiRepository(
                         }
                     }
 
-                    // 5. Garante que o WebSocket esteja ativo para sincronização instantânea
+                    // 5.1 Busca atualizações e respostas a chamados de suporte do usuário
+                    if (System.currentTimeMillis() - lastSupportSyncMs > 25000L) {
+                        lastSupportSyncMs = System.currentTimeMillis()
+                        refreshMySupportTickets()
+                    }
+
+                    // 6. Garante que o WebSocket esteja ativo para sincronização instantânea
                     if (!networkClient.isWebSocketConnected) {
                         networkClient.startRealtimeSocket(
                             myIdentityHash = myId,
@@ -2235,6 +2279,42 @@ class PessoasAquiRepository(
         }
     }
 
+    private fun handleSupportTicketReplied(ticketId: String, subject: String, reply: String, timestamp: Long) {
+        val text = "📩 [RESPOSTA DE SUPORTE]\nChamado: $subject\n\n$reply"
+        proximitySimulator.receivePrivateMessage(
+            "suporte-oficial",
+            "Suporte PessoasAqui",
+            text,
+            "tkt_reply_$ticketId"
+        )
+        callRingtoneWakeManager?.notifyIncomingMessageIfBackground("Suporte PessoasAqui", "Resposta ao chamado [$subject]: $reply")
+        scope.launch {
+            refreshMySupportTickets()
+        }
+    }
+
+    /**
+     * Consulta todos os chamados e petições do usuário para recuperar respostas da moderação
+     */
+    suspend fun refreshMySupportTickets(): Result<List<SupportTicketItem>> {
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        val res = networkClient.fetchMySupportTickets(myId)
+        res.getOrNull()?.let { tickets ->
+            _mySupportTickets.value = tickets
+            tickets.filter { it.status == "ANSWERED" && !it.moderatorReply.isNullOrBlank() }.forEach { t ->
+                val replyMsgId = "tkt_reply_${t.id}"
+                val text = "📩 [RESPOSTA DE SUPORTE]\nChamado: ${t.subject}\n\n${t.moderatorReply}"
+                proximitySimulator.receivePrivateMessage(
+                    "suporte-oficial",
+                    "Suporte PessoasAqui",
+                    text,
+                    replyMsgId
+                )
+            }
+        }
+        return res
+    }
+
     /**
      * Abre uma petição ou chamado de suporte com a equipe.
      */
@@ -2245,13 +2325,20 @@ class PessoasAquiRepository(
     ): Result<Boolean> {
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         val myAlias = _currentAlias.value
-        return networkClient.submitSupportTicket(
+        val res = networkClient.submitSupportTicket(
             authorIdentity = myId,
             authorAlias = myAlias,
             category = category,
             subject = subject,
             message = message
         )
+        if (res.isSuccess) {
+            scope.launch {
+                delay(400)
+                refreshMySupportTickets()
+            }
+        }
+        return res
     }
 }
 
