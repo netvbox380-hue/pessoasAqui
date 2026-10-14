@@ -21,3 +21,4 @@ Thumbs.db
 # Signing Keystores (keep private)
 *.jks
 *.keystore
+*.aab
