@@ -783,7 +783,14 @@ fun ConversationsTab(
                     )
                 }
 
-                if (connectedPeople.isEmpty()) {
+                val supportHistory = remember(privateChats) {
+                    privateChats["suporte-oficial"]
+                        ?: privateChats["peer-suporte-oficial"]
+                        ?: privateChats["SUPORTE-OFICIAL"]
+                        ?: emptyList()
+                }
+
+                if (connectedPeople.isEmpty() && supportHistory.isEmpty()) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -845,6 +852,96 @@ fun ConversationsTab(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         contentPadding = PaddingValues(bottom = 16.dp)
                     ) {
+                        if (supportHistory.isNotEmpty()) {
+                            item(key = "suporte-oficial") {
+                                val lastMsg = supportHistory.last()
+                                Card(
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                                    border = BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.5f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onOpenChat(
+                                                NearbyPerson(
+                                                    id = "suporte-oficial",
+                                                    technicalIdentityHash = "suporte-oficial",
+                                                    alias = "Suporte PessoasAqui",
+                                                    estimatedDistanceMeters = 0.0,
+                                                    proximityLabel = "Canal Oficial de Atendimento",
+                                                    isMutualConnection = true
+                                                )
+                                            )
+                                        }
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(46.dp)
+                                                .clip(CircleShape)
+                                                .background(EmeraldGreen.copy(alpha = 0.15f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Headset,
+                                                contentDescription = null,
+                                                tint = EmeraldGreen,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.width(12.dp))
+
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = "Suporte PessoasAqui",
+                                                    style = MaterialTheme.typography.titleMedium.copy(
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = TextPrimary
+                                                    )
+                                                )
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = EmeraldGreen.copy(alpha = 0.2f),
+                                                    border = BorderStroke(1.dp, EmeraldGreen)
+                                                ) {
+                                                    Text(
+                                                        text = "OFICIAL",
+                                                        color = EmeraldGreen,
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+
+                                            Spacer(modifier = Modifier.height(4.dp))
+
+                                            Text(
+                                                text = lastMsg.text,
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    color = EmeraldGreen,
+                                                    fontWeight = FontWeight.Medium
+                                                ),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         items(connectedPeople, key = { it.id }) { contact ->
                             // Busca histórico privado dessa pessoa para exibir prévia da última mensagem
                             val history = privateChats[contact.id]
