@@ -3,10 +3,10 @@
 
 **Última atualização:** Outubro de 2026  
 **Identificação do Aplicativo:** PessoasAqui — Presença & Chat (`br.com.pessoasaqui`)  
-**Identificação do Desenvolvedor:** fabio aquino / PessoasAqui Team  
+**Identificação do Desenvolvedor:** fabio aquino / msocorro.nascimentof@gmail.com (PessoasAqui Team)  
 **URL Oficial dos Padrões:** `https://pessoasaqui.onrender.com/child-safety`  
-**Ponto de Contato de Segurança Infantil:** `seguranca-infantil@pessoasaqui.com.br` (Canal de Resposta Imediata)  
-**Canal da Conta de Desenvolvedor (Google Play):** `msocorro.nascimentof@gmail.com`
+**Ponto de Contato de Segurança Infantil (Conta Google Play):** `msocorro.nascimentof@gmail.com`  
+**Canal Alternativo Monitorado:** `ninfoboyn@gmail.com`
 
 ---
 

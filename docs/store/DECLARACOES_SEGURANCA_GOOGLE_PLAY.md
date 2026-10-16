@@ -111,14 +111,15 @@ Esta declaração tornou-se obrigatória para apps sociais e de mensagens para c
    > - Detalha o processo de denúncia in-app e cooperação com Polícia Federal, SaferNet e NCMEC.
 
 3. **Ponto de contato de segurança infantil (Child safety point of contact):**  
-   👉 Digite o e-mail de contato prioritário de segurança infantil:  
+   👉 Digite o e-mail oficial ativo da conta Google Play:  
    ```text
-   seguranca-infantil@pessoasaqui.com.br
+   msocorro.nascimentof@gmail.com
    ```
-   *(Ou, caso o Google exija o e-mail direto da sua conta de desenvolvedor: `ninfoboyn@gmail.com`)*.
+   *(Ou o e-mail técnico alternativo: `ninfoboyn@gmail.com`)*.  
+   *Nota: Não use domínios sem caixa postal ativa; o Google valida se o e-mail existe e recebe mensagens.*
 
 4. **Finalização:**  
    - Clique em **"Salvar"** no canto inferior direito.
-   - Em seguida, vá na **Visão geral da publicação** (Publishing overview) e clique em **"Enviar para análise"** se solicitado.
+   - Em seguida, vá na **Visão geral da publicação** (Publishing overview) no menu lateral esquerdo e clique em **"Enviar para análise"** (ou "Enviar alterações para revisão").
    - O aviso de violação com prazo de 19 de outubro será automaticamente resolvido e baixado pela equipe de políticas da Google Play.
 
