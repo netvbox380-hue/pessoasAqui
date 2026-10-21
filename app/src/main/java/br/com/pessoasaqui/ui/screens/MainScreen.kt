@@ -60,10 +60,12 @@ fun MainScreen(
     val scope = rememberCoroutineScope()
     var showVipDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
+    var showMainBroadcastDialog by remember { mutableStateOf(false) }
 
-    // Pessoas que são conexões mútuas ou familiares
+    // Pessoas que são conexões mútuas ou familiares (garantindo unicidade de IDs)
     val connectedPeople = remember(people) {
         people.filter { it.isMutualConnection || it.isFamily }
+            .distinctBy { it.technicalIdentityHash.ifBlank { it.id } }
     }
 
     Scaffold(
@@ -221,6 +223,22 @@ fun MainScreen(
                                 onClick = {
                                     showTopMenu = false
                                     showBackupDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text("Mensagem de Transmissão 📢", color = RadarCyan)
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Campaign,
+                                        contentDescription = null,
+                                        tint = RadarCyan
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    showMainBroadcastDialog = true
                                 }
                             )
                             DropdownMenuItem(
@@ -703,6 +721,30 @@ fun MainScreen(
                         }
                     },
                     containerColor = DarkCardElevated
+                )
+            }
+
+            // Diálogo de Mensagem de Transmissão (Acesso direto global)
+            if (showMainBroadcastDialog) {
+                BroadcastMessageDialog(
+                    connectedPeople = connectedPeople,
+                    isVip = subscriptionTier == SubscriptionTier.PRO_VIP,
+                    maxAllowedRecipients = subscriptionTier.maxBroadcastRecipients,
+                    remainingCooldownMs = repository.subscriptionManager?.getRemainingCooldownMs() ?: 0L,
+                    onSendBroadcast = { targetIds, message, onProgress, onResult ->
+                        scope.launch {
+                            val res = repository.sendBroadcastMessage(targetIds, message, onProgress)
+                            if (res.isSuccess) {
+                                onResult(true, "")
+                            } else {
+                                onResult(false, res.exceptionOrNull()?.message ?: "Falha no envio da transmissão")
+                            }
+                        }
+                    },
+                    onUpgradeToVip = {
+                        showVipDialog = true
+                    },
+                    onDismiss = { showMainBroadcastDialog = false }
                 )
             }
         }

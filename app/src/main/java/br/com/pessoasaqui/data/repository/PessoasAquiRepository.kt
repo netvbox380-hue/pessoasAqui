@@ -1744,6 +1744,10 @@ class PessoasAquiRepository(
             cleanId(it.id) == rawClean ||
             cleanId(it.technicalIdentityHash) == rawClean ||
             (!it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(recipientId.trim(), ignoreCase = true))
+        } ?: _unifiedDiscoveredPeople.value.firstOrNull {
+            cleanId(it.id) == rawClean ||
+            cleanId(it.technicalIdentityHash) == rawClean ||
+            (!it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(recipientId.trim(), ignoreCase = true))
         }
         val cleanRecipient = matchedPeer?.technicalIdentityHash?.let { cleanId(it) }?.takeIf { it.isNotBlank() } ?: rawClean
 

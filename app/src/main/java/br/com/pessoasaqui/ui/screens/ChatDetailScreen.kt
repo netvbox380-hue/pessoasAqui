@@ -936,9 +936,45 @@ fun ChatDetailScreen(
                                     }
 
                                     else -> {
-                                        // Mensagem de Texto Padrão
+                                        // Mensagem de Texto Padrão (com suporte responsivo a badge de Transmissão)
+                                        val isBroadcast = msg.text.startsWith("📢 [Transmissão]: ") || msg.text.startsWith("📢 [Transmissao]: ")
+                                        val cleanText = if (isBroadcast) {
+                                            msg.text.removePrefix("📢 [Transmissão]: ").removePrefix("📢 [Transmissao]: ").trim()
+                                        } else {
+                                            msg.text
+                                        }
+
+                                        if (isBroadcast) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = if (isMe) DeepBlack.copy(alpha = 0.12f) else RadarCyan.copy(alpha = 0.15f),
+                                                modifier = Modifier.padding(bottom = 6.dp)
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Campaign,
+                                                        contentDescription = null,
+                                                        tint = if (isMe) DeepBlack else RadarCyan,
+                                                        modifier = Modifier.size(13.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        text = "TRANSMISSÃO",
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            fontSize = 10.sp,
+                                                            color = if (isMe) DeepBlack else RadarCyan
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+
                                         Text(
-                                            text = msg.text,
+                                            text = cleanText,
                                             style = MaterialTheme.typography.bodyMedium.copy(
                                                 color = if (isMe) DeepBlack else TextPrimary,
                                                 fontWeight = FontWeight.Medium

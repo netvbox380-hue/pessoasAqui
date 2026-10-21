@@ -7,6 +7,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
@@ -14,13 +15,60 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import br.com.pessoasaqui.ui.theme.*
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Locale
+
+/**
+ * VisualTransformation para formatar números como DD/MM/AAAA.
+ * Mantém o cursor e a digitação perfeitamente sincronizados com o buffer interno.
+ */
+class DateVisualTransformation : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val trimmed = if (text.text.length > 8) text.text.substring(0, 8) else text.text
+        val out = StringBuilder()
+        for (i in trimmed.indices) {
+            out.append(trimmed[i])
+            if (i == 1 || i == 3) {
+                out.append('/')
+            }
+        }
+
+        val offsetMapping = object : OffsetMapping {
+            override fun originalToTransformed(offset: Int): Int {
+                val transformed = when {
+                    offset <= 1 -> offset
+                    offset <= 3 -> offset + 1
+                    offset <= 8 -> offset + 2
+                    else -> 10
+                }
+                return transformed.coerceAtMost(out.length)
+            }
+
+            override fun transformedToOriginal(offset: Int): Int {
+                val original = when {
+                    offset <= 2 -> offset
+                    offset <= 5 -> offset - 1
+                    offset <= 10 -> offset - 2
+                    else -> 8
+                }
+                return original.coerceAtMost(text.text.length)
+            }
+        }
+
+        return TransformedText(AnnotatedString(out.toString()), offsetMapping)
+    }
+}
 
 /**
  * Barreira de Proteção Etária (+18) do PessoasAqui.
@@ -30,26 +78,13 @@ import java.util.Calendar
 fun AgeGateScreen(
     onAgeVerified: () -> Unit
 ) {
-    var rawDateInput by remember { mutableStateOf("") }
+    var dateDigits by remember { mutableStateOf("") }
     var isDeclarationChecked by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isAdult by remember { mutableStateOf(false) }
 
-    fun applyDateMask(input: String): String {
-        val digitsOnly = input.filter { it.isDigit() }.take(8)
-        val sb = StringBuilder()
-        for (i in digitsOnly.indices) {
-            sb.append(digitsOnly[i])
-            if ((i == 1 || i == 3) && i != digitsOnly.lastIndex) {
-                sb.append("/")
-            }
-        }
-        return sb.toString()
-    }
-
-    fun validateAge(formattedDate: String) {
-        val digits = formattedDate.filter { it.isDigit() }
-        if (digits.length != 8) {
+    fun validateAge(digits: String) {
+        if (digits.length < 8) {
             isAdult = false
             errorMessage = null
             return
@@ -60,14 +95,27 @@ fun AgeGateScreen(
             val month = digits.substring(2, 4).toInt()
             val year = digits.substring(4, 8).toInt()
 
-            if (day !in 1..31 || month !in 1..12 || year !in 1900..2026) {
+            val today = Calendar.getInstance()
+            val currentYear = today.get(Calendar.YEAR)
+
+            if (day !in 1..31 || month !in 1..12 || year !in 1900..currentYear) {
                 errorMessage = "Data de nascimento inválida."
                 isAdult = false
                 return
             }
 
-            val today = Calendar.getInstance()
-            val currentYear = today.get(Calendar.YEAR)
+            // Validação estrita do calendário (ex: impede 31 de fevereiro, 31 de abril, etc.)
+            val sdf = SimpleDateFormat("ddMMyyyy", Locale.ROOT).apply {
+                isLenient = false
+            }
+            try {
+                sdf.parse(digits)
+            } catch (e: Exception) {
+                errorMessage = "Data de nascimento inválida."
+                isAdult = false
+                return
+            }
+
             val currentMonth = today.get(Calendar.MONTH) + 1
             val currentDay = today.get(Calendar.DAY_OF_MONTH)
 
@@ -149,18 +197,33 @@ fun AgeGateScreen(
 
                 // Campo de Data de Nascimento
                 OutlinedTextField(
-                    value = rawDateInput,
+                    value = dateDigits,
                     onValueChange = { novo ->
-                        val masked = applyDateMask(novo)
-                        rawDateInput = masked
-                        validateAge(masked)
+                        val digits = novo.filter { it.isDigit() }.take(8)
+                        dateDigits = digits
+                        validateAge(digits)
                     },
+                    visualTransformation = remember { DateVisualTransformation() },
                     label = { Text("Data de nascimento:") },
                     placeholder = { Text("DD/MM/AAAA") },
                     supportingText = { Text("Exemplo: 24/07/1980") },
                     isError = errorMessage != null,
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    trailingIcon = if (dateDigits.isNotEmpty()) {
+                        {
+                            IconButton(onClick = {
+                                dateDigits = ""
+                                validateAge("")
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Limpar data",
+                                    tint = TextSecondary
+                                )
+                            }
+                        }
+                    } else null,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = OutlinedTextFieldDefaults.colors(

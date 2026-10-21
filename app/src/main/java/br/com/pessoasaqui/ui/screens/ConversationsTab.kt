@@ -610,9 +610,11 @@ fun ConversationsTab(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "📢 Transmissão",
+                            text = if (connectedPeople.isNotEmpty()) "📢 Transmissão (${connectedPeople.size})" else "📢 Transmissão",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
 
@@ -636,7 +638,9 @@ fun ConversationsTab(
                         Text(
                             text = if (recurringReminders.isNotEmpty()) "⏰ Lembretes (${recurringReminders.size})" else "⏰ Lembretes",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
