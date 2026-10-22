@@ -96,6 +96,7 @@ class RecurringReminderManager(private val context: Context) {
                 dayOfWeek = reminder.dayOfWeek,
                 dayOfMonth = reminder.dayOfMonth,
                 month = reminder.month,
+                year = reminder.year,
                 afterEpochMs = System.currentTimeMillis()
             )
             reminder.copy(nextTriggerEpochMs = next)
@@ -133,9 +134,10 @@ class RecurringReminderManager(private val context: Context) {
                     dayOfWeek = item.dayOfWeek,
                     dayOfMonth = item.dayOfMonth,
                     month = item.month,
+                    year = item.year,
                     afterEpochMs = System.currentTimeMillis()
                 )
-                item.copy(isEnabled = true, nextTriggerEpochMs = next)
+                item.copy(isEnabled = next > 0L, nextTriggerEpochMs = next)
             } else {
                 item.copy(isEnabled = false)
             }
@@ -171,22 +173,33 @@ class RecurringReminderManager(private val context: Context) {
                     }
                 }
 
-                // Calcula o próximo disparo para a recorrência
-                val nextTrigger = RecurringReminder.calculateNextTrigger(
-                    frequency = reminder.frequency,
-                    hour = reminder.hour,
-                    minute = reminder.minute,
-                    dayOfWeek = reminder.dayOfWeek,
-                    dayOfMonth = reminder.dayOfMonth,
-                    month = reminder.month,
-                    afterEpochMs = now
-                )
+                if (reminder.frequency == ReminderFrequency.UNICO) {
+                    // Mensagem/lembrete único disparado com sucesso: marca como concluído
+                    currentList[i] = reminder.copy(
+                        lastTriggerEpochMs = now,
+                        nextTriggerEpochMs = 0L,
+                        isEnabled = false
+                    )
+                    hasChanges = true
+                } else {
+                    // Calcula o próximo disparo para a recorrência contínua
+                    val nextTrigger = RecurringReminder.calculateNextTrigger(
+                        frequency = reminder.frequency,
+                        hour = reminder.hour,
+                        minute = reminder.minute,
+                        dayOfWeek = reminder.dayOfWeek,
+                        dayOfMonth = reminder.dayOfMonth,
+                        month = reminder.month,
+                        year = reminder.year,
+                        afterEpochMs = now
+                    )
 
-                currentList[i] = reminder.copy(
-                    lastTriggerEpochMs = now,
-                    nextTriggerEpochMs = nextTrigger
-                )
-                hasChanges = true
+                    currentList[i] = reminder.copy(
+                        lastTriggerEpochMs = now,
+                        nextTriggerEpochMs = nextTrigger
+                    )
+                    hasChanges = true
+                }
             }
         }
 
@@ -213,12 +226,17 @@ class RecurringReminderManager(private val context: Context) {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            val autoSentInfo = if (reminder.autoSend) " • Enviado no chat" else ""
+            val autoSentInfo = if (reminder.autoSend) " • Enviada no chat" else ""
             val roleInfo = reminder.targetFamilyRole?.let { " (${it.label})" } ?: ""
+            val notifTitle = if (reminder.frequency == ReminderFrequency.UNICO) {
+                "⏰ Mensagem Agendada: ${reminder.title}"
+            } else {
+                "⏰ Lembrete: ${reminder.title}"
+            }
 
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_popup_reminder)
-                .setContentTitle("⏰ Lembrete: ${reminder.title}")
+                .setContentTitle(notifTitle)
                 .setContentText("Para: ${reminder.targetAlias}$roleInfo - ${reminder.messageText}")
                 .setStyle(
                     NotificationCompat.BigTextStyle()
