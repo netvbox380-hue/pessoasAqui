@@ -642,8 +642,8 @@ class PessoasAquiRepository(
                         id = cleanSender,
                         technicalIdentityHash = cleanSender,
                         alias = if (callerAlias.isNotBlank()) callerAlias else senderAlias,
-                        estimatedDistanceMeters = 3.0,
-                        proximityLabel = "Pessoas no local (~3m)",
+                        estimatedDistanceMeters = 500.0,
+                        proximityLabel = if (isNowMutual) "Conexão Mútua • Ilimitada" else "Solicitação recebida",
                         isMarkedByMe = isMarked,
                         isMarkingMe = true,
                         isMutualConnection = isNowMutual,
@@ -753,8 +753,8 @@ class PessoasAquiRepository(
                         id = cleanSender,
                         technicalIdentityHash = cleanSender,
                         alias = if (callerAlias.isNotBlank()) callerAlias else senderAlias,
-                        estimatedDistanceMeters = 3.0,
-                        proximityLabel = "Pessoas no local (~3m)",
+                        estimatedDistanceMeters = 500.0,
+                        proximityLabel = "Conexão Mútua • Ilimitada",
                         isMarkedByMe = true,
                         isMarkingMe = true,
                         isMutualConnection = true,
@@ -1123,28 +1123,35 @@ class PessoasAquiRepository(
                 (!it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(p.alias, ignoreCase = true))
             }
             if (idx != -1) {
+                // Atualiza contato já existente (detectado fisicamente pelo BLE nativo ou conexão prévia)
                 val existing = current[idx]
                 current[idx] = applyConnectionState(existing.copy(
                     id = cId,
                     technicalIdentityHash = cId,
-                    alias = p.alias,
+                    alias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) existing.alias else p.alias,
                     intent = safeIntent,
                     lastSeenEpochMs = System.currentTimeMillis()
                 ))
-            } else {
+            } else if (p.isMutual || savedMutualPeople.contains(cId)) {
+                // Presença remota de Conexão Mútua comprovada pré-existente
                 current.add(
                     applyConnectionState(NearbyPerson(
                         id = cId,
                         technicalIdentityHash = cId,
                         alias = p.alias,
-                        estimatedDistanceMeters = 3.2,
-                        proximityLabel = "Dentro do alcance (~3m)",
+                        estimatedDistanceMeters = 500.0,
+                        proximityLabel = "Conexão Mútua • Ilimitada",
                         intent = safeIntent,
                         avatarColorHex = 0xFF00E5FF,
+                        isMutualConnection = true,
+                        isMarkedByMe = true,
+                        isMarkingMe = true,
+                        isPhotoVisible = true,
                         lastSeenEpochMs = System.currentTimeMillis()
                     ))
                 )
             }
+            // Estranhos remotos NÃO são adicionados ao radar; o radar é 100% rádio Bluetooth BLE físico (< 10m)!
         }
         saveConnectionsToPrefs()
 
@@ -1185,25 +1192,32 @@ class PessoasAquiRepository(
             current[idx] = applyConnectionState(existing.copy(
                 id = cId,
                 technicalIdentityHash = cId,
-                alias = peer.alias,
+                alias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) existing.alias else peer.alias,
                 intent = safeIntent,
                 lastSeenEpochMs = System.currentTimeMillis()
             ))
-        } else {
+            _realDiscoveredPeople.value = current
+            updateUnifiedData()
+        } else if (peer.isMutual || savedMutualPeople.contains(cId)) {
             val newPeer = applyConnectionState(NearbyPerson(
                 id = cId,
                 technicalIdentityHash = cId,
                 alias = peer.alias,
-                estimatedDistanceMeters = 2.0,
-                proximityLabel = "Dentro do alcance (~2m)",
+                estimatedDistanceMeters = 500.0,
+                proximityLabel = "Conexão Mútua • Ilimitada",
                 intent = safeIntent,
                 avatarColorHex = 0xFF00E5FF,
+                isMutualConnection = true,
+                isMarkedByMe = true,
+                isMarkingMe = true,
+                isPhotoVisible = true,
                 lastSeenEpochMs = System.currentTimeMillis()
             ))
             current.add(0, newPeer)
+            _realDiscoveredPeople.value = current
+            updateUnifiedData()
         }
-        _realDiscoveredPeople.value = current
-        updateUnifiedData()
+        // Estranhos online na nuvem são descartados: o radar local é restrito ao rádio BLE físico!
     }
 
     private fun handlePeerOffline(peerHash: String) {

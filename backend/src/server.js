@@ -371,15 +371,20 @@ wss.on('connection', (ws, req) => {
           };
         }));
 
-        ws.send(JSON.stringify({ type: 'PRESENCE_SYNC', peers: enrichedPeers }));
+        // Transmite no PRESENCE_SYNC apenas quem já possui relação mútua ou de marcação
+        const mutualOrRelatedPeers = enrichedPeers.filter(p => p.isMutual || p.isMarkedByMe || p.isMarkingMe);
+        ws.send(JSON.stringify({ type: 'PRESENCE_SYNC', peers: mutualOrRelatedPeers }));
 
-        // Transmite anúncio de presença para os demais aparelhos conectados
+        // Transmite anúncio de presença apenas para aparelhos que já possuem conexão mútua com este usuário
         const peerData = activePresence.get(kAuth);
-        wss.clients.forEach((client) => {
+        for (const [targetKey, client] of activeSockets.entries()) {
           if (client !== ws && client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({ type: 'PEER_ONLINE', peer: peerData }));
+            const status = await getConnectionStatus(authenticatedIdentity, targetKey);
+            if (status.isMutual) {
+              client.send(JSON.stringify({ type: 'PEER_ONLINE', peer: { ...peerData, isMutual: true } }));
+            }
           }
-        });
+        }
       }
 
       // Heartbeat periódico pelo WebSocket
@@ -494,10 +499,12 @@ app.get('/api/presence/nearby', async (req, res) => {
         isMarkingMe: status.isMarkingMe
       };
     }));
-    return res.json({ success: true, count: enriched.length, people: enriched });
+    // Retorna apenas quem possui relação mútua ou de marcação para não vazar estranhos de outras cidades
+    const relevant = enriched.filter(p => p.isMutual || p.isMarkedByMe || p.isMarkingMe);
+    return res.json({ success: true, count: relevant.length, people: relevant });
   }
 
-  res.json({ success: true, count: peers.length, people: peers });
+  res.json({ success: true, count: 0, people: [] });
 });
 
 /**
