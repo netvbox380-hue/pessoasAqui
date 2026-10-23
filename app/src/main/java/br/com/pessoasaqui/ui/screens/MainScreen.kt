@@ -57,6 +57,8 @@ fun MainScreen(
     val mySupportTickets by repository.mySupportTickets.collectAsState()
     val moderationWarning by repository.moderationWarningAlert.collectAsState()
     val accountBanned by repository.accountBannedAlert.collectAsState()
+    val contactTags by repository.contactTags.collectAsState()
+    val contactTagAssignments by repository.contactTagAssignments.collectAsState()
     val scope = rememberCoroutineScope()
     var showVipDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
@@ -492,7 +494,9 @@ fun MainScreen(
                             } else {
                                 onResult(false, "Link ou formato de convite inválido.", null)
                             }
-                        }
+                        },
+                        contactTags = contactTags,
+                        contactTagAssignments = contactTagAssignments
                     )
 
                     2 -> OffersTab(
@@ -711,6 +715,8 @@ fun MainScreen(
                     isVip = subscriptionTier == SubscriptionTier.PRO_VIP,
                     maxAllowedRecipients = subscriptionTier.maxBroadcastRecipients,
                     remainingCooldownMs = repository.subscriptionManager?.getRemainingCooldownMs() ?: 0L,
+                    contactTags = contactTags,
+                    contactTagAssignments = contactTagAssignments,
                     onSendBroadcast = { targetIds, message, onProgress, onResult ->
                         scope.launch {
                             val res = repository.sendBroadcastMessage(targetIds, message, onProgress)

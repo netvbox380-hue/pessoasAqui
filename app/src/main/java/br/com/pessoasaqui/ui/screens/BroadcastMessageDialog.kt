@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import br.com.pessoasaqui.domain.model.ContactTag
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.ui.theme.*
 import kotlinx.coroutines.delay
@@ -48,6 +50,8 @@ fun BroadcastMessageDialog(
     isVip: Boolean = false,
     maxAllowedRecipients: Int = 3,
     remainingCooldownMs: Long = 0L,
+    contactTags: List<ContactTag> = emptyList(),
+    contactTagAssignments: Map<String, Set<String>> = emptyMap(),
     onSendBroadcast: (targetIds: List<String>, message: String, onProgress: (Int, Int) -> Unit, onResult: (Boolean, String) -> Unit) -> Unit,
     onUpgradeToVip: () -> Unit = {},
     onDismiss: () -> Unit
@@ -55,6 +59,7 @@ fun BroadcastMessageDialog(
     var messageText by remember { mutableStateOf("") }
     val selectedIds = remember { mutableStateListOf<String>() }
     var searchQuery by remember { mutableStateOf("") }
+    var selectedTagFilterId by remember { mutableStateOf<String?>(null) }
 
     var isSending by remember { mutableStateOf(false) }
     var progressSent by remember { mutableIntStateOf(0) }
@@ -72,15 +77,24 @@ fun BroadcastMessageDialog(
         }
     }
 
-    // Filtra pessoas conectadas pela busca
-    val filteredPeople = remember(connectedPeople, searchQuery) {
-        if (searchQuery.isBlank()) {
-            connectedPeople
-        } else {
-            connectedPeople.filter {
-                it.alias.contains(searchQuery.trim(), ignoreCase = true) ||
-                (it.familyRole?.label ?: "").contains(searchQuery.trim(), ignoreCase = true)
+    // Filtra pessoas conectadas pela busca e pela etiqueta ativa
+    val filteredPeople = remember(connectedPeople, searchQuery, selectedTagFilterId, contactTagAssignments) {
+        connectedPeople.filter { person ->
+            val cleanId = person.technicalIdentityHash.ifBlank { person.id }.removePrefix("peer-").trim().uppercase()
+            val matchesTag = if (selectedTagFilterId == null) {
+                true
+            } else {
+                contactTagAssignments[cleanId]?.contains(selectedTagFilterId) == true
             }
+
+            val matchesSearch = if (searchQuery.isBlank()) {
+                true
+            } else {
+                person.alias.contains(searchQuery.trim(), ignoreCase = true) ||
+                (person.familyRole?.label ?: "").contains(searchQuery.trim(), ignoreCase = true)
+            }
+
+            matchesTag && matchesSearch
         }
     }
 
@@ -352,6 +366,119 @@ fun BroadcastMessageDialog(
                         )
                     }
 
+                    // ================= ETIQUETAS DE CONTATOS =================
+                    if (contactTags.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val isAllSelected = selectedTagFilterId == null
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = if (isAllSelected) RadarCyan.copy(alpha = 0.2f) else DarkCard,
+                                border = BorderStroke(1.dp, if (isAllSelected) RadarCyan else DarkCardElevated),
+                                modifier = Modifier.clickable { selectedTagFilterId = null }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Todos (${connectedPeople.size})",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = if (isAllSelected) RadarCyan else TextSecondary,
+                                            fontWeight = if (isAllSelected) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    )
+                                }
+                            }
+
+                            contactTags.forEach { tag ->
+                                val isTagActive = selectedTagFilterId == tag.id
+                                val tagColor = try { Color(android.graphics.Color.parseColor(tag.colorHex)) } catch (_: Exception) { RadarCyan }
+                                val count = connectedPeople.count { p ->
+                                    val cid = p.technicalIdentityHash.ifBlank { p.id }.removePrefix("peer-").trim().uppercase()
+                                    contactTagAssignments[cid]?.contains(tag.id) == true
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = if (isTagActive) tagColor.copy(alpha = 0.25f) else DarkCard,
+                                    border = BorderStroke(1.dp, if (isTagActive) tagColor else DarkCardElevated),
+                                    modifier = Modifier.clickable {
+                                        selectedTagFilterId = if (isTagActive) null else tag.id
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(tagColor)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "${tag.name} ($count)",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = if (isTagActive) tagColor else TextPrimary,
+                                                fontWeight = if (isTagActive) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Ação Rápida de Seleção da Etiqueta
+                        if (selectedTagFilterId != null) {
+                            val activeTag = contactTags.find { it.id == selectedTagFilterId }
+                            val activeTagColor = activeTag?.let {
+                                try { Color(android.graphics.Color.parseColor(it.colorHex)) } catch (_: Exception) { RadarCyan }
+                            } ?: RadarCyan
+
+                            val matchingIds = connectedPeople.filter { p ->
+                                val cid = p.technicalIdentityHash.ifBlank { p.id }.removePrefix("peer-").trim().uppercase()
+                                contactTagAssignments[cid]?.contains(selectedTagFilterId) == true
+                            }.map { it.technicalIdentityHash.ifBlank { it.id } }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Filtro: ${activeTag?.name ?: ""}",
+                                    style = MaterialTheme.typography.labelSmall.copy(color = activeTagColor, fontWeight = FontWeight.Bold)
+                                )
+                                TextButton(
+                                    onClick = {
+                                        selectedIds.clear()
+                                        if (isVip) {
+                                            selectedIds.addAll(matchingIds)
+                                        } else {
+                                            selectedIds.addAll(matchingIds.take(maxAllowedRecipients))
+                                            if (matchingIds.size > maxAllowedRecipients) {
+                                                errorMessage = "Limite do Plano Grátis ($maxAllowedRecipients). Seja VIP para selecionar todos!"
+                                            }
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(Icons.Default.DoneAll, contentDescription = null, tint = activeTagColor, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Marcar todos desta etiqueta (${matchingIds.size})", fontSize = 11.sp, color = activeTagColor, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
                     // Lista de Contatos Mútuos com Checkbox
                     if (connectedPeople.isEmpty()) {
                         Surface(
@@ -475,6 +602,29 @@ fun BroadcastMessageDialog(
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
+
+                                            val personCleanId = cleanId.removePrefix("peer-").trim().uppercase()
+                                            val assignedTagIds = contactTagAssignments[personCleanId] ?: emptySet()
+                                            val assignedTags = contactTags.filter { assignedTagIds.contains(it.id) }
+                                            assignedTags.take(2).forEach { tag ->
+                                                val tagColor = try { Color(android.graphics.Color.parseColor(tag.colorHex)) } catch (_: Exception) { RadarCyan }
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Surface(
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    color = tagColor.copy(alpha = 0.15f),
+                                                    border = BorderStroke(1.dp, tagColor.copy(alpha = 0.5f))
+                                                ) {
+                                                    Text(
+                                                        text = tag.name,
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            color = tagColor,
+                                                            fontSize = 9.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        ),
+                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
 
                                             if (person.isFamily) {
                                                 Spacer(modifier = Modifier.width(6.dp))

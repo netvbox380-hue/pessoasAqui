@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import br.com.pessoasaqui.domain.model.ChatMessage
+import br.com.pessoasaqui.domain.model.ContactTag
 import br.com.pessoasaqui.domain.model.MessageType
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.RecurringReminder
@@ -40,7 +41,9 @@ fun ConversationsTab(
     onToggleMarkPerson: (String) -> Unit = {},
     isCreatingInvite: Boolean = false,
     onCreateInviteLink: () -> Unit = {},
-    onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null
+    onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null,
+    contactTags: List<ContactTag> = emptyList(),
+    contactTagAssignments: Map<String, Set<String>> = emptyMap()
 ) {
     var showPasteInviteDialog by remember { mutableStateOf(false) }
     var showConversationsDrawer by remember { mutableStateOf(false) }
@@ -588,15 +591,43 @@ fun ConversationsTab(
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text(
-                                                text = contact.alias,
-                                                style = MaterialTheme.typography.titleMedium.copy(
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = TextPrimary
-                                                ),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            ) {
+                                                Text(
+                                                    text = contact.alias,
+                                                    style = MaterialTheme.typography.titleMedium.copy(
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = TextPrimary
+                                                    ),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+
+                                                val cClean = contact.technicalIdentityHash.ifBlank { contact.id }.removePrefix("peer-").trim().uppercase()
+                                                val cTagIds = contactTagAssignments[cClean] ?: emptySet()
+                                                val cTags = contactTags.filter { cTagIds.contains(it.id) }
+                                                cTags.take(2).forEach { t ->
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    val tColor = try { Color(android.graphics.Color.parseColor(t.colorHex)) } catch (_: Exception) { RadarCyan }
+                                                    Surface(
+                                                        shape = RoundedCornerShape(4.dp),
+                                                        color = tColor.copy(alpha = 0.18f),
+                                                        border = BorderStroke(1.dp, tColor.copy(alpha = 0.5f))
+                                                    ) {
+                                                        Text(
+                                                            text = t.name,
+                                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                                color = tColor,
+                                                                fontSize = 9.sp,
+                                                                fontWeight = FontWeight.Bold
+                                                            ),
+                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
 
                                             if (lastMsg != null) {
                                                 Text(

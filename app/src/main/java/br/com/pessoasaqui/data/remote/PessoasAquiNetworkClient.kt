@@ -1,5 +1,6 @@
 package br.com.pessoasaqui.data.remote
 
+import br.com.pessoasaqui.domain.model.AppVersionInfo
 import br.com.pessoasaqui.domain.model.OfferItem
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import kotlinx.coroutines.CoroutineScope
@@ -855,6 +856,31 @@ class PessoasAquiNetworkClient(
                     }
                 }
                 Result.success(list)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun checkAppVersion(): Result<AppVersionInfo> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/app/version-check")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext Result.failure(IOException("HTTP ${resp.code}"))
+                val body = resp.body?.string() ?: return@withContext Result.failure(IOException("Empty body"))
+                val json = JSONObject(body)
+                val info = AppVersionInfo(
+                    latestVersionCode = json.optLong("latestVersionCode", 10),
+                    latestVersionName = json.optString("latestVersionName", "1.0.9"),
+                    minSupportedVersionCode = json.optLong("minSupportedVersionCode", 8),
+                    forceUpdate = json.optBoolean("forceUpdate", false),
+                    playStoreUrl = json.optString("playStoreUrl", "https://play.google.com/store/apps/details?id=br.com.pessoasaqui"),
+                    releaseNotes = json.optString("releaseNotes", "")
+                )
+                Result.success(info)
             }
         } catch (e: Exception) {
             Result.failure(e)

@@ -135,3 +135,27 @@ data class LockoutState(
     val remainingLockoutSeconds: Long,
     val lockoutMessage: String? = null
 )
+
+/**
+ * Etiqueta personalizada para categorizar contatos e segmentar transmissões.
+ */
+@Serializable
+data class ContactTag(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val colorHex: String = "#00D4FF"
+)
+
+/**
+ * Informações de versão e atualização do aplicativo no Google Play.
+ */
+@Serializable
+data class AppVersionInfo(
+    val latestVersionCode: Long = 10,
+    val latestVersionName: String = "1.0.9",
+    val minSupportedVersionCode: Long = 8,
+    val forceUpdate: Boolean = false,
+    val playStoreUrl: String = "https://play.google.com/store/apps/details?id=br.com.pessoasaqui",
+    val releaseNotes: String = ""
+)
+

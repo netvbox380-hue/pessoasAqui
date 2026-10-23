@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import br.com.pessoasaqui.domain.model.ChatMessage
+import br.com.pessoasaqui.domain.model.ContactTag
 import br.com.pessoasaqui.domain.model.FamilyRole
 import br.com.pessoasaqui.domain.model.MessageType
 import br.com.pessoasaqui.domain.model.NearbyPerson
@@ -74,7 +75,8 @@ fun uriToBase64Image(context: android.content.Context, uri: Uri): String? {
         val originalBitmap = BitmapFactory.decodeStream(inputStream) ?: return null
         inputStream?.close()
 
-        val maxDim = 800
+        // Qualidade Cristalina (2K Quad HD - 2048px)
+        val maxDim = 2048
         val width = originalBitmap.width
         val height = originalBitmap.height
         val scaledBitmap = if (width > maxDim || height > maxDim) {
@@ -89,7 +91,7 @@ fun uriToBase64Image(context: android.content.Context, uri: Uri): String? {
         }
 
         val outputStream = ByteArrayOutputStream()
-        scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
+        scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, outputStream)
         val byteArray = outputStream.toByteArray()
         Base64.encodeToString(byteArray, Base64.NO_WRAP)
     } catch (_: Exception) {
@@ -97,7 +99,7 @@ fun uriToBase64Image(context: android.content.Context, uri: Uri): String? {
     }
 }
 
-fun uriToBase64Doc(context: android.content.Context, uri: Uri): Pair<String, Long>? {
+fun uriToBase64Doc(context: android.content.Context, uri: Uri, maxBytes: Long = 40L * 1024L * 1024L): Pair<String, Long>? {
     return try {
         var fileName = "documento.pdf"
         var fileSize = 0L
@@ -109,7 +111,13 @@ fun uriToBase64Doc(context: android.content.Context, uri: Uri): Pair<String, Lon
                 if (sizeIndex != -1) fileSize = cursor.getLong(sizeIndex)
             }
         }
-        val bytes = context.contentResolver.openInputStream(uri)?.readBytes() ?: return null
+        if (fileSize > maxBytes) {
+            return null
+        }
+        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+        if (bytes.size > maxBytes) {
+            return null
+        }
         val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
         Pair("$fileName:${if (fileSize > 0) fileSize else bytes.size.toLong()}:$b64", bytes.size.toLong())
     } catch (_: Exception) {
@@ -180,7 +188,12 @@ fun ChatDetailScreen(
     onCreateInviteLink: () -> Unit = {},
     onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null,
     isVip: Boolean = false,
-    onUpgradeToVip: () -> Unit = {}
+    onUpgradeToVip: () -> Unit = {},
+    contactTags: List<ContactTag> = emptyList(),
+    contactTagAssignments: Map<String, Set<String>> = emptyMap(),
+    onToggleContactTag: (String, String) -> Unit = { _, _ -> },
+    onCreateContactTag: (String, String) -> Unit = { _, _ -> },
+    onDeleteContactTag: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
@@ -193,6 +206,7 @@ fun ChatDetailScreen(
     var showBroadcastDialog by remember { mutableStateOf(false) }
     var showEmojiPicker by remember { mutableStateOf(false) }
     var showPasteInviteInChat by remember { mutableStateOf(false) }
+    var showTagSelectorDialog by remember { mutableStateOf(false) }
     var restrictedFeatureDialog by remember { mutableStateOf<String?>(null) }
     var isRecordingAudio by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableStateOf(0) }
@@ -240,29 +254,54 @@ fun ChatDetailScreen(
     val scope = rememberCoroutineScope()
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let {
-            scope.launch(Dispatchers.IO) {
-                val base64 = uriToBase64Image(context, it)
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        if (uris.isNullOrEmpty()) return@rememberLauncherForActivityResult
+        val selected = uris.take(30)
+        scope.launch(Dispatchers.IO) {
+            selected.forEach { uri ->
+                val base64 = uriToBase64Image(context, uri)
                 if (base64 != null) {
                     onSendImageMessage(person, base64)
+                    delay(200)
+                }
+            }
+        }
+    }
+
+    val videoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        if (uris.isNullOrEmpty()) return@rememberLauncherForActivityResult
+        val selected = uris.take(10)
+        scope.launch(Dispatchers.IO) {
+            selected.forEach { uri ->
+                val res = uriToBase64Doc(context, uri, maxBytes = 40L * 1024L * 1024L)
+                if (res != null) {
+                    val parts = res.first.split(":", limit = 3)
+                    val name = parts.getOrNull(0) ?: "video.mp4"
+                    val b64 = parts.getOrNull(2) ?: ""
+                    onSendDocumentMessage(person, name, b64, res.second)
+                    delay(250)
                 }
             }
         }
     }
 
     val documentPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let {
-            scope.launch(Dispatchers.IO) {
-                val res = uriToBase64Doc(context, it)
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        if (uris.isNullOrEmpty()) return@rememberLauncherForActivityResult
+        val selected = uris.take(30)
+        scope.launch(Dispatchers.IO) {
+            selected.forEach { uri ->
+                val res = uriToBase64Doc(context, uri, maxBytes = 40L * 1024L * 1024L)
                 if (res != null) {
                     val parts = res.first.split(":", limit = 3)
                     val name = parts.getOrNull(0) ?: "documento.pdf"
                     val b64 = parts.getOrNull(2) ?: ""
                     onSendDocumentMessage(person, name, b64, res.second)
+                    delay(200)
                 }
             }
         }
@@ -308,13 +347,37 @@ fun ChatDetailScreen(
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
-                            Text(
-                                text = person.alias,
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextPrimary
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = person.alias,
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextPrimary
+                                    )
                                 )
-                            )
+                                val pCleanId = person.technicalIdentityHash.ifBlank { person.id }.removePrefix("peer-").trim().uppercase()
+                                val pTagIds = contactTagAssignments[pCleanId] ?: emptySet()
+                                val pTags = contactTags.filter { pTagIds.contains(it.id) }
+                                pTags.take(2).forEach { t ->
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    val tColor = try { Color(android.graphics.Color.parseColor(t.colorHex)) } catch (_: Exception) { RadarCyan }
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = tColor.copy(alpha = 0.2f),
+                                        border = BorderStroke(1.dp, tColor.copy(alpha = 0.6f))
+                                    ) {
+                                        Text(
+                                            text = t.name,
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = tColor,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                            }
                             Text(
                                 text = when {
                                     person.isFamily -> "Família • ${person.familyRole?.label ?: "Vínculo Seguro"}"
@@ -520,6 +583,27 @@ fun ChatDetailScreen(
                                 menuExpanded = false
                                 reminderInitialText = inputText
                                 showRemindersDialog = true
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "🏷️ Etiquetas do Contato",
+                                    color = RadarCyan,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Label,
+                                    contentDescription = null,
+                                    tint = RadarCyan
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                showTagSelectorDialog = true
                             }
                         )
 
@@ -1364,7 +1448,7 @@ fun ChatDetailScreen(
                 },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        // 1. Foto / Imagem
+                        // 1. Fotos / Imagens (Múltipla Seleção em HD)
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = DarkCard,
@@ -1394,13 +1478,49 @@ fun ChatDetailScreen(
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("Enviar Foto / Imagem", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
-                                    Text("Galeria de fotos com cifragem ponta a ponta", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                    Text("Enviar Fotos (Alta Definição)", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Marque até 30 fotos com qualidade cristalina HD", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
                                 }
                             }
                         }
 
-                        // 2. Documento
+                        // 2. Vídeos (Múltipla Seleção Criptografada)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showResourceDrawer = false
+                                    if (isMutualOrFamily) {
+                                        videoPickerLauncher.launch("video/*")
+                                    } else {
+                                        restrictedFeatureDialog = "Envio de Vídeos"
+                                    }
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(WarningAmber.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.VideoLibrary, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(20.dp))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("Enviar Vídeos", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Múltiplos vídeos cifrados ponta a ponta (até 40MB)", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                }
+                            }
+                        }
+
+                        // 3. Documentos (Múltipla Seleção)
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = DarkCard,
@@ -1430,8 +1550,40 @@ fun ChatDetailScreen(
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("Enviar Documento", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
-                                    Text("PDFs e arquivos com transmissão protegida", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                    Text("Enviar Documentos / Arquivos", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Marque múltiplos PDFs e arquivos protegidos", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                }
+                            }
+                        }
+
+                        // 4. Etiquetas do Contato
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showResourceDrawer = false
+                                    showTagSelectorDialog = true
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(RadarCyan.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Label, contentDescription = null, tint = RadarCyan, modifier = Modifier.size(20.dp))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("🏷️ Etiquetas do Contato", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Classifique este contato para transmissões segmentadas", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
                                 }
                             }
                         }
@@ -1883,6 +2035,8 @@ fun ChatDetailScreen(
                 isVip = isVip,
                 maxAllowedRecipients = maxAllowedBroadcastRecipients,
                 remainingCooldownMs = remainingBroadcastCooldownMs,
+                contactTags = contactTags,
+                contactTagAssignments = contactTagAssignments,
                 onSendBroadcast = { targetIds, msg, onProgress, onResult ->
                     if (onSendBroadcast != null) {
                         onSendBroadcast(targetIds, msg, onProgress, onResult)
@@ -1892,6 +2046,20 @@ fun ChatDetailScreen(
                 },
                 onUpgradeToVip = onUpgradeToVip,
                 onDismiss = { showBroadcastDialog = false }
+            )
+        }
+
+        if (showTagSelectorDialog) {
+            val pCleanId = person.technicalIdentityHash.ifBlank { person.id }.removePrefix("peer-").trim().uppercase()
+            val assignedIds = contactTagAssignments[pCleanId] ?: emptySet()
+            ContactTagSelectorDialog(
+                person = person,
+                allTags = contactTags,
+                assignedTagIds = assignedIds,
+                onToggleTag = { tagId -> onToggleContactTag(pCleanId, tagId) },
+                onCreateTag = { name, colorHex -> onCreateContactTag(name, colorHex) },
+                onDeleteTag = { tagId -> onDeleteContactTag(tagId) },
+                onDismiss = { showTagSelectorDialog = false }
             )
         }
 

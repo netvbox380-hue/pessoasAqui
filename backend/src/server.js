@@ -444,6 +444,22 @@ app.get('/', (req, res) => {
 });
 
 /**
+ * Verificação de Versão do Aplicativo (Google Play Update Check)
+ */
+app.get('/api/app/version-check', (req, res) => {
+  res.json({
+    success: true,
+    latestVersionCode: 10,
+    latestVersionName: '1.0.9',
+    minSupportedVersionCode: 8,
+    forceUpdate: false,
+    playStoreUrl: 'https://play.google.com/store/apps/details?id=br.com.pessoasaqui',
+    releaseNotes: '• Envio múltiplo de fotos, vídeos e documentos\n• Qualidade de imagem cristalina HD\n• Sistema de etiquetas de contatos\n• Transmissão inteligente segmentada por etiquetas'
+  });
+});
+
+
+/**
  * Heartbeat de Presença (Dispositivos ativos no radar)
  */
 app.post('/api/presence/heartbeat', (req, res) => {

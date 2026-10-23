@@ -27,6 +27,8 @@ import android.util.Base64
 import br.com.pessoasaqui.domain.model.ActiveCallState
 import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.FamilyRole
+import br.com.pessoasaqui.domain.model.AppVersionInfo
+import br.com.pessoasaqui.domain.model.ContactTag
 import br.com.pessoasaqui.domain.model.MessageType
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.OfferItem
@@ -2361,6 +2363,170 @@ class PessoasAquiRepository(
             }
         }
         return res
+    }
+
+    // ==========================================
+    // GESTÃO DE ETIQUETAS DE CONTATOS
+    // ==========================================
+    private val _contactTags = MutableStateFlow<List<ContactTag>>(loadContactTagsFromPrefs())
+    val contactTags: StateFlow<List<ContactTag>> = _contactTags.asStateFlow()
+
+    private val _contactTagAssignments = MutableStateFlow<Map<String, Set<String>>>(loadContactTagAssignmentsFromPrefs())
+    val contactTagAssignments: StateFlow<Map<String, Set<String>>> = _contactTagAssignments.asStateFlow()
+
+    // ==========================================
+    // ATUALIZAÇÃO DO APP NO GOOGLE PLAY
+    // ==========================================
+    private val _availableAppUpdate = MutableStateFlow<AppVersionInfo?>(null)
+    val availableAppUpdate: StateFlow<AppVersionInfo?> = _availableAppUpdate.asStateFlow()
+
+    private fun loadContactTagsFromPrefs(): List<ContactTag> {
+        val json = prefs?.getString("contact_tags_v1", null)
+        if (json.isNullOrBlank()) {
+            val defaultTags = listOf(
+                ContactTag(id = "tag_vip", name = "VIP 💎", colorHex = "#FFB300"),
+                ContactTag(id = "tag_clients", name = "Clientes 💼", colorHex = "#00D4FF"),
+                ContactTag(id = "tag_family", name = "Família 💜", colorHex = "#B388FF"),
+                ContactTag(id = "tag_friends", name = "Amigos 🟢", colorHex = "#00E676")
+            )
+            saveContactTagsToPrefs(defaultTags)
+            return defaultTags
+        }
+        return try {
+            val array = JSONArray(json)
+            val list = mutableListOf<ContactTag>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                list.add(
+                    ContactTag(
+                        id = obj.getString("id"),
+                        name = obj.getString("name"),
+                        colorHex = obj.optString("colorHex", "#00D4FF")
+                    )
+                )
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun saveContactTagsToPrefs(tags: List<ContactTag>) {
+        try {
+            val array = JSONArray()
+            for (tag in tags) {
+                val obj = JSONObject()
+                obj.put("id", tag.id)
+                obj.put("name", tag.name)
+                obj.put("colorHex", tag.colorHex)
+                array.put(obj)
+            }
+            prefs?.edit()?.putString("contact_tags_v1", array.toString())?.apply()
+        } catch (_: Exception) {}
+    }
+
+    private fun loadContactTagAssignmentsFromPrefs(): Map<String, Set<String>> {
+        val json = prefs?.getString("contact_tag_assignments_v1", null) ?: return emptyMap()
+        return try {
+            val obj = JSONObject(json)
+            val map = mutableMapOf<String, Set<String>>()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val array = obj.getJSONArray(key)
+                val set = mutableSetOf<String>()
+                for (i in 0 until array.length()) {
+                    set.add(array.getString(i))
+                }
+                map[key] = set
+            }
+            map
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    private fun saveContactTagAssignmentsToPrefs(map: Map<String, Set<String>>) {
+        try {
+            val obj = JSONObject()
+            for ((key, set) in map) {
+                val array = JSONArray()
+                for (tagId in set) {
+                    array.put(tagId)
+                }
+                obj.put(key, array)
+            }
+            prefs?.edit()?.putString("contact_tag_assignments_v1", obj.toString())?.apply()
+        } catch (_: Exception) {}
+    }
+
+    fun createContactTag(name: String, colorHex: String = "#00D4FF"): ContactTag {
+        val trimmed = name.trim()
+        val newTag = ContactTag(name = trimmed, colorHex = colorHex)
+        val updated = _contactTags.value + newTag
+        _contactTags.value = updated
+        saveContactTagsToPrefs(updated)
+        return newTag
+    }
+
+    fun deleteContactTag(tagId: String) {
+        val updatedTags = _contactTags.value.filter { it.id != tagId }
+        _contactTags.value = updatedTags
+        saveContactTagsToPrefs(updatedTags)
+
+        val currentMap = _contactTagAssignments.value.toMutableMap()
+        var changed = false
+        for ((contactId, set) in currentMap) {
+            if (set.contains(tagId)) {
+                currentMap[contactId] = set - tagId
+                changed = true
+            }
+        }
+        if (changed) {
+            _contactTagAssignments.value = currentMap
+            saveContactTagAssignmentsToPrefs(currentMap)
+        }
+    }
+
+    fun toggleTagForContact(contactIdentity: String, tagId: String) {
+        val clean = cleanId(contactIdentity)
+        if (clean.isBlank()) return
+        val currentMap = _contactTagAssignments.value.toMutableMap()
+        val existingSet = currentMap[clean] ?: emptySet()
+        val newSet = if (existingSet.contains(tagId)) {
+            existingSet - tagId
+        } else {
+            existingSet + tagId
+        }
+        currentMap[clean] = newSet
+        _contactTagAssignments.value = currentMap
+        saveContactTagAssignmentsToPrefs(currentMap)
+    }
+
+    fun getTagsForContact(contactIdentity: String): List<ContactTag> {
+        val clean = cleanId(contactIdentity)
+        val tagIds = _contactTagAssignments.value[clean] ?: emptySet()
+        return _contactTags.value.filter { tagIds.contains(it.id) }
+    }
+
+    fun checkForAppUpdates(currentVersionCode: Long) {
+        scope.launch {
+            try {
+                val res = networkClient.checkAppVersion()
+                if (res.isSuccess) {
+                    val info = res.getOrNull()
+                    if (info != null && info.latestVersionCode > currentVersionCode) {
+                        _availableAppUpdate.value = info
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("PessoasAquiRepository", "Falha ao verificar atualização: ${e.message}")
+            }
+        }
+    }
+
+    fun dismissAppUpdate() {
+        _availableAppUpdate.value = null
     }
 }
 

@@ -208,12 +208,28 @@ fun PessoasAquiNavHost(
     val pendingFamilyRequest by repository.pendingFamilyRequest.collectAsState()
     val recurringReminders by repository.recurringReminders.collectAsState()
     val subscriptionTier by (repository.subscriptionManager?.currentTier ?: MutableStateFlow(SubscriptionTier.FREE)).collectAsState()
+    val availableAppUpdate by repository.availableAppUpdate.collectAsState()
+    val contactTags by repository.contactTags.collectAsState()
+    val contactTagAssignments by repository.contactTagAssignments.collectAsState()
     val scope = rememberCoroutineScope()
     val connectedPeople = remember(discoveredPeople) {
         discoveredPeople.filter { it.isMutualConnection || it.isFamily }
             .distinctBy { it.technicalIdentityHash.ifBlank { it.id } }
     }
     val context = LocalContext.current
+
+    // Verificação de atualização oficial do Google Play ao iniciar
+    LaunchedEffect(Unit) {
+        val curCode = try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, 0).versionCode.toLong()
+            }
+        } catch (_: Exception) { 10L }
+        repository.checkForAppUpdates(curCode)
+    }
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
@@ -444,7 +460,12 @@ fun PessoasAquiNavHost(
                         onResult(false, "Link ou formato de convite inválido.", null)
                     }
                 },
-                isVip = subscriptionTier == SubscriptionTier.PRO_VIP
+                isVip = subscriptionTier == SubscriptionTier.PRO_VIP,
+                contactTags = contactTags,
+                contactTagAssignments = contactTagAssignments,
+                onToggleContactTag = { contactId, tagId -> repository.toggleTagForContact(contactId, tagId) },
+                onCreateContactTag = { name, colorHex -> repository.createContactTag(name, colorHex) },
+                onDeleteContactTag = { tagId -> repository.deleteContactTag(tagId) }
             )
 
             activeFamilyRecoveryAuth?.let { (person, auth) ->
@@ -597,6 +618,26 @@ fun PessoasAquiNavHost(
                 }
             },
             containerColor = DarkSurface
+        )
+    }
+
+    // Diálogo de Atualização do App (Google Play)
+    availableAppUpdate?.let { updateInfo ->
+        AppUpdateAvailableDialog(
+            updateInfo = updateInfo,
+            onUpdateClick = { url ->
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=${context.packageName}")).apply {
+                        setPackage("com.android.vending")
+                    }
+                    context.startActivity(intent)
+                } catch (_: Exception) {
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                    } catch (_: Exception) {}
+                }
+            },
+            onDismiss = { repository.dismissAppUpdate() }
         )
     }
 }
