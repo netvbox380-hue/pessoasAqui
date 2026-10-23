@@ -2024,6 +2024,10 @@ class PessoasAquiRepository(
         reminderManager?.toggleReminder(reminderId, isEnabled)
     }
 
+    fun confirmRecurringReminder(reminderId: String) {
+        reminderManager?.confirmReminder(reminderId)
+    }
+
     fun triggerDueRemindersNow() {
         reminderManager?.checkAndTriggerDueReminders { targetId, text ->
             sendPrivateMessage(targetId, text)

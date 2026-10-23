@@ -23,7 +23,7 @@ class RecurringReminderManager(private val context: Context) {
         private const val TAG = "RecurringReminderMgr"
         private const val PREFS_KEY = "saved_recurring_reminders_v1"
         const val CHANNEL_ID = "pessoasaqui_reminders_channel"
-        private const val NOTIFICATION_BASE_ID = 9000
+        const val NOTIFICATION_BASE_ID = 9000
     }
 
     private val prefs = context.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
@@ -149,6 +149,27 @@ class RecurringReminderManager(private val context: Context) {
     }
 
     /**
+     * Confirma / conclui um lembrete (acionado pelo usuário ou pela notificação).
+     * Se for um lembrete persistente ou de disparo único, encerra as repetições futuras.
+     */
+    fun confirmReminder(reminderId: String) {
+        val currentList = _reminders.value.toMutableList()
+        val index = currentList.indexOfFirst { it.id == reminderId }
+        if (index != -1) {
+            val item = currentList[index]
+            val updated = item.copy(
+                isConfirmed = true,
+                isEnabled = if (item.isPersistentUntilConfirmed || item.frequency == ReminderFrequency.UNICO) false else item.isEnabled
+            )
+            currentList[index] = updated
+            _reminders.value = currentList
+            saveRemindersToPrefs()
+            scheduleNextAlarm()
+            Log.i(TAG, "Lembrete confirmado com sucesso: ${item.title} ($reminderId)")
+        }
+    }
+
+    /**
      * Verifica e dispara lembretes vencidos. Pode ser chamado periodicamente pelo serviço
      * em segundo plano ou pelo Receiver acionado pelo AlarmManager.
      */
@@ -167,13 +188,43 @@ class RecurringReminderManager(private val context: Context) {
                 if (reminder.autoSend && onSendAutoMessage != null && reminder.messageText.isNotBlank()) {
                     try {
                         onSendAutoMessage(reminder.targetId, reminder.messageText)
-                        Log.i(TAG, "Mensagem recorrente enviada automaticamente para ${reminder.targetAlias}")
+                        Log.i(TAG, "Mensagem de lembrete enviada automaticamente para ${reminder.targetAlias}")
                     } catch (e: Exception) {
                         Log.w(TAG, "Falha ao enviar mensagem automática de lembrete: ${e.message}")
                     }
                 }
 
-                if (reminder.frequency == ReminderFrequency.UNICO) {
+                // Lógica de Persistência Inteligente (Repete diariamente por até 3 dias se não confirmado)
+                if (reminder.isPersistentUntilConfirmed && !reminder.isConfirmed) {
+                    val nextRetry = reminder.retryCount + 1
+                    if (nextRetry < 3) {
+                        // Agenda para o dia seguinte no mesmo horário (24 horas após o gatilho)
+                        val nextDayCal = java.util.Calendar.getInstance().apply {
+                            timeInMillis = reminder.nextTriggerEpochMs
+                            add(java.util.Calendar.DAY_OF_YEAR, 1)
+                        }
+                        while (nextDayCal.timeInMillis <= now) {
+                            nextDayCal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+                        }
+                        currentList[i] = reminder.copy(
+                            lastTriggerEpochMs = now,
+                            retryCount = nextRetry,
+                            nextTriggerEpochMs = nextDayCal.timeInMillis
+                        )
+                        hasChanges = true
+                        Log.i(TAG, "Lembrete persistente pendente: agendada tentativa ${nextRetry + 1}/3 para ${nextDayCal.time}")
+                    } else {
+                        // 3 tentativas consecutivas concluídas sem confirmação
+                        currentList[i] = reminder.copy(
+                            lastTriggerEpochMs = now,
+                            retryCount = 3,
+                            nextTriggerEpochMs = 0L,
+                            isEnabled = false
+                        )
+                        hasChanges = true
+                        Log.i(TAG, "Lembrete persistente encerrou o ciclo de 3 tentativas sem confirmação.")
+                    }
+                } else if (reminder.frequency == ReminderFrequency.UNICO) {
                     // Mensagem/lembrete único disparado com sucesso: marca como concluído
                     currentList[i] = reminder.copy(
                         lastTriggerEpochMs = now,
@@ -226,12 +277,28 @@ class RecurringReminderManager(private val context: Context) {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
+            // Intent de confirmação/conclusão direta pela notificação
+            val confirmIntent = Intent(context, RecurringReminderReceiver::class.java).apply {
+                action = RecurringReminderReceiver.ACTION_CONFIRM_REMINDER
+                putExtra(RecurringReminderReceiver.EXTRA_REMINDER_ID, reminder.id)
+            }
+            val confirmPendingIntent = PendingIntent.getBroadcast(
+                context,
+                ("confirm_" + reminder.id).hashCode(),
+                confirmIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
             val autoSentInfo = if (reminder.autoSend) " • Enviada no chat" else ""
             val roleInfo = reminder.targetFamilyRole?.let { " (${it.label})" } ?: ""
+            val retryInfo = if (reminder.isPersistentUntilConfirmed && reminder.retryCount > 0) {
+                " [Tentativa ${reminder.retryCount + 1}/3]"
+            } else ""
+
             val notifTitle = if (reminder.frequency == ReminderFrequency.UNICO) {
-                "⏰ Mensagem Agendada: ${reminder.title}"
+                "⏰ ${retryInfo}Mensagem Agendada: ${reminder.title}"
             } else {
-                "⏰ Lembrete: ${reminder.title}"
+                "⏰ ${retryInfo}Lembrete: ${reminder.title}"
             }
 
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -240,12 +307,17 @@ class RecurringReminderManager(private val context: Context) {
                 .setContentText("Para: ${reminder.targetAlias}$roleInfo - ${reminder.messageText}")
                 .setStyle(
                     NotificationCompat.BigTextStyle()
-                        .bigText("🔔 ${reminder.frequency.label}$autoSentInfo\nDestinatário: ${reminder.targetAlias}$roleInfo\n\n\"${reminder.messageText}\"")
+                        .bigText("🔔 ${reminder.frequency.label}$autoSentInfo$retryInfo\nDestinatário: ${reminder.targetAlias}$roleInfo\n\n\"${reminder.messageText}\"")
                 )
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_REMINDER)
                 .setAutoCancel(true)
                 .setContentIntent(pendingIntent)
+                .addAction(
+                    android.R.drawable.checkbox_on_background,
+                    "✓ Concluído",
+                    confirmPendingIntent
+                )
 
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             val notificationId = NOTIFICATION_BASE_ID + Math.abs(reminder.id.hashCode() % 1000)

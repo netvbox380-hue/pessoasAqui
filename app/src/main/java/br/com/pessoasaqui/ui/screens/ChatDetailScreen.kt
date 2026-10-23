@@ -14,6 +14,11 @@ import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.media.DocumentViewerHelper
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -165,7 +170,17 @@ fun ChatDetailScreen(
     recurringReminders: List<RecurringReminder> = emptyList(),
     onSaveReminder: (RecurringReminder) -> Unit = {},
     onDeleteReminder: (String) -> Unit = {},
-    onToggleReminder: (String, Boolean) -> Unit = { _, _ -> }
+    onToggleReminder: (String, Boolean) -> Unit = { _, _ -> },
+    onConfirmReminder: (String) -> Unit = {},
+    allConnectedPeople: List<NearbyPerson> = emptyList(),
+    maxAllowedBroadcastRecipients: Int = 3,
+    remainingBroadcastCooldownMs: Long = 0L,
+    onSendBroadcast: ((List<String>, String, (Int, Int) -> Unit, (Boolean, String) -> Unit) -> Unit)? = null,
+    isCreatingInvite: Boolean = false,
+    onCreateInviteLink: () -> Unit = {},
+    onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null,
+    isVip: Boolean = false,
+    onUpgradeToVip: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
@@ -173,7 +188,11 @@ fun ChatDetailScreen(
     var showReportDialog by remember { mutableStateOf(false) }
     var showFamilyRoleDialog by remember { mutableStateOf(false) }
     var showRemindersDialog by remember { mutableStateOf(false) }
-    var showAttachmentOptions by remember { mutableStateOf(false) }
+    var reminderInitialText by remember { mutableStateOf("") }
+    var showResourceDrawer by remember { mutableStateOf(false) }
+    var showBroadcastDialog by remember { mutableStateOf(false) }
+    var showEmojiPicker by remember { mutableStateOf(false) }
+    var showPasteInviteInChat by remember { mutableStateOf(false) }
     var restrictedFeatureDialog by remember { mutableStateOf<String?>(null) }
     var isRecordingAudio by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableStateOf(0) }
@@ -464,7 +483,28 @@ fun ChatDetailScreen(
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    text = "⏰ Lembrete Recorrente",
+                                    text = "📢 Mensagem de Transmissão",
+                                    color = RadarCyan,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Campaign,
+                                    contentDescription = null,
+                                    tint = RadarCyan
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                showBroadcastDialog = true
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "⏰ Lembretes e Agendamento",
                                     color = FamilyPurple,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -478,6 +518,7 @@ fun ChatDetailScreen(
                             },
                             onClick = {
                                 menuExpanded = false
+                                reminderInitialText = inputText
                                 showRemindersDialog = true
                             }
                         )
@@ -1181,20 +1222,16 @@ fun ChatDetailScreen(
                             .padding(horizontal = 10.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Botão de Anexo (Fotos e Documentos)
+                        // Botão da Gaveta de Recursos (Fotos, Documentos, Lembretes, Transmissão)
                         IconButton(
                             onClick = {
-                                if (isMutualOrFamily) {
-                                    showAttachmentOptions = true
-                                } else {
-                                    restrictedFeatureDialog = "Envio de Fotos e Documentos"
-                                }
+                                showResourceDrawer = true
                             }
                         ) {
                             Icon(
-                                imageVector = Icons.Default.AttachFile,
-                                contentDescription = "Anexar Foto ou Documento",
-                                tint = if (isMutualOrFamily) RadarCyan else TextSecondary.copy(alpha = 0.6f)
+                                imageVector = Icons.Default.Widgets,
+                                contentDescription = "Gaveta de Recursos",
+                                tint = if (isMutualOrFamily) RadarCyan else TextSecondary.copy(alpha = 0.8f)
                             )
                         }
 
@@ -1202,6 +1239,18 @@ fun ChatDetailScreen(
                             value = inputText,
                             onValueChange = { inputText = it },
                             placeholder = { Text("Mensagem cifrada...") },
+                            leadingIcon = {
+                                IconButton(
+                                    onClick = { showEmojiPicker = !showEmojiPicker }
+                                ) {
+                                    Icon(
+                                        imageVector = if (showEmojiPicker) Icons.Default.Keyboard else Icons.Default.SentimentSatisfiedAlt,
+                                        contentDescription = if (showEmojiPicker) "Teclado" else "Emojis",
+                                        tint = if (showEmojiPicker) RadarCyan else TextSecondary.copy(alpha = 0.85f),
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(24.dp),
                             colors = OutlinedTextFieldDefaults.colors(
@@ -1214,17 +1263,35 @@ fun ChatDetailScreen(
                         Spacer(modifier = Modifier.width(6.dp))
 
                         if (inputText.isNotBlank()) {
-                            IconButton(
-                                onClick = {
-                                    onSendMessage(inputText)
-                                    inputText = ""
-                                },
-                                colors = IconButtonDefaults.iconButtonColors(containerColor = RadarCyan)
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .background(RadarCyan)
+                                    .pointerInput(inputText) {
+                                        detectTapGestures(
+                                            onTap = {
+                                                onSendMessage(inputText)
+                                                inputText = ""
+                                            },
+                                            onLongPress = {
+                                                Toast.makeText(
+                                                    context,
+                                                    "⏰ Agendando lembrete com o texto digitado...",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                                reminderInitialText = inputText
+                                                showRemindersDialog = true
+                                            }
+                                        )
+                                    },
+                                contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Send,
-                                    contentDescription = "Enviar",
-                                    tint = DeepBlack
+                                    contentDescription = "Enviar (Toque) / Agendar Lembrete (Premir e Segurar)",
+                                    tint = DeepBlack,
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                         } else {
@@ -1255,58 +1322,277 @@ fun ChatDetailScreen(
                         }
                     }
                 }
+
+                if (showEmojiPicker) {
+                    EmojiPickerPanel(
+                        onEmojiSelected = { emoji ->
+                            inputText += emoji
+                        },
+                        onBackspace = {
+                            if (inputText.isNotEmpty()) {
+                                val codePoints = inputText.codePoints().toArray()
+                                if (codePoints.isNotEmpty()) {
+                                    val sb = StringBuilder()
+                                    for (i in 0 until codePoints.size - 1) {
+                                        sb.appendCodePoint(codePoints[i])
+                                    }
+                                    inputText = sb.toString()
+                                }
+                            }
+                        },
+                        onClose = { showEmojiPicker = false }
+                    )
+                }
             }
         }
 
-        // Diálogo para escolha de anexo (Foto ou Documento)
-        if (showAttachmentOptions) {
+        // Gaveta de Recursos (Fotos, Documentos, Lembretes, Transmissão)
+        if (showResourceDrawer) {
             AlertDialog(
-                onDismissRequest = { showAttachmentOptions = false },
-                title = { Text("Anexar à Conversa Cifrada", fontWeight = FontWeight.Bold) },
+                onDismissRequest = { showResourceDrawer = false },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Widgets,
+                            contentDescription = null,
+                            tint = RadarCyan,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text("Gaveta de Recursos", fontWeight = FontWeight.Bold, color = TextPrimary)
+                    }
+                },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        // 1. Foto / Imagem
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = DarkCard,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    showAttachmentOptions = false
-                                    imagePickerLauncher.launch("image/*")
+                                    showResourceDrawer = false
+                                    if (isMutualOrFamily) {
+                                        imagePickerLauncher.launch("image/*")
+                                    } else {
+                                        restrictedFeatureDialog = "Envio de Fotos e Imagens"
+                                    }
                                 }
                         ) {
                             Row(
-                                modifier = Modifier.padding(14.dp),
+                                modifier = Modifier.padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, tint = RadarCyan)
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(RadarCyan.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, tint = RadarCyan, modifier = Modifier.size(20.dp))
+                                }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("Enviar Foto / Imagem", fontWeight = FontWeight.Bold, color = TextPrimary)
-                                    Text("Galeria de fotos com cifragem ponta a ponta", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary))
+                                    Text("Enviar Foto / Imagem", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Galeria de fotos com cifragem ponta a ponta", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
                                 }
                             }
                         }
 
+                        // 2. Documento
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = DarkCard,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    showAttachmentOptions = false
-                                    documentPickerLauncher.launch("*/*")
+                                    showResourceDrawer = false
+                                    if (isMutualOrFamily) {
+                                        documentPickerLauncher.launch("*/*")
+                                    } else {
+                                        restrictedFeatureDialog = "Envio de Documentos"
+                                    }
                                 }
                         ) {
                             Row(
-                                modifier = Modifier.padding(14.dp),
+                                modifier = Modifier.padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.Description, contentDescription = null, tint = EmeraldGreen)
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(EmeraldGreen.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Description, contentDescription = null, tint = EmeraldGreen, modifier = Modifier.size(20.dp))
+                                }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("Enviar Documento", fontWeight = FontWeight.Bold, color = TextPrimary)
-                                    Text("PDFs e arquivos com transmissão protegida", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary))
+                                    Text("Enviar Documento", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("PDFs e arquivos com transmissão protegida", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                }
+                            }
+                        }
+
+                        // 3. Criar / Agendar Lembrete
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showResourceDrawer = false
+                                    reminderInitialText = inputText
+                                    showRemindersDialog = true
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(FamilyPurple.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Schedule, contentDescription = null, tint = FamilyPurple, modifier = Modifier.size(20.dp))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("⏰ Agendar Lembrete", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Alarme recorrente e persistência de 3 dias", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                }
+                            }
+                        }
+
+                        // 4. Mensagem de Transmissão
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showResourceDrawer = false
+                                    showBroadcastDialog = true
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(RadarCyan.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Campaign, contentDescription = null, tint = RadarCyan, modifier = Modifier.size(20.dp))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("📢 Transmissão para Contatos", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Envio simultâneo para conexões mútuas", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                }
+                            }
+                        }
+
+                        // 5. Criar Convite Criptografado
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !isCreatingInvite) {
+                                    showResourceDrawer = false
+                                    onCreateInviteLink()
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(RadarCyan.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Share, contentDescription = null, tint = RadarCyan, modifier = Modifier.size(20.dp))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("🔗 Criar Convite Criptografado", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Link seguro de uso único para compartilhar", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                }
+                            }
+                        }
+
+                        // 6. Colar Link de Convite
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showResourceDrawer = false
+                                    showPasteInviteInChat = true
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(EmeraldGreen.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Lock, contentDescription = null, tint = EmeraldGreen, modifier = Modifier.size(20.dp))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("📥 Colar Link de Convite", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Conectar com link recebido de outra pessoa", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                }
+                            }
+                        }
+
+                        // 7. Sessão Emojis & Reações
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showResourceDrawer = false
+                                    showEmojiPicker = true
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(WarningAmber.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.SentimentSatisfiedAlt, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(20.dp))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("😀 Sessão Emojis e Reações", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Carinhas, gestos e os emojis mais usados", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
                                 }
                             }
                         }
@@ -1314,7 +1600,127 @@ fun ChatDetailScreen(
                 },
                 confirmButton = {},
                 dismissButton = {
-                    TextButton(onClick = { showAttachmentOptions = false }) {
+                    TextButton(onClick = { showResourceDrawer = false }) {
+                        Text("Fechar", color = TextSecondary)
+                    }
+                },
+                containerColor = DarkSurface
+            )
+        }
+
+        // Diálogo para Colar Convite direto da conversa
+        if (showPasteInviteInChat) {
+            var pastedInviteText by remember { mutableStateOf("") }
+            var isRedeeming by remember { mutableStateOf(false) }
+            var pasteError by remember { mutableStateOf<String?>(null) }
+            val clipboard = LocalClipboardManager.current
+
+            AlertDialog(
+                onDismissRequest = {
+                    if (!isRedeeming) showPasteInviteInChat = false
+                },
+                title = {
+                    Text(
+                        text = "Inserir Link de Convite",
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Cole o link de convite recebido para estabelecer a conexão mútua imediata:",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        )
+                        OutlinedTextField(
+                            value = pastedInviteText,
+                            onValueChange = {
+                                pastedInviteText = it
+                                pasteError = null
+                            },
+                            placeholder = {
+                                Text("https://pessoasaqui.onrender.com/invite?id=...", color = TextSecondary.copy(alpha = 0.5f))
+                            },
+                            singleLine = false,
+                            maxLines = 3,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = EmeraldGreen,
+                                unfocusedBorderColor = DarkCard,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            )
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    val clipText = clipboard.getText()?.text
+                                    if (!clipText.isNullOrBlank()) {
+                                        pastedInviteText = clipText.trim()
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp), tint = RadarCyan)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Colar", color = RadarCyan, fontSize = 12.sp)
+                            }
+                        }
+                        if (pasteError != null) {
+                            Text(
+                                text = pasteError ?: "",
+                                color = AlertRed,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val input = pastedInviteText.trim()
+                            if (input.isBlank()) {
+                                pasteError = "Por favor, cole o link do convite."
+                                return@Button
+                            }
+                            isRedeeming = true
+                            pasteError = null
+                            onRedeemInviteLink?.invoke(input) { success, msg, _ ->
+                                isRedeeming = false
+                                if (success) {
+                                    showPasteInviteInChat = false
+                                    Toast.makeText(context, "Conexão mútua estabelecida com sucesso!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    pasteError = msg ?: "Falha ao validar convite."
+                                }
+                            }
+                        },
+                        enabled = !isRedeeming && pastedInviteText.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = EmeraldGreen,
+                            contentColor = TextPrimary
+                        )
+                    ) {
+                        if (isRedeeming) {
+                            CircularProgressIndicator(
+                                color = TextPrimary,
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Validando...", fontWeight = FontWeight.Bold)
+                        } else {
+                            Text("★ Conectar", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { showPasteInviteInChat = false },
+                        enabled = !isRedeeming
+                    ) {
                         Text("Cancelar", color = TextSecondary)
                     }
                 },
@@ -1454,10 +1860,38 @@ fun ChatDetailScreen(
                 },
                 connectedPeople = listOf(person),
                 initialRecipient = person,
+                initialMessageText = reminderInitialText,
                 onSaveReminder = onSaveReminder,
                 onDeleteReminder = onDeleteReminder,
                 onToggleReminder = onToggleReminder,
-                onDismiss = { showRemindersDialog = false }
+                onConfirmReminder = onConfirmReminder,
+                isVip = isVip,
+                onUpgradeToVip = onUpgradeToVip,
+                onDismiss = {
+                    showRemindersDialog = false
+                    reminderInitialText = ""
+                }
+            )
+        }
+
+        if (showBroadcastDialog) {
+            val broadcastRecipients = remember(allConnectedPeople, person) {
+                if (allConnectedPeople.isNotEmpty()) allConnectedPeople else listOf(person)
+            }
+            BroadcastMessageDialog(
+                connectedPeople = broadcastRecipients,
+                isVip = isVip,
+                maxAllowedRecipients = maxAllowedBroadcastRecipients,
+                remainingCooldownMs = remainingBroadcastCooldownMs,
+                onSendBroadcast = { targetIds, msg, onProgress, onResult ->
+                    if (onSendBroadcast != null) {
+                        onSendBroadcast(targetIds, msg, onProgress, onResult)
+                    } else {
+                        onResult(false, "Serviço de transmissão indisponível")
+                    }
+                },
+                onUpgradeToVip = onUpgradeToVip,
+                onDismiss = { showBroadcastDialog = false }
             )
         }
 
@@ -1711,6 +2145,162 @@ fun FullscreenImageViewerDialog(
                     }
                 } else {
                     Spacer(modifier = Modifier.size(44.dp))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Painel Interativo de Emojis Rápidos com Categorias e os Mais Usados.
+ */
+@Composable
+fun EmojiPickerPanel(
+    onEmojiSelected: (String) -> Unit,
+    onBackspace: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var selectedCategory by remember { mutableIntStateOf(0) }
+
+    val categories = listOf(
+        "⭐" to "Mais Usados",
+        "😀" to "Carinhas",
+        "👍" to "Gestos",
+        "❤️" to "Corações",
+        "🔥" to "Símbolos"
+    )
+
+    val emojis = remember(selectedCategory) {
+        when (selectedCategory) {
+            0 -> listOf(
+                "😂", "❤️", "😍", "🙏", "👍", "🔥", "🥰", "😭", "😊", "👏",
+                "🥳", "😎", "🤣", "🤝", "🚀", "✨", "💯", "😉", "😘", "🥺",
+                "👀", "🙌", "💪", "✌️", "🎉", "💖", "💙", "😜", "🤔", "😴",
+                "☕", "🍻", "📍", "🔒", "💡", "⚡", "🌟", "🤩", "🤗", "🤤"
+            )
+            1 -> listOf(
+                "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "🥲", "☺️",
+                "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗",
+                "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓",
+                "😎", "🥸", "🤩", "🥳", "😏", "😒", "😞", "😔", "😟", "😕",
+                "🙁", "😣", "😖", "😫", "😩", "🥺", "😢", "😭", "😤", "😠",
+                "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥",
+                "😓", "🤗", "🤔", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬",
+                "🙄", "😯", "😦", "😧", "😮", "😲", "🥱", "😴", "🤤", "😪",
+                "😵", "🤐", "🥴", "🤢", "🤮", "🤧", "😷", "🤒", "🤕"
+            )
+            2 -> listOf(
+                "👍", "👎", "👊", "✊", "🤛", "🤜", "🤞", "✌️", "🤟", "🤘",
+                "👌", "🤌", "🤏", "👈", "👉", "👆", "👇", "☝️", "✋", "🤚",
+                "🖐️", "🖖", "👋", "🤙", "💪", "🦾", "✍️", "🙏", "🫵", "🤝",
+                "👏", "🙌", "👐", "🤲", "🫶"
+            )
+            3 -> listOf(
+                "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔",
+                "❤️‍🔥", "❤️‍🩹", "❣️", "💕", "💞", "💓", "💗", "💖", "💘", "💝",
+                "💟", "💌", "💋", "💐", "🌹", "🥀", "🌺", "🌷", "🌸", "💮"
+            )
+            else -> listOf(
+                "🔥", "💯", "✨", "⭐", "🌟", "💥", "🎉", "🎊", "🎈", "🎁",
+                "🏆", "🥇", "🚀", "🛸", "💡", "⏰", "⏳", "🔒", "🔑", "🛡️",
+                "📡", "📍", "🎯", "💬", "☕", "🍻", "🍕", "🍔", "⚡", "☀️",
+                "🌙", "☁️", "🌈", "🎵", "🎶", "🔔", "⚠️", "⛔", "✅", "❌"
+            )
+        }
+    }
+
+    Surface(
+        color = DarkSurface,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        border = BorderStroke(1.dp, DarkCardElevated),
+        modifier = modifier
+            .fillMaxWidth()
+            .height(250.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Barra superior de categorias e controles
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(DarkCard)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Categorias
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    categories.forEachIndexed { index, (icon, label) ->
+                        val isSelected = selectedCategory == index
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSelected) RadarCyan.copy(alpha = 0.2f) else Color.Transparent,
+                            border = if (isSelected) BorderStroke(1.dp, RadarCyan.copy(alpha = 0.6f)) else null,
+                            modifier = Modifier
+                                .clickable { selectedCategory = index }
+                                .padding(vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = icon,
+                                fontSize = 18.sp,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Botão Backspace
+                IconButton(
+                    onClick = onBackspace,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Backspace,
+                        contentDescription = "Apagar",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // Botão Fechar
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Fechar Emojis",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            // Grade de Emojis
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 42.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(emojis) { emoji ->
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onEmojiSelected(emoji) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = emoji,
+                            fontSize = 24.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
             }
         }

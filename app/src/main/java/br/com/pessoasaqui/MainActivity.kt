@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import br.com.pessoasaqui.core.subscription.SubscriptionTier
 import br.com.pessoasaqui.data.repository.PessoasAquiRepository
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
@@ -25,6 +27,8 @@ import androidx.compose.material3.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import br.com.pessoasaqui.ui.theme.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 
 data class IncomingInvite(
     val inviteId: String,
@@ -203,9 +207,17 @@ fun PessoasAquiNavHost(
     val activeCallState by repository.activeCallState.collectAsState()
     val pendingFamilyRequest by repository.pendingFamilyRequest.collectAsState()
     val recurringReminders by repository.recurringReminders.collectAsState()
+    val subscriptionTier by (repository.subscriptionManager?.currentTier ?: MutableStateFlow(SubscriptionTier.FREE)).collectAsState()
+    val scope = rememberCoroutineScope()
+    val connectedPeople = remember(discoveredPeople) {
+        discoveredPeople.filter { it.isMutualConnection || it.isFamily }
+            .distinctBy { it.technicalIdentityHash.ifBlank { it.id } }
+    }
+    val context = LocalContext.current
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
+    var isCreatingInvite by remember { mutableStateOf(false) }
 
     val enableBluetoothLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -349,7 +361,90 @@ fun PessoasAquiNavHost(
                 recurringReminders = recurringReminders,
                 onSaveReminder = { reminder -> repository.saveRecurringReminder(reminder) },
                 onDeleteReminder = { id -> repository.deleteRecurringReminder(id) },
-                onToggleReminder = { id, enabled -> repository.toggleRecurringReminder(id, enabled) }
+                onToggleReminder = { id, enabled -> repository.toggleRecurringReminder(id, enabled) },
+                onConfirmReminder = { id -> repository.confirmRecurringReminder(id) },
+                allConnectedPeople = connectedPeople,
+                maxAllowedBroadcastRecipients = subscriptionTier.maxBroadcastRecipients,
+                remainingBroadcastCooldownMs = repository.subscriptionManager?.getRemainingCooldownMs() ?: 0L,
+                onSendBroadcast = { targetIds, message, onProgress, onResult ->
+                    scope.launch {
+                        val res = repository.sendBroadcastMessage(targetIds, message, onProgress)
+                        if (res.isSuccess) {
+                            onResult(true, "")
+                        } else {
+                            onResult(false, res.exceptionOrNull()?.message ?: "Falha no envio da transmissão")
+                        }
+                    }
+                },
+                isCreatingInvite = isCreatingInvite,
+                onCreateInviteLink = {
+                    if (!isCreatingInvite) {
+                        isCreatingInvite = true
+                        repository.createOneTimeInviteLink { url ->
+                            isCreatingInvite = false
+                            if (url != null) {
+                                val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    putExtra(android.content.Intent.EXTRA_SUBJECT, "Convite Seguro - PessoasAqui")
+                                    putExtra(
+                                        android.content.Intent.EXTRA_TEXT,
+                                        "Olá! Estou te convidando para nos conectarmos no PessoasAqui com conversa privada, chamadas de voz e vídeo criptografadas à distância.\n\nToque no link abaixo para aceitar meu convite de conexão mútua (link seguro de uso único):\n$url"
+                                    )
+                                    type = "text/plain"
+                                }
+                                val shareIntent = android.content.Intent.createChooser(sendIntent, "Compartilhar Convite Seguro")
+                                context.startActivity(shareIntent)
+                            }
+                        }
+                    }
+                },
+                onRedeemInviteLink = { rawInput, onResult ->
+                    val text = rawInput.trim()
+                    val urlPattern = Regex("""(https?://[^\s]+|pessoasaqui://[^\s]+)""")
+                    val matchedUrl = urlPattern.find(text)?.value ?: text
+                    val parsedUri = try { android.net.Uri.parse(matchedUrl) } catch (_: Exception) { null }
+
+                    val id = parsedUri?.getQueryParameter("id")
+                        ?: parsedUri?.getQueryParameter("inviteId")
+                        ?: Regex("""[?&](?:id|inviteId)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
+
+                    val token = parsedUri?.getQueryParameter("token")
+                        ?: Regex("""[?&]token=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
+
+                    val sender = parsedUri?.getQueryParameter("sender")
+                        ?: parsedUri?.getQueryParameter("senderIdentity")
+                        ?: Regex("""[?&](?:sender|senderIdentity)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
+
+                    val rawAlias = parsedUri?.getQueryParameter("alias")
+                        ?: parsedUri?.getQueryParameter("senderAlias")
+                        ?: Regex("""[?&](?:alias|senderAlias)=([^&\s]+)""").find(text)?.groupValues?.get(1)
+                    val alias = rawAlias?.let {
+                        try { java.net.URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it }
+                    } ?: "Usuário"
+
+                    val sig = parsedUri?.getQueryParameter("sig")
+                        ?: parsedUri?.getQueryParameter("signature")
+                        ?: Regex("""[?&](?:sig|signature)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
+
+                    val exp = parsedUri?.getQueryParameter("exp")?.toLongOrNull()
+                        ?: parsedUri?.getQueryParameter("expiresAt")?.toLongOrNull()
+                        ?: Regex("""[?&](?:exp|expiresAt)=([0-9]+)""").find(text)?.groupValues?.get(1)?.toLongOrNull()
+
+                    if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
+                        repository.redeemOneTimeInvite(
+                            inviteId = id.trim(),
+                            token = token.trim(),
+                            senderIdentity = sender.trim(),
+                            senderAlias = alias.trim(),
+                            signature = sig?.trim(),
+                            expiresAt = exp
+                        ) { success, msg, peer ->
+                            onResult(success, msg, peer)
+                        }
+                    } else {
+                        onResult(false, "Link ou formato de convite inválido.", null)
+                    }
+                },
+                isVip = subscriptionTier == SubscriptionTier.PRO_VIP
             )
 
             activeFamilyRecoveryAuth?.let { (person, auth) ->

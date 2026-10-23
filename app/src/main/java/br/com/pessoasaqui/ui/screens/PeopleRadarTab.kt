@@ -2,6 +2,7 @@ package br.com.pessoasaqui.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,12 +24,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.UserIntent
 import br.com.pessoasaqui.ui.theme.*
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * Aba Principal do Radar de Proximidade (Pessoas).
+ * Aba Principal do Radar de Proximidade e Mural Local (10m).
  * Design moderno em nível de produção: responsivo, com tipografia refinada e sem quebras de layout.
  */
 @Composable
@@ -37,6 +42,9 @@ fun PeopleRadarTab(
     currentIntent: UserIntent,
     isDemoMode: Boolean = false,
     isBluetoothEnabled: Boolean = true,
+    localMessages: List<ChatMessage> = emptyList(),
+    onSendLocalMessage: (String) -> Unit = {},
+    onClearLocalMessages: () -> Unit = {},
     onToggleDemoMode: () -> Unit = {},
     onEnableBluetooth: () -> Unit = {},
     onOpenIntentSelector: () -> Unit,
@@ -44,6 +52,35 @@ fun PeopleRadarTab(
     onAcceptMutual: (String) -> Unit = onToggleMark,
     onOpenChat: (NearbyPerson) -> Unit
 ) {
+    var selectedSubTab by remember { mutableIntStateOf(0) } // 0 = Radar de Pessoas, 1 = Mural Local (10m)
+    var localInputText by remember { mutableStateOf("") }
+    var selectedAuthorToInteract by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var showClearConfirmDialog by remember { mutableStateOf(false) }
+
+    val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+
+    fun formatSmartDateTime(timestampMs: Long): String {
+        val nowCal = java.util.Calendar.getInstance()
+        val msgCal = java.util.Calendar.getInstance().apply { timeInMillis = timestampMs }
+
+        val isToday = nowCal.get(java.util.Calendar.YEAR) == msgCal.get(java.util.Calendar.YEAR) &&
+                nowCal.get(java.util.Calendar.DAY_OF_YEAR) == msgCal.get(java.util.Calendar.DAY_OF_YEAR)
+        val timeStr = timeFormatter.format(Date(timestampMs))
+        if (isToday) return "Hoje às $timeStr"
+
+        nowCal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+        val isYesterday = nowCal.get(java.util.Calendar.YEAR) == msgCal.get(java.util.Calendar.YEAR) &&
+                nowCal.get(java.util.Calendar.DAY_OF_YEAR) == msgCal.get(java.util.Calendar.DAY_OF_YEAR)
+        if (isYesterday) return "Ontem às $timeStr"
+
+        val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        return if (msgCal.get(java.util.Calendar.YEAR) == currentYear) {
+            SimpleDateFormat("dd/MM 'às' HH:mm", Locale.getDefault()).format(Date(timestampMs))
+        } else {
+            SimpleDateFormat("dd/MM/yy 'às' HH:mm", Locale.getDefault()).format(Date(timestampMs))
+        }
+    }
+
     val infiniteTransition = rememberInfiniteTransition(label = "radarPulse")
     val pulseScale by infiniteTransition.animateFloat(
         initialValue = 0.85f,
@@ -59,8 +96,81 @@ fun PeopleRadarTab(
         modifier = Modifier
             .fillMaxSize()
             .background(DeepBlack)
-            .padding(horizontal = 16.dp)
     ) {
+        // Seletor Superior: Radar vs Mural Local (10m)
+        TabRow(
+            selectedTabIndex = selectedSubTab,
+            containerColor = DarkSurface,
+            contentColor = RadarCyan,
+            divider = {}
+        ) {
+            Tab(
+                selected = selectedSubTab == 0,
+                onClick = { selectedSubTab = 0 },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Radar,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (people.isNotEmpty()) "Radar (${people.size})" else "Radar",
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = if (selectedSubTab == 0) RadarCyan else TextSecondary
+                            )
+                        )
+                    }
+                }
+            )
+            Tab(
+                selected = selectedSubTab == 1,
+                onClick = { selectedSubTab = 1 },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Campaign,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (localMessages.isNotEmpty()) "Mural Local (${localMessages.size})" else "Mural Local (10m)",
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = if (selectedSubTab == 1) RadarCyan else TextSecondary
+                            )
+                        )
+                        if (localMessages.isNotEmpty()) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = CircleShape,
+                                color = if (selectedSubTab == 1) RadarCyan.copy(alpha = 0.2f) else DarkCardElevated
+                            ) {
+                                Text(
+                                    text = "${localMessages.size}",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = if (selectedSubTab == 1) RadarCyan else TextSecondary,
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            )
+        }
+
+        if (selectedSubTab == 0) {
+            // ================= SUB-ABA 0: RADAR DE PESSOAS =================
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp)
+            ) {
         if (!isBluetoothEnabled) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
@@ -388,6 +498,425 @@ fun PeopleRadarTab(
                 }
             }
         }
+    }
+} else {
+    // ================= SUB-ABA 1: MURAL LOCAL EFÊMERO (10m) =================
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+    ) {
+        // Card Informativo Superior
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp, bottom = 4.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Campaign,
+                    contentDescription = null,
+                    tint = RadarCyan,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Mural Público do Local",
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                    )
+                    Text(
+                        text = "Visível para qualquer pessoa a até 10 metros. Não requer telefone.",
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary)
+                    )
+                }
+                if (localMessages.isNotEmpty()) {
+                    IconButton(
+                        onClick = { showClearConfirmDialog = true },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteOutline,
+                            contentDescription = "Limpar mural",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Lista de Mensagens do Mural
+        if (localMessages.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Forum,
+                        contentDescription = null,
+                        tint = RadarCyan.copy(alpha = 0.5f),
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Text(
+                        text = "Nenhuma mensagem no mural local no momento.",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        ),
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        text = "Envie uma pergunta ou aviso abaixo. Qualquer pessoa próxima a até 10 metros poderá responder!",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary),
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "Sugestões de perguntas rápidas:",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = RadarCyan,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+
+                    val suggestions = listOf(
+                        "Alguém sabe se já começaram o atendimento?",
+                        "Qual a senha do Wi-Fi daqui?",
+                        "Alguém tem um carregador tipo C emprestado?"
+                    )
+
+                    suggestions.forEach { suggestion ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCardElevated,
+                            border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.3f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { localInputText = suggestion }
+                        ) {
+                            Text(
+                                text = "💬 $suggestion",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextPrimary),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(localMessages, key = { it.id }) { msg ->
+                    val isMe = msg.isFromMe
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(0.92f),
+                            horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start,
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            if (!isMe) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(EmeraldGreen.copy(alpha = 0.2f))
+                                        .clickable {
+                                            selectedAuthorToInteract = Pair(msg.senderId, msg.senderAlias)
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = msg.senderAlias.take(1).uppercase(),
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            color = EmeraldGreen,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+
+                            Card(
+                                shape = if (isMe) {
+                                    RoundedCornerShape(16.dp, 16.dp, 3.dp, 16.dp)
+                                } else {
+                                    RoundedCornerShape(16.dp, 16.dp, 16.dp, 3.dp)
+                                },
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isMe) DarkCardElevated else DarkSurface
+                                ),
+                                border = if (isMe) {
+                                    BorderStroke(1.dp, RadarCyan.copy(alpha = 0.5f))
+                                } else {
+                                    BorderStroke(1.dp, DarkCardElevated)
+                                },
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .clickable(!isMe) {
+                                        selectedAuthorToInteract = Pair(msg.senderId, msg.senderAlias)
+                                    }
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = if (isMe) "Você" else msg.senderAlias,
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isMe) RadarCyan else EmeraldGreen
+                                                )
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = DeepBlack.copy(alpha = 0.5f)
+                                            ) {
+                                                Text(
+                                                    text = "10m",
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        color = TextSecondary,
+                                                        fontSize = 10.sp
+                                                    ),
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+
+                                        Text(
+                                            text = formatSmartDateTime(msg.timestampMs),
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = TextSecondary,
+                                                fontSize = 10.sp
+                                            )
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(4.dp))
+
+                                    Text(
+                                        text = msg.text,
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            color = TextPrimary,
+                                            lineHeight = 20.sp
+                                        )
+                                    )
+
+                                    if (!isMe) {
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "★ Toque para interagir com ${msg.senderAlias}",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = RadarCyan.copy(alpha = 0.7f),
+                                                fontSize = 10.sp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Barra de Digitação e Envio Local
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
+                .imePadding(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = localInputText,
+                onValueChange = { localInputText = it },
+                placeholder = {
+                    Text(
+                        "Perguntar ou conversar aqui...",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = TextSecondary)
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Campaign,
+                        contentDescription = null,
+                        tint = RadarCyan.copy(alpha = 0.7f),
+                        modifier = Modifier.size(20.dp)
+                    )
+                },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(24.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = RadarCyan,
+                    unfocusedBorderColor = DarkCardElevated,
+                    focusedContainerColor = DarkSurface,
+                    unfocusedContainerColor = DarkSurface
+                ),
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            IconButton(
+                onClick = {
+                    if (localInputText.isNotBlank()) {
+                        onSendLocalMessage(localInputText.trim())
+                        localInputText = ""
+                    }
+                },
+                enabled = localInputText.isNotBlank(),
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = if (localInputText.isNotBlank()) RadarCyan else DarkCardElevated,
+                    contentColor = if (localInputText.isNotBlank()) DeepBlack else TextSecondary
+                ),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Send,
+                    contentDescription = "Enviar",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+
+// Diálogo de confirmação para limpar mural local
+if (showClearConfirmDialog) {
+    AlertDialog(
+        onDismissRequest = { showClearConfirmDialog = false },
+        title = { Text("Limpar Mural Local?") },
+        text = { Text("Todas as mensagens públicas do mural atual de 10m serão removidas do seu dispositivo.") },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onClearLocalMessages()
+                    showClearConfirmDialog = false
+                }
+            ) {
+                Text("Limpar", color = AlertRed, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { showClearConfirmDialog = false }) {
+                Text("Cancelar")
+            }
+        }
+    )
+}
+
+// Diálogo de Interação com autor de mensagem do mural local
+selectedAuthorToInteract?.let { (authorId, authorAlias) ->
+    val matchedPeer = people.find { it.id == authorId || it.technicalIdentityHash == authorId }
+    AlertDialog(
+        onDismissRequest = { selectedAuthorToInteract = null },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(RadarCyan.copy(alpha = 0.2f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = authorAlias.take(1).uppercase(),
+                        color = RadarCyan,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(authorAlias, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Esta pessoa está por perto no raio de 10 metros.",
+                    style = MaterialTheme.typography.bodyMedium.copy(color = TextSecondary)
+                )
+                if (matchedPeer != null) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = DarkCardElevated,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Distância estimada:", color = TextSecondary, fontSize = 12.sp)
+                            Text(
+                                matchedPeer.proximityLabel,
+                                color = RadarCyan,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val target = matchedPeer ?: NearbyPerson(
+                        id = authorId,
+                        technicalIdentityHash = authorId,
+                        alias = authorAlias,
+                        estimatedDistanceMeters = 5.0,
+                        proximityLabel = "10m"
+                    )
+                    onOpenChat(target)
+                    selectedAuthorToInteract = null
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = RadarCyan, contentColor = DeepBlack),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.Chat, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Conversar no Privado", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { selectedAuthorToInteract = null }) {
+                Text("Fechar")
+            }
+        }
+    )
+}
     }
 }
 

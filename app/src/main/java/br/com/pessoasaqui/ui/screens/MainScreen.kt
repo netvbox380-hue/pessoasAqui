@@ -396,6 +396,13 @@ fun MainScreen(
                         currentIntent = currentIntent,
                         isDemoMode = isDemoMode,
                         isBluetoothEnabled = isBluetoothEnabled,
+                        localMessages = localMessages,
+                        onSendLocalMessage = { text ->
+                            repository.sendLocalMessage(text)
+                        },
+                        onClearLocalMessages = {
+                            repository.clearLocalMessages()
+                        },
                         onToggleDemoMode = { repository.toggleDemoMode() },
                         onEnableBluetooth = onEnableBluetooth,
                         onOpenIntentSelector = { showIntentSelector = true },
@@ -409,39 +416,12 @@ fun MainScreen(
                     )
 
                     1 -> ConversationsTab(
-                        localMessages = localMessages,
                         connectedPeople = connectedPeople,
                         privateChats = privateChats,
                         nearbyPeople = people,
-                        onSendLocalMessage = { text ->
-                            repository.sendLocalMessage(text)
-                        },
                         onOpenChat = onOpenChat,
                         onToggleMarkPerson = { personId ->
                             repository.toggleMarkPerson(personId)
-                        },
-                        onClearLocalMessages = {
-                            repository.clearLocalMessages()
-                        },
-                        recurringReminders = recurringReminders,
-                        onSaveReminder = { reminder -> repository.saveRecurringReminder(reminder) },
-                        onDeleteReminder = { id -> repository.deleteRecurringReminder(id) },
-                        onToggleReminder = { id, enabled -> repository.toggleRecurringReminder(id, enabled) },
-                        isVip = subscriptionTier == SubscriptionTier.PRO_VIP,
-                        maxAllowedBroadcastRecipients = subscriptionTier.maxBroadcastRecipients,
-                        remainingBroadcastCooldownMs = repository.subscriptionManager?.getRemainingCooldownMs() ?: 0L,
-                        onSendBroadcast = { targetIds, message, onProgress, onResult ->
-                            scope.launch {
-                                val res = repository.sendBroadcastMessage(targetIds, message, onProgress)
-                                if (res.isSuccess) {
-                                    onResult(true, "")
-                                } else {
-                                    onResult(false, res.exceptionOrNull()?.message ?: "Falha no envio da transmissão")
-                                }
-                            }
-                        },
-                        onUpgradeToVip = {
-                            showVipDialog = true
                         },
                         isCreatingInvite = isCreatingInvite,
                         onCreateInviteLink = {

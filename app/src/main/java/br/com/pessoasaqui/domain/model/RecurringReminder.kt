@@ -34,6 +34,9 @@ data class RecurringReminder(
     val month: Int? = null, // Calendar.JANUARY..Calendar.DECEMBER (0..11) (para UNICO ou ANUAL)
     val year: Int? = null, // Ano específico (ex: 2026, 2027) para UNICO ou data de início
     val autoSend: Boolean = false, // True se deve enviar automaticamente no chat privado E2EE
+    val isPersistentUntilConfirmed: Boolean = false, // Se verdadeiro, repete diariamente por até 3 dias consecutivos caso não confirmado
+    val retryCount: Int = 0, // Contagem de repetições realizadas (0..3)
+    val isConfirmed: Boolean = false, // True se o usuário confirmou/leu o lembrete
     val isEnabled: Boolean = true,
     val nextTriggerEpochMs: Long = 0L,
     val lastTriggerEpochMs: Long? = null,
@@ -55,6 +58,9 @@ data class RecurringReminder(
         obj.put("month", month ?: -1)
         obj.put("year", year ?: -1)
         obj.put("autoSend", autoSend)
+        obj.put("isPersistentUntilConfirmed", isPersistentUntilConfirmed)
+        obj.put("retryCount", retryCount)
+        obj.put("isConfirmed", isConfirmed)
         obj.put("isEnabled", isEnabled)
         obj.put("nextTriggerEpochMs", nextTriggerEpochMs)
         obj.put("lastTriggerEpochMs", lastTriggerEpochMs ?: -1L)
@@ -94,6 +100,9 @@ data class RecurringReminder(
                     month = mon,
                     year = yr,
                     autoSend = obj.optBoolean("autoSend", false),
+                    isPersistentUntilConfirmed = obj.optBoolean("isPersistentUntilConfirmed", false),
+                    retryCount = obj.optInt("retryCount", 0),
+                    isConfirmed = obj.optBoolean("isConfirmed", false),
                     isEnabled = obj.optBoolean("isEnabled", true),
                     nextTriggerEpochMs = obj.optLong("nextTriggerEpochMs", 0L),
                     lastTriggerEpochMs = lastTrig,
