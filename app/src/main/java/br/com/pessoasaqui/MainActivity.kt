@@ -227,7 +227,7 @@ fun PessoasAquiNavHost(
                 @Suppress("DEPRECATION")
                 context.packageManager.getPackageInfo(context.packageName, 0).versionCode.toLong()
             }
-        } catch (_: Exception) { 10L }
+        } catch (_: Exception) { 11L }
         repository.checkForAppUpdates(curCode)
     }
 

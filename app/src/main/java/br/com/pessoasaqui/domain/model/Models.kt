@@ -151,8 +151,8 @@ data class ContactTag(
  */
 @Serializable
 data class AppVersionInfo(
-    val latestVersionCode: Long = 10,
-    val latestVersionName: String = "1.0.9",
+    val latestVersionCode: Long = 11,
+    val latestVersionName: String = "1.1.0",
     val minSupportedVersionCode: Long = 8,
     val forceUpdate: Boolean = false,
     val playStoreUrl: String = "https://play.google.com/store/apps/details?id=br.com.pessoasaqui",

@@ -449,8 +449,8 @@ app.get('/', (req, res) => {
 app.get('/api/app/version-check', (req, res) => {
   res.json({
     success: true,
-    latestVersionCode: 10,
-    latestVersionName: '1.0.9',
+    latestVersionCode: 11,
+    latestVersionName: '1.1.0',
     minSupportedVersionCode: 8,
     forceUpdate: false,
     playStoreUrl: 'https://play.google.com/store/apps/details?id=br.com.pessoasaqui',
