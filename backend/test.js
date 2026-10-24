@@ -82,6 +82,25 @@ async function runTests() {
     console.log('✅ Regra de descoberta 10m -> vínculo mútuo validada.');
 
     // -------------------------------------------------------------
+    // Teste 3.1: Isolamento Estrito de Conexões Mútuas (/api/connections/status)
+    // Garante que novos usuários NUNCA recebam conexões mútuas alheias
+    // -------------------------------------------------------------
+    console.log('\n--- Teste 3.1: Isolamento Estrito de Conexões Mútuas ---');
+    const resAliceStatus = await fetch(`${baseUrl}/api/connections/status?myIdentity=${encodeURIComponent(userA.identityHash)}`);
+    const jsonAliceStatus = await resAliceStatus.json();
+    assert.strictEqual(jsonAliceStatus.success, true);
+    assert.ok(jsonAliceStatus.mutual.some(id => id.toLowerCase().includes('bob')), 'Alice deve ter Bob em conexões mútuas');
+
+    const newUserIdentity = 'hash-novo-usuario-sem-conexoes-112233';
+    const resNewUserStatus = await fetch(`${baseUrl}/api/connections/status?myIdentity=${encodeURIComponent(newUserIdentity)}`);
+    const jsonNewUserStatus = await resNewUserStatus.json();
+    assert.strictEqual(jsonNewUserStatus.success, true);
+    assert.strictEqual(jsonNewUserStatus.mutual.length, 0, 'Novo usuário DEVE ter 0 conexões mútuas (isolamento total)');
+    assert.strictEqual(jsonNewUserStatus.markedByMe.length, 0, 'Novo usuário DEVE ter 0 marcações enviadas');
+    assert.strictEqual(jsonNewUserStatus.markingMe.length, 0, 'Novo usuário DEVE ter 0 marcações recebidas');
+    console.log('✅ Isolamento estrito validado: novo usuário tem 0 conexões e não vaza contatos alheios.');
+
+    // -------------------------------------------------------------
     // Teste 4: Emissão de Autorização Familiar ("Entre na sua")
     // -------------------------------------------------------------
     console.log('\n--- Teste 4: Emissão de Autorização de Recuperação Familiar ---');

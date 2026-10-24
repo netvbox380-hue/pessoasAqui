@@ -172,21 +172,17 @@ class PessoasAquiRepository(
     fun isPeerMarkedByMe(person: NearbyPerson): Boolean {
         val cid = cleanId(person.technicalIdentityHash)
         val pid = cleanId(person.id)
-        val aliasClean = cleanId(person.alias)
         return person.isMarkedByMe ||
                 (cid.isNotBlank() && savedMarkedPeople.contains(cid)) ||
-                (pid.isNotBlank() && savedMarkedPeople.contains(pid)) ||
-                (aliasClean.isNotBlank() && !aliasClean.startsWith("PESSOA") && savedMarkedPeople.contains(aliasClean))
+                (pid.isNotBlank() && savedMarkedPeople.contains(pid))
     }
 
     fun isPeerMarkingMe(person: NearbyPerson): Boolean {
         val cid = cleanId(person.technicalIdentityHash)
         val pid = cleanId(person.id)
-        val aliasClean = cleanId(person.alias)
         return person.isMarkingMe ||
                 (cid.isNotBlank() && savedMarkingMePeople.contains(cid)) ||
-                (pid.isNotBlank() && savedMarkingMePeople.contains(pid)) ||
-                (aliasClean.isNotBlank() && !aliasClean.startsWith("PESSOA") && savedMarkingMePeople.contains(aliasClean))
+                (pid.isNotBlank() && savedMarkingMePeople.contains(pid))
     }
 
     fun isPeerMutual(person: NearbyPerson): Boolean {
@@ -194,10 +190,8 @@ class PessoasAquiRepository(
         if (person.isMutualConnection) return true
         val cid = cleanId(person.technicalIdentityHash)
         val pid = cleanId(person.id)
-        val aliasClean = cleanId(person.alias)
         if ((cid.isNotBlank() && savedMutualPeople.contains(cid)) ||
-            (pid.isNotBlank() && savedMutualPeople.contains(pid)) ||
-            (aliasClean.isNotBlank() && !aliasClean.startsWith("PESSOA") && savedMutualPeople.contains(aliasClean))) {
+            (pid.isNotBlank() && savedMutualPeople.contains(pid))) {
             return true
         }
         val marked = isPeerMarkedByMe(person)
@@ -215,12 +209,6 @@ class PessoasAquiRepository(
             savedMutualPeople.add(cid)
             savedMarkedPeople.add(cid)
             savedMarkingMePeople.add(cid)
-            val aliasClean = cleanId(person.alias)
-            if (aliasClean.isNotBlank() && !aliasClean.startsWith("PESSOA")) {
-                savedMutualPeople.add(aliasClean)
-                savedMarkedPeople.add(aliasClean)
-                savedMarkingMePeople.add(aliasClean)
-            }
         }
 
         return person.copy(
@@ -402,8 +390,11 @@ class PessoasAquiRepository(
     private val _unifiedOffers = MutableStateFlow<List<OfferItem>>(emptyList())
     val localOffers: StateFlow<List<OfferItem>> = _unifiedOffers.asStateFlow()
 
-    val localChatMessages: StateFlow<List<ChatMessage>> = proximitySimulator.localChatMessages
-    val privateChats: StateFlow<Map<String, List<ChatMessage>>> = proximitySimulator.privateChats
+    private val _unifiedLocalChatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    val localChatMessages: StateFlow<List<ChatMessage>> = _unifiedLocalChatMessages.asStateFlow()
+
+    private val _unifiedPrivateChats = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
+    val privateChats: StateFlow<Map<String, List<ChatMessage>>> = _unifiedPrivateChats.asStateFlow()
 
     val isBluetoothEnabled: StateFlow<Boolean> = bleManager?.isBluetoothEnabledFlow ?: MutableStateFlow(true)
 
@@ -435,6 +426,17 @@ class PessoasAquiRepository(
             _realDiscoveredPeople.value = restoredContacts.map { applyConnectionState(it) }
         }
         updateUnifiedData()
+
+        scope.launch {
+            proximitySimulator.localChatMessages.collect {
+                updateUnifiedData()
+            }
+        }
+        scope.launch {
+            proximitySimulator.privateChats.collect {
+                updateUnifiedData()
+            }
+        }
 
         networkClient.onOfferPublished = { offer ->
             scope.launch { handleRemoteOfferPublished(offer) }
@@ -610,7 +612,6 @@ class PessoasAquiRepository(
                 val keys = listOfNotNull(
                     hashId.takeIf { it.isNotBlank() },
                     pId.takeIf { it.isNotBlank() },
-                    aliasId.takeIf { it.isNotBlank() && !it.startsWith("PESSOA") },
                     cleanSender.takeIf { it.isNotBlank() }
                 ).distinct()
 
@@ -687,7 +688,6 @@ class PessoasAquiRepository(
                 val keys = listOfNotNull(
                     hashId.takeIf { it.isNotBlank() },
                     pId.takeIf { it.isNotBlank() },
-                    aliasId.takeIf { it.isNotBlank() && !it.startsWith("PESSOA") },
                     cleanSender.takeIf { it.isNotBlank() }
                 ).distinct()
 
@@ -725,7 +725,6 @@ class PessoasAquiRepository(
                 val keys = listOfNotNull(
                     hashId.takeIf { it.isNotBlank() },
                     pId.takeIf { it.isNotBlank() },
-                    aliasId.takeIf { it.isNotBlank() && !it.startsWith("PESSOA") },
                     cleanSender.takeIf { it.isNotBlank() }
                 ).distinct()
 
@@ -848,23 +847,47 @@ class PessoasAquiRepository(
                     val statusResult = networkClient.fetchConnectionStatus(myId)
                     statusResult.getOrNull()?.let { st ->
                         var changed = false
-                        st.markedByMe.forEach {
-                            val cid = cleanId(it)
+                        val serverMutual = st.mutual.map { cleanId(it) }.toSet()
+                        val serverMarkedByMe = st.markedByMe.map { cleanId(it) }.toSet()
+                        val serverMarkingMe = st.markingMe.map { cleanId(it) }.toSet()
+
+                        serverMarkedByMe.forEach { cid ->
                             if (savedMarkedPeople.add(cid)) changed = true
                         }
-                        st.markingMe.forEach {
-                            val cid = cleanId(it)
+                        serverMarkingMe.forEach { cid ->
                             if (savedMarkingMePeople.add(cid)) changed = true
                         }
-                        st.mutual.forEach {
-                            val cid = cleanId(it)
+                        serverMutual.forEach { cid ->
                             if (savedMutualPeople.add(cid)) changed = true
                             if (savedMarkedPeople.add(cid)) changed = true
                             if (savedMarkingMePeople.add(cid)) changed = true
                         }
+
+                        // Reconciliação / Limpeza de conexões mútuas fantasmas (isolamento de usuários):
+                        // Pessoas que não são família e não estão presentes no rádio BLE físico (< 10m)
+                        // só podem ser mantidas como mútuas se constarem em serverMutual.
+                        val locallyBleNearbyIds = _realDiscoveredPeople.value
+                            .filter { it.estimatedDistanceMeters <= br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS }
+                            .map { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
+                            .toSet()
+
+                        val staleMutual = savedMutualPeople.filter { cid ->
+                            cid.isNotBlank() && !serverMutual.contains(cid) && !locallyBleNearbyIds.contains(cid)
+                        }
+                        if (staleMutual.isNotEmpty()) {
+                            staleMutual.forEach {
+                                savedMutualPeople.remove(it)
+                            }
+                            changed = true
+                        }
+
                         if (changed) {
                             saveConnectionsToPrefs()
-                            val cur = _realDiscoveredPeople.value.map { applyConnectionState(it) }
+                            // Remove de _realDiscoveredPeople qualquer contato remoto (> 10m) não mútuo
+                            val cur = _realDiscoveredPeople.value.filter { p ->
+                                val pCid = cleanId(p.technicalIdentityHash.ifBlank { p.id })
+                                p.isFamily || p.estimatedDistanceMeters <= 10.0 || serverMutual.contains(pCid)
+                            }.map { applyConnectionState(it) }
                             _realDiscoveredPeople.value = cur
                             updateUnifiedData()
                         }
@@ -1087,6 +1110,15 @@ class PessoasAquiRepository(
                 .map { applyConnectionState(it) }
             _unifiedDiscoveredPeople.value = sortWithHysteresis(combined)
             _unifiedOffers.value = _realOffers.value + proximitySimulator.localOffers.value
+
+            _unifiedLocalChatMessages.value = (proximitySimulator.localChatMessages.value + proximitySimulator.simulatedMuralMessages).distinctBy { it.id }
+            val mergedChats = proximitySimulator.privateChats.value.toMutableMap()
+            for ((k, v) in proximitySimulator.simulatedPrivateChats) {
+                if (!mergedChats.containsKey(k)) {
+                    mergedChats[k] = v
+                }
+            }
+            _unifiedPrivateChats.value = mergedChats
         } else {
             // PRODUÇÃO PURA: Somente pessoas e ofertas reais no radar e contatos mútuos/familiares salvos
             val applied = (_realDiscoveredPeople.value + savedContacts)
@@ -1094,6 +1126,10 @@ class PessoasAquiRepository(
                 .map { applyConnectionState(it) }
             _unifiedDiscoveredPeople.value = sortWithHysteresis(applied)
             _unifiedOffers.value = _realOffers.value
+
+            // Em produção pura, apenas mensagens reais enviadas ou persistidas (isolamento absoluto para novos usuários)
+            _unifiedLocalChatMessages.value = proximitySimulator.localChatMessages.value
+            _unifiedPrivateChats.value = proximitySimulator.privateChats.value
         }
     }
 

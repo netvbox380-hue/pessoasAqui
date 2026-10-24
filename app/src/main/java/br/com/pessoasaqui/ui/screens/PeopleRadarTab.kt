@@ -57,6 +57,17 @@ fun PeopleRadarTab(
     var selectedAuthorToInteract by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showClearConfirmDialog by remember { mutableStateOf(false) }
 
+    // Isolamento estrito do Radar de Proximidade Física BLE (10m):
+    // 1. Bluetooth deve estar ativo (ou aparelho em modo demonstração)
+    // 2. Apenas pessoas com distância física estimada de até 10 metros
+    val visibleRadarPeople = remember(people, isBluetoothEnabled, isDemoMode) {
+        if (!isBluetoothEnabled && !isDemoMode) {
+            emptyList()
+        } else {
+            people.filter { it.estimatedDistanceMeters <= 10.0 }
+        }
+    }
+
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
     fun formatSmartDateTime(timestampMs: Long): String {
@@ -116,7 +127,7 @@ fun PeopleRadarTab(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (people.isNotEmpty()) "Radar (${people.size})" else "Radar",
+                            text = if (visibleRadarPeople.isNotEmpty()) "Radar (${visibleRadarPeople.size})" else "Radar",
                             style = MaterialTheme.typography.titleSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = if (selectedSubTab == 0) RadarCyan else TextSecondary
@@ -312,7 +323,7 @@ fun PeopleRadarTab(
                                 )
                             )
                             Text(
-                                text = if (people.isEmpty()) "Buscando pessoas no local..." else "${people.size} pessoa(s) no seu alcance",
+                                text = if (visibleRadarPeople.isEmpty()) "Buscando pessoas no local..." else "${visibleRadarPeople.size} pessoa(s) no seu alcance",
                                 style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary)
                             )
                         }
@@ -405,7 +416,7 @@ fun PeopleRadarTab(
         }
 
         // Lista de Pessoas ou Estado Vazio
-        if (people.isEmpty()) {
+        if (visibleRadarPeople.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -488,7 +499,7 @@ fun PeopleRadarTab(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(bottom = 80.dp)
             ) {
-                items(people, key = { it.id }) { person ->
+                items(visibleRadarPeople, key = { it.id }) { person ->
                     PersonCard(
                         person = person,
                         onToggleMark = { onToggleMark(person.id) },

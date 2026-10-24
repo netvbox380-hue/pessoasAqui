@@ -28,6 +28,35 @@ class ProximitySimulator(
 
     private val allSimulatedPeers = mutableListOf<NearbyPerson>()
     
+    // Mensagens e conversas exclusivas para demonstração/testes (nunca vazam em produção)
+    val simulatedMuralMessages: List<ChatMessage> = listOf(
+        ChatMessage(
+            senderId = "peer-carlos",
+            senderAlias = "Carlos",
+            text = "Alguém sabe se a padaria da esquina já abriu?",
+            isLocalOnly = true
+        ),
+        ChatMessage(
+            senderId = "peer-mariana",
+            senderAlias = "Mariana",
+            text = "Sim, acabei de passar lá e está aberta!",
+            isLocalOnly = true
+        )
+    )
+
+    val simulatedPrivateChats: Map<String, List<ChatMessage>> = mapOf(
+        "peer-maria-irma" to listOf(
+            ChatMessage(
+                senderId = "peer-maria-irma",
+                senderAlias = "Maria",
+                text = "Oi! Você chegou bem? Se precisar recuperar sua identidade em outro celular, me avise pelo menu da conversa.",
+                isLocalOnly = false,
+                isEncrypted = true,
+                isFromMe = false
+            )
+        )
+    )
+    
     private val _discoveredPeople = MutableStateFlow<List<NearbyPerson>>(emptyList())
     val discoveredPeople: StateFlow<List<NearbyPerson>> = _discoveredPeople.asStateFlow()
 
@@ -166,35 +195,9 @@ class ProximitySimulator(
             )
         )
 
-        // Mensagens do feed local (10m)
-        _localChatMessages.value = listOf(
-            ChatMessage(
-                senderId = carlosId,
-                senderAlias = "Carlos",
-                text = "Alguém sabe se a padaria da esquina já abriu?",
-                isLocalOnly = true
-            ),
-            ChatMessage(
-                senderId = marianaId,
-                senderAlias = "Mariana",
-                text = "Sim, acabei de passar lá e está aberta!",
-                isLocalOnly = true
-            )
-        )
-
-        // Conversa privada com Maria (Irmã)
-        _privateChats.value = mapOf(
-            mariaId to listOf(
-                ChatMessage(
-                    senderId = mariaId,
-                    senderAlias = "Maria",
-                    text = "Oi! Você chegou bem? Se precisar recuperar sua identidade em outro celular, me avise pelo menu da conversa.",
-                    isLocalOnly = false,
-                    isEncrypted = true,
-                    isFromMe = false
-                )
-            )
-        )
+        // Em produção, chats e mural local nascem vazios (isolamento estrito)
+        _localChatMessages.value = emptyList()
+        _privateChats.value = emptyMap()
     }
 
     /**

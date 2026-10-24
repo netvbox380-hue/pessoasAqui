@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import br.com.pessoasaqui.core.proximity.BleConstants
 import br.com.pessoasaqui.core.subscription.SubscriptionTier
 import br.com.pessoasaqui.data.repository.PessoasAquiRepository
 import br.com.pessoasaqui.domain.model.NearbyPerson
@@ -63,11 +64,22 @@ fun MainScreen(
     var showVipDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
     var showMainBroadcastDialog by remember { mutableStateOf(false) }
+    var showRemindersDialog by remember { mutableStateOf(false) }
 
     // Pessoas que são conexões mútuas ou familiares (garantindo unicidade de IDs)
     val connectedPeople = remember(people) {
         people.filter { it.isMutualConnection || it.isFamily }
             .distinctBy { it.technicalIdentityHash.ifBlank { it.id } }
+    }
+
+    // Pessoas estritamente dentro do Radar de Proximidade BLE (10m)
+    // Se o Bluetooth estiver desligado (e fora de modo demo), nenhuma pessoa é descoberta no radar
+    val radarPeople = remember(people, isBluetoothEnabled, isDemoMode) {
+        if (!isBluetoothEnabled && !isDemoMode) {
+            emptyList()
+        } else {
+            people.filter { it.estimatedDistanceMeters <= BleConstants.MAX_DISCOVERY_DISTANCE_METERS }
+        }
     }
 
     Scaffold(
@@ -171,107 +183,97 @@ fun MainScreen(
                             onDismissRequest = { showTopMenu = false },
                             modifier = Modifier.background(DarkSurface)
                         ) {
-                            DropdownMenuItem(
-                                text = { Text("Editar Meu Apelido", color = TextPrimary) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.Edit, contentDescription = null, tint = RadarCyan)
-                                },
-                                onClick = {
-                                    showTopMenu = false
-                                    tempAliasInput = currentAlias
-                                    showEditProfileDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Restaurar em Outro Celular", color = TextPrimary) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.VpnKey, contentDescription = null, tint = RadarCyan)
-                                },
-                                onClick = {
-                                    showTopMenu = false
-                                    onOpenEntreNaSua()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (subscriptionTier == SubscriptionTier.PRO_VIP) "Gerenciar Plano VIP ⭐" else "Assinar Plano VIP (Google Play)",
-                                        color = if (subscriptionTier == SubscriptionTier.PRO_VIP) EmeraldGreen else WarningAmber
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.WorkspacePremium,
-                                        contentDescription = null,
-                                        tint = if (subscriptionTier == SubscriptionTier.PRO_VIP) EmeraldGreen else WarningAmber
-                                    )
-                                },
-                                onClick = {
-                                    showTopMenu = false
-                                    showVipDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text("Cofre & Backup Familiar 🔒", color = RadarCyan)
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.Shield,
-                                        contentDescription = null,
-                                        tint = RadarCyan
-                                    )
-                                },
-                                onClick = {
-                                    showTopMenu = false
-                                    showBackupDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text("Mensagem de Transmissão 📢", color = RadarCyan)
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.Campaign,
-                                        contentDescription = null,
-                                        tint = RadarCyan
-                                    )
-                                },
-                                onClick = {
-                                    showTopMenu = false
-                                    showMainBroadcastDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (isDemoMode) "Desativar Modo Demonstração" else "Ativar Modo Demonstração",
-                                        color = if (isDemoMode) WarningAmber else TextPrimary
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.Science,
-                                        contentDescription = null,
-                                        tint = if (isDemoMode) WarningAmber else TextSecondary
-                                    )
-                                },
-                                onClick = {
-                                    showTopMenu = false
-                                    repository.toggleDemoMode()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Petição & Suporte Oficial", color = TextPrimary) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.Headset, contentDescription = null, tint = EmeraldGreen)
-                                },
-                                onClick = {
-                                    showTopMenu = false
-                                    showSupportDialog = true
-                                }
-                            )
+                            if (selectedTabIndex == 1) {
+                                // Menu contextual da tela de Conversas: Lembretes e Transmissão
+                                DropdownMenuItem(
+                                    text = { Text("Agendar Lembrete", color = TextPrimary) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Schedule, contentDescription = null, tint = RadarCyan)
+                                    },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showRemindersDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Mensagem de Transmissão", color = RadarCyan) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Campaign, contentDescription = null, tint = RadarCyan)
+                                    },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showMainBroadcastDialog = true
+                                    }
+                                )
+                            } else {
+                                // Menu contextual da tela de Pessoas / Radar: Perfil, Backup e Suporte
+                                DropdownMenuItem(
+                                    text = { Text("Editar Meu Apelido", color = TextPrimary) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Edit, contentDescription = null, tint = RadarCyan)
+                                    },
+                                    onClick = {
+                                        showTopMenu = false
+                                        tempAliasInput = currentAlias
+                                        showEditProfileDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Restaurar em Outro Celular", color = TextPrimary) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.VpnKey, contentDescription = null, tint = RadarCyan)
+                                    },
+                                    onClick = {
+                                        showTopMenu = false
+                                        onOpenEntreNaSua()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (subscriptionTier == SubscriptionTier.PRO_VIP) "Gerenciar Plano VIP ⭐" else "Assinar Plano VIP (Google Play)",
+                                            color = if (subscriptionTier == SubscriptionTier.PRO_VIP) EmeraldGreen else WarningAmber
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.WorkspacePremium,
+                                            contentDescription = null,
+                                            tint = if (subscriptionTier == SubscriptionTier.PRO_VIP) EmeraldGreen else WarningAmber
+                                        )
+                                    },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showVipDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text("Cofre & Backup Familiar 🔒", color = RadarCyan)
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.Shield,
+                                            contentDescription = null,
+                                            tint = RadarCyan
+                                        )
+                                    },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showBackupDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Petição & Suporte Oficial", color = TextPrimary) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Headset, contentDescription = null, tint = EmeraldGreen)
+                                    },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showSupportDialog = true
+                                    }
+                                )
+                            }
                         }
                     }
                 },
@@ -394,7 +396,7 @@ fun MainScreen(
             } else {
                 when (selectedTabIndex) {
                     0 -> PeopleRadarTab(
-                        people = people,
+                        people = radarPeople,
                         currentIntent = currentIntent,
                         isDemoMode = isDemoMode,
                         isBluetoothEnabled = isBluetoothEnabled,
@@ -731,6 +733,32 @@ fun MainScreen(
                         showVipDialog = true
                     },
                     onDismiss = { showMainBroadcastDialog = false }
+                )
+            }
+
+            // Diálogo de Agendamento e Lembretes (Recorrentes e Únicos)
+            if (showRemindersDialog) {
+                RecurringRemindersDialog(
+                    reminders = recurringReminders,
+                    connectedPeople = connectedPeople,
+                    isVip = subscriptionTier == SubscriptionTier.PRO_VIP,
+                    onSaveReminder = { reminder ->
+                        repository.saveRecurringReminder(reminder)
+                    },
+                    onDeleteReminder = { reminderId ->
+                        repository.deleteRecurringReminder(reminderId)
+                    },
+                    onToggleReminder = { reminderId, isEnabled ->
+                        repository.toggleRecurringReminder(reminderId, isEnabled)
+                    },
+                    onConfirmReminder = { reminderId ->
+                        repository.confirmRecurringReminder(reminderId)
+                    },
+                    onUpgradeToVip = {
+                        showRemindersDialog = false
+                        showVipDialog = true
+                    },
+                    onDismiss = { showRemindersDialog = false }
                 )
             }
         }

@@ -449,12 +449,12 @@ app.get('/', (req, res) => {
 app.get('/api/app/version-check', (req, res) => {
   res.json({
     success: true,
-    latestVersionCode: 11,
-    latestVersionName: '1.1.0',
+    latestVersionCode: 13,
+    latestVersionName: '1.1.2',
     minSupportedVersionCode: 8,
     forceUpdate: false,
     playStoreUrl: 'https://play.google.com/store/apps/details?id=br.com.pessoasaqui',
-    releaseNotes: '• Envio múltiplo de fotos, vídeos e documentos\n• Qualidade de imagem cristalina HD\n• Sistema de etiquetas de contatos\n• Transmissão inteligente segmentada por etiquetas'
+    releaseNotes: '• Isolamento total e privacidade para novos usuários\n• Radar de Proximidade estrito a até 10m via Bluetooth\n• Menus contextuais otimizados na aba Conversas\n• Correções de segurança e desempenho'
   });
 });
 
@@ -659,6 +659,7 @@ app.post('/api/identities/register', async (req, res) => {
 
 /**
  * Consulta de Status de Conexões (Mútuas e Marcações)
+ * Isolamento Estrito: Retorna estritamente conexões onde o solicitante (myIdentity) seja participante.
  */
 app.get('/api/connections/status', async (req, res) => {
   const myId = cleanId(req.query.myIdentity);
@@ -666,18 +667,21 @@ app.get('/api/connections/status', async (req, res) => {
     return res.status(400).json({ error: 'myIdentity é obrigatório.' });
   }
 
+  const kMyId = keyId(myId);
   let markedByMe = [];
   let markingMe = [];
   let mutual = [];
 
-  // Sempre lê as conexões em memória local
+  // Lê as conexões em memória local com filtro rigoroso de isolamento
   for (const [key, val] of localStore.connections.entries()) {
     const f = cleanId(val.fromIdentity);
     const t = cleanId(val.toIdentity);
-    if (f === myId && !markedByMe.includes(t)) markedByMe.push(t);
-    if (t === myId && !markingMe.includes(f)) markingMe.push(f);
-    if (val.isMutual) {
-      const partner = f === myId ? t : f;
+    const kF = keyId(f);
+    const kT = keyId(t);
+    if (kF === kMyId && !markedByMe.includes(t)) markedByMe.push(t);
+    if (kT === kMyId && !markingMe.includes(f)) markingMe.push(f);
+    if (val.isMutual && (kF === kMyId || kT === kMyId)) {
+      const partner = (kF === kMyId) ? t : f;
       if (!mutual.includes(partner)) mutual.push(partner);
     }
   }
@@ -686,16 +690,18 @@ app.get('/api/connections/status', async (req, res) => {
     try {
       const result = await query(
         `SELECT from_identity, to_identity, is_mutual FROM connections
-         WHERE from_identity = $1 OR to_identity = $1`,
+         WHERE LOWER(from_identity) = LOWER($1) OR LOWER(to_identity) = LOWER($1)`,
         [myId]
       );
       for (const row of result.rows) {
         const f = cleanId(row.from_identity);
         const t = cleanId(row.to_identity);
-        if (f === myId && !markedByMe.includes(t)) markedByMe.push(t);
-        if (t === myId && !markingMe.includes(f)) markingMe.push(f);
-        if (row.is_mutual) {
-          const partner = f === myId ? t : f;
+        const kF = keyId(f);
+        const kT = keyId(t);
+        if (kF === kMyId && !markedByMe.includes(t)) markedByMe.push(t);
+        if (kT === kMyId && !markingMe.includes(f)) markingMe.push(f);
+        if (row.is_mutual && (kF === kMyId || kT === kMyId)) {
+          const partner = (kF === kMyId) ? t : f;
           if (!mutual.includes(partner)) mutual.push(partner);
         }
       }

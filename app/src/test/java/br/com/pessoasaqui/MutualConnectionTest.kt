@@ -95,4 +95,55 @@ class MutualConnectionTest {
         assertEquals("Rex agora está em faixa de proximidade imediata (< 2.5m) e deve subir", "rex", sorted3[0].id)
         assertEquals("maria", sorted3[1].id)
     }
+
+    @Test
+    fun testAliasMatchingDoesNotGrantMutualConnection() {
+        val repo = br.com.pessoasaqui.data.repository.PessoasAquiRepository()
+        // Pessoa com mesmo apelido 'Eu' mas ID técnico diferente NÃO deve ser mútua por engano
+        val stranger = NearbyPerson(
+            id = "STRANGER_HASH_123",
+            technicalIdentityHash = "STRANGER_HASH_123",
+            alias = "Eu",
+            estimatedDistanceMeters = 3.0,
+            proximityLabel = "3m"
+        )
+        assertFalse("Desconhecido com mesmo apelido NÃO é conexão mútua", repo.isPeerMutual(stranger))
+    }
+
+    @Test
+    fun testRadarFiltersOutDistantContacts() {
+        // Contatos a 500m (conexões à distância) devem ser excluídos do radar de 10 metros
+        val distantMutual = NearbyPerson(
+            id = "REMOTE_MUTUAL_1",
+            technicalIdentityHash = "REMOTE_MUTUAL_1",
+            alias = "natv de sua casa",
+            estimatedDistanceMeters = 500.0,
+            proximityLabel = "Conexão Mútua • Ilimitada",
+            isMutualConnection = true
+        )
+        val nearbyPeer = NearbyPerson(
+            id = "LOCAL_PEER_1",
+            technicalIdentityHash = "LOCAL_PEER_1",
+            alias = "Pessoa Próxima",
+            estimatedDistanceMeters = 4.0,
+            proximityLabel = "4m",
+            isMutualConnection = false
+        )
+        val allPeople = listOf(distantMutual, nearbyPeer)
+        val radarPeople = allPeople.filter { it.estimatedDistanceMeters <= br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS }
+
+        assertEquals(1, radarPeople.size)
+        assertEquals("LOCAL_PEER_1", radarPeople[0].id)
+        assertFalse("Contato de 500m não pode estar no radar de 10m", radarPeople.any { it.estimatedDistanceMeters > 10.0 })
+    }
+
+    @Test
+    fun testProductionModeStartsCompletelyIsolated() {
+        val repo = br.com.pessoasaqui.data.repository.PessoasAquiRepository()
+        // Modo produção desativado por padrão: novo usuário não pode ter mensagens ou contatos fantasmas
+        assertFalse(repo.isDemoMode.value)
+        assertTrue("Mural local nasce 100% vazio em produção", repo.localChatMessages.value.isEmpty())
+        assertTrue("Conversas privadas nascem 100% vazias em produção", repo.privateChats.value.isEmpty())
+        assertTrue("Radar nasce 100% vazio em produção para novo usuário", repo.discoveredPeople.value.isEmpty())
+    }
 }
