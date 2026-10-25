@@ -1869,6 +1869,26 @@ class PessoasAquiRepository(
         sendPrivateMessage(cleanRecipient, "[IMAGE:$base64]")
     }
 
+    fun markMessagesAsRead(peerId: String) {
+        val cleanRecipient = peerId.removePrefix("peer-")
+        proximitySimulator.markMessagesAsRead(cleanRecipient)
+        sendPrivateMessage(cleanRecipient, "[READ_ACK]")
+    }
+
+    fun toggleImportantMessage(peerId: String, messageId: String): Boolean {
+        val cleanRecipient = peerId.removePrefix("peer-")
+        return proximitySimulator.toggleImportantMessage(cleanRecipient, messageId)
+    }
+
+    fun editPrivateMessage(peerId: String, messageId: String, newText: String): Boolean {
+        val cleanRecipient = peerId.removePrefix("peer-")
+        val success = proximitySimulator.editPrivateMessage(cleanRecipient, messageId, newText)
+        if (success) {
+            sendPrivateMessage(cleanRecipient, "[MSG_EDIT:$messageId:$newText]")
+        }
+        return success
+    }
+
     fun sendDocumentMessage(recipientId: String, fileName: String, base64: String, sizeBytes: Long) {
         val cleanRecipient = recipientId.removePrefix("peer-")
         sendPrivateMessage(cleanRecipient, "[DOC:$fileName:$sizeBytes:$base64]")

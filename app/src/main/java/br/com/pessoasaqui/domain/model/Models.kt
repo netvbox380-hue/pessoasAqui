@@ -59,8 +59,11 @@ data class NearbyPerson(
     val avatarColorHex: Long = 0xFF00E5FF,
     val lastSeenEpochMs: Long = System.currentTimeMillis(),
     val hasPendingFamilyRequest: Boolean = false,
-    val pendingFamilyRole: FamilyRole? = null
-)
+    val pendingFamilyRole: FamilyRole? = null,
+    val isOnline: Boolean = false
+) {
+    val isOnlineNow: Boolean get() = isOnline || (System.currentTimeMillis() - lastSeenEpochMs) < 60_000L
+}
 
 /**
  * Mensagem em tópico local (10m) ou conversa privada ponto-a-ponta.
@@ -79,7 +82,12 @@ data class ChatMessage(
     val audioDurationSeconds: Int = 0,
     val mediaBase64: String? = null,
     val fileName: String? = null,
-    val fileSizeBytes: Long = 0
+    val fileSizeBytes: Long = 0,
+    val isRead: Boolean = false,
+    val readTimestampMs: Long = 0L,
+    val isImportant: Boolean = false,
+    val isEdited: Boolean = false,
+    val editedTimestampMs: Long = 0L
 )
 
 /**
@@ -151,8 +159,8 @@ data class ContactTag(
  */
 @Serializable
 data class AppVersionInfo(
-    val latestVersionCode: Long = 14,
-    val latestVersionName: String = "1.1.3",
+    val latestVersionCode: Long = 15,
+    val latestVersionName: String = "1.2.0",
     val minSupportedVersionCode: Long = 8,
     val forceUpdate: Boolean = false,
     val playStoreUrl: String = "https://play.google.com/store/apps/details?id=br.com.pessoasaqui",

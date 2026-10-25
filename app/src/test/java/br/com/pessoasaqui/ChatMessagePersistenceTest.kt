@@ -57,6 +57,33 @@ class ChatMessagePersistenceTest {
         assertEquals("mediaBase64 deve coincidir", original.mediaBase64, deserialized.mediaBase64)
         assertEquals("fileName deve coincidir", original.fileName, deserialized.fileName)
         assertEquals("fileSizeBytes deve coincidir", original.fileSizeBytes, deserialized.fileSizeBytes)
+        assertEquals("isRead deve coincidir", original.isRead, deserialized.isRead)
+        assertEquals("isImportant deve coincidir", original.isImportant, deserialized.isImportant)
+        assertEquals("isEdited deve coincidir", original.isEdited, deserialized.isEdited)
+    }
+
+    @Test
+    fun testMessageEditAndImportantFlagsSerialization() {
+        val original = ChatMessage(
+            id = "msg-special",
+            senderId = "me",
+            senderAlias = "Eu",
+            text = "Mensagem com flag de edição e importância",
+            isRead = true,
+            readTimestampMs = 1727376050000L,
+            isImportant = true,
+            isEdited = true,
+            editedTimestampMs = 1727376090000L
+        )
+
+        val json = ChatMessagePersistenceManager.serializeMessage(original)
+        val deserialized = ChatMessagePersistenceManager.deserializeMessage(json)
+
+        assertTrue("isRead deve ser true", deserialized.isRead)
+        assertEquals(1727376050000L, deserialized.readTimestampMs)
+        assertTrue("isImportant deve ser true", deserialized.isImportant)
+        assertTrue("isEdited deve ser true", deserialized.isEdited)
+        assertEquals(1727376090000L, deserialized.editedTimestampMs)
     }
 
     @Test

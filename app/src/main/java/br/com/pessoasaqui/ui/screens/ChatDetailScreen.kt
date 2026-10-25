@@ -67,6 +67,11 @@ import br.com.pessoasaqui.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.foundation.text.ClickableText
 import java.io.ByteArrayOutputStream
 
 fun uriToBase64Image(context: android.content.Context, uri: Uri): String? {
@@ -157,6 +162,145 @@ private fun formatMessageTime(timestampMs: Long): String {
     return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestampMs))
 }
 
+private fun formatLastSeen(lastSeenEpochMs: Long): String {
+    val now = System.currentTimeMillis()
+    val diffMs = now - lastSeenEpochMs
+    return when {
+        diffMs < 60_000L -> "agora mesmo"
+        diffMs < 3600_000L -> "há ${(diffMs / 60_000L).coerceAtLeast(1)} min"
+        else -> {
+            val calNow = Calendar.getInstance()
+            val calSeen = Calendar.getInstance().apply { timeInMillis = lastSeenEpochMs }
+            val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(lastSeenEpochMs))
+            if (calNow.get(Calendar.YEAR) == calSeen.get(Calendar.YEAR) &&
+                calNow.get(Calendar.DAY_OF_YEAR) == calSeen.get(Calendar.DAY_OF_YEAR)
+            ) {
+                "hoje às $timeStr"
+            } else if (calNow.get(Calendar.YEAR) == calSeen.get(Calendar.YEAR) &&
+                calNow.get(Calendar.DAY_OF_YEAR) - calSeen.get(Calendar.DAY_OF_YEAR) == 1
+            ) {
+                "ontem às $timeStr"
+            } else {
+                SimpleDateFormat("dd/MM 'às' HH:mm", Locale.getDefault()).format(Date(lastSeenEpochMs))
+            }
+        }
+    }
+}
+
+fun uriToBitmap(context: android.content.Context, uri: Uri): android.graphics.Bitmap? {
+    return try {
+        val inputStream = context.contentResolver.openInputStream(uri)
+        val bmp = BitmapFactory.decodeStream(inputStream)
+        inputStream?.close()
+        bmp
+    } catch (_: Exception) { null }
+}
+
+fun bitmapToBase64(bitmap: android.graphics.Bitmap): String {
+    val outputStream = ByteArrayOutputStream()
+    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, outputStream)
+    val byteArray = outputStream.toByteArray()
+    return Base64.encodeToString(byteArray, Base64.NO_WRAP)
+}
+
+@Composable
+fun LinkifiedMessageText(
+    text: String,
+    textColor: Color,
+    linkColor: Color
+) {
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+    val urlRegex = remember { Regex("""(https?://[^\s]+|www\.[^\s]+)""") }
+    val matches = remember(text) { urlRegex.findAll(text).toList() }
+
+    if (matches.isEmpty()) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium.copy(
+                color = textColor,
+                fontWeight = FontWeight.Medium
+            )
+        )
+    } else {
+        Column {
+            val annotated = buildAnnotatedString {
+                var lastIndex = 0
+                matches.forEach { match ->
+                    val start = match.range.first
+                    val end = match.range.last + 1
+                    if (start > lastIndex) {
+                        append(text.substring(lastIndex, start))
+                    }
+                    val url = match.value
+                    pushStringAnnotation(tag = "URL", annotation = if (url.startsWith("http")) url else "https://$url")
+                    withStyle(
+                        SpanStyle(
+                            color = linkColor,
+                            fontWeight = FontWeight.Bold,
+                            textDecoration = TextDecoration.Underline
+                        )
+                    ) {
+                        append(url)
+                    }
+                    pop()
+                    lastIndex = end
+                }
+                if (lastIndex < text.length) {
+                    append(text.substring(lastIndex))
+                }
+            }
+
+            ClickableText(
+                text = annotated,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = textColor,
+                    fontWeight = FontWeight.Medium
+                ),
+                onClick = { offset ->
+                    annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                        .firstOrNull()?.let { annotation ->
+                            try {
+                                uriHandler.openUri(annotation.item)
+                            } catch (_: Exception) {}
+                        }
+                }
+            )
+
+            matches.firstOrNull()?.let { firstMatch ->
+                val rawUrl = firstMatch.value
+                val domain = rawUrl.removePrefix("https://").removePrefix("http://").removePrefix("www.").substringBefore('/')
+                Spacer(modifier = Modifier.height(4.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = linkColor.copy(alpha = 0.15f),
+                    border = BorderStroke(0.5.dp, linkColor.copy(alpha = 0.4f)),
+                    modifier = Modifier.clickable {
+                        try {
+                            uriHandler.openUri(if (rawUrl.startsWith("http")) rawUrl else "https://$rawUrl")
+                        } catch (_: Exception) {}
+                    }
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.OpenInNew, contentDescription = null, tint = linkColor, modifier = Modifier.size(12.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Abrir $domain",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = linkColor,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatDetailScreen(
@@ -193,7 +337,10 @@ fun ChatDetailScreen(
     contactTagAssignments: Map<String, Set<String>> = emptyMap(),
     onToggleContactTag: (String, String) -> Unit = { _, _ -> },
     onCreateContactTag: (String, String) -> Unit = { _, _ -> },
-    onDeleteContactTag: (String) -> Unit = {}
+    onDeleteContactTag: (String) -> Unit = {},
+    onMarkMessagesAsRead: ((String) -> Unit)? = null,
+    onToggleImportantMessage: ((String, String) -> Boolean)? = null,
+    onEditMessage: ((String, String, String) -> Boolean)? = null
 ) {
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
@@ -208,6 +355,11 @@ fun ChatDetailScreen(
     var showPasteInviteInChat by remember { mutableStateOf(false) }
     var showTagSelectorDialog by remember { mutableStateOf(false) }
     var restrictedFeatureDialog by remember { mutableStateOf<String?>(null) }
+    var showImportantMessagesDialog by remember { mutableStateOf(false) }
+    var selectedMessageForActions by remember { mutableStateOf<ChatMessage?>(null) }
+    var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var imageToEdit by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var showVipUpsellForFeature by remember { mutableStateOf<String?>(null) }
     var isRecordingAudio by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableStateOf(0) }
     var playingAudioId by remember { mutableStateOf<String?>(null) }
@@ -249,6 +401,29 @@ fun ChatDetailScreen(
         pendingCallType = null
     }
 
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap ->
+        if (bitmap != null) {
+            imageToEdit = bitmap
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            cameraLauncher.launch(null)
+        } else {
+            Toast.makeText(context, "Permissão de câmera necessária para tirar fotos.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Marca mensagens recebidas como lidas automaticamente ao abrir ou receber
+    LaunchedEffect(messages.size) {
+        onMarkMessagesAsRead?.invoke(person.technicalIdentityHash.ifBlank { person.id })
+    }
+
     val isMutualOrFamily = person.isMutualConnection || person.isFamily
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -257,6 +432,13 @@ fun ChatDetailScreen(
         contract = ActivityResultContracts.GetMultipleContents()
     ) { uris: List<Uri> ->
         if (uris.isNullOrEmpty()) return@rememberLauncherForActivityResult
+        if (uris.size == 1) {
+            val bmp = uriToBitmap(context, uris.first())
+            if (bmp != null) {
+                imageToEdit = bmp
+                return@rememberLauncherForActivityResult
+            }
+        }
         val selected = uris.take(30)
         scope.launch(Dispatchers.IO) {
             selected.forEach { uri ->
@@ -392,6 +574,24 @@ fun ChatDetailScreen(
                                     }
                                 )
                             )
+                            val isOnline = person.isOnlineNow
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isOnline) EmeraldGreen else TextSecondary.copy(alpha = 0.5f))
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (isOnline) "Online" else "Visto por último ${formatLastSeen(person.lastSeenEpochMs)}",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = if (isOnline) EmeraldGreen else TextSecondary,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isOnline) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                )
+                            }
                         }
                     }
                 },
@@ -583,6 +783,40 @@ fun ChatDetailScreen(
                                 menuExpanded = false
                                 reminderInitialText = inputText
                                 showRemindersDialog = true
+                            }
+                        )
+
+                        val importantCount = messages.count { it.isImportant }
+                        DropdownMenuItem(
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("⭐ Mensagens Importantes", color = WarningAmber, fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = WarningAmber.copy(alpha = 0.2f),
+                                        modifier = Modifier.padding(2.dp)
+                                    ) {
+                                        Text(
+                                            text = "$importantCount",
+                                            fontSize = 10.sp,
+                                            color = WarningAmber,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Star,
+                                    contentDescription = null,
+                                    tint = WarningAmber
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                showImportantMessagesDialog = true
                             }
                         )
 
@@ -799,7 +1033,15 @@ fun ChatDetailScreen(
                                 bottomEnd = if (isMe) 4.dp else 16.dp
                             ),
                             color = if (isMe) RadarCyan else DarkSurface,
-                            modifier = Modifier.widthIn(max = 290.dp)
+                            modifier = Modifier
+                                .widthIn(max = 290.dp)
+                                .pointerInput(msg.id) {
+                                    detectTapGestures(
+                                        onLongPress = {
+                                            selectedMessageForActions = msg
+                                        }
+                                    )
+                                }
                         ) {
                             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                                 when (msg.messageType) {
@@ -1098,12 +1340,10 @@ fun ChatDetailScreen(
                                             }
                                         }
 
-                                        Text(
+                                        LinkifiedMessageText(
                                             text = cleanText,
-                                            style = MaterialTheme.typography.bodyMedium.copy(
-                                                color = if (isMe) DeepBlack else TextPrimary,
-                                                fontWeight = FontWeight.Medium
-                                            )
+                                            textColor = if (isMe) DeepBlack else TextPrimary,
+                                            linkColor = if (isMe) Color(0xFF003847) else RadarCyan
                                         )
                                     }
                                 }
@@ -1113,6 +1353,26 @@ fun ChatDetailScreen(
                                     modifier = Modifier.align(Alignment.End),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    if (msg.isImportant) {
+                                        Icon(
+                                            imageVector = Icons.Default.Star,
+                                            contentDescription = "Importante",
+                                            tint = WarningAmber,
+                                            modifier = Modifier.size(11.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                    }
+                                    if (msg.isEdited) {
+                                        Text(
+                                            text = "(editada)",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
+                                                fontSize = 9.sp,
+                                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                            )
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                    }
                                     Text(
                                         text = formatMessageTime(msg.timestampMs),
                                         style = MaterialTheme.typography.labelSmall.copy(
@@ -1130,10 +1390,11 @@ fun ChatDetailScreen(
                                     )
                                     if (isMe) {
                                         Spacer(modifier = Modifier.width(2.dp))
+                                        val isRead = msg.isRead
                                         Icon(
                                             imageVector = Icons.Default.DoneAll,
-                                            contentDescription = "Entregue",
-                                            tint = DeepBlack.copy(alpha = 0.65f),
+                                            contentDescription = if (isRead) "Visualizada" else "Entregue",
+                                            tint = if (isRead) Color(0xFF00E5FF) else DeepBlack.copy(alpha = 0.65f),
                                             modifier = Modifier.size(12.dp)
                                         )
                                     }
@@ -1300,108 +1561,186 @@ fun ChatDetailScreen(
                         .fillMaxWidth()
                         .navigationBarsPadding()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Botão da Gaveta de Recursos (Fotos, Documentos, Lembretes, Transmissão)
-                        IconButton(
-                            onClick = {
-                                showResourceDrawer = true
+                    Column {
+                        // Banner quando uma mensagem estiver sendo editada
+                        if (editingMessage != null) {
+                            Surface(
+                                color = DarkCardElevated,
+                                border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.5f)),
+                                shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Edit, contentDescription = null, tint = RadarCyan, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Editando mensagem enviada...",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = RadarCyan,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            editingMessage = null
+                                            inputText = ""
+                                        },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Cancelar", tint = TextSecondary, modifier = Modifier.size(15.dp))
+                                    }
+                                }
                             }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Widgets,
-                                contentDescription = "Gaveta de Recursos",
-                                tint = if (isMutualOrFamily) RadarCyan else TextSecondary.copy(alpha = 0.8f)
-                            )
                         }
 
-                        OutlinedTextField(
-                            value = inputText,
-                            onValueChange = { inputText = it },
-                            placeholder = { Text("Mensagem cifrada...") },
-                            leadingIcon = {
-                                IconButton(
-                                    onClick = { showEmojiPicker = !showEmojiPicker }
-                                ) {
-                                    Icon(
-                                        imageVector = if (showEmojiPicker) Icons.Default.Keyboard else Icons.Default.SentimentSatisfiedAlt,
-                                        contentDescription = if (showEmojiPicker) "Teclado" else "Emojis",
-                                        tint = if (showEmojiPicker) RadarCyan else TextSecondary.copy(alpha = 0.85f),
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(24.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = RadarCyan,
-                                unfocusedBorderColor = DarkCardElevated
-                            ),
-                            singleLine = true
-                        )
-
-                        Spacer(modifier = Modifier.width(6.dp))
-
-                        if (inputText.isNotBlank()) {
-                            Box(
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(CircleShape)
-                                    .background(RadarCyan)
-                                    .pointerInput(inputText) {
-                                        detectTapGestures(
-                                            onTap = {
-                                                onSendMessage(inputText)
-                                                inputText = ""
-                                            },
-                                            onLongPress = {
-                                                Toast.makeText(
-                                                    context,
-                                                    "⏰ Agendando lembrete com o texto digitado...",
-                                                    Toast.LENGTH_SHORT
-                                                ).show()
-                                                reminderInitialText = inputText
-                                                showRemindersDialog = true
-                                            }
-                                        )
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Send,
-                                    contentDescription = "Enviar (Toque) / Agendar Lembrete (Premir e Segurar)",
-                                    tint = DeepBlack,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        } else {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Botão da Gaveta de Recursos (Fotos, Documentos, Lembretes, Transmissão)
                             IconButton(
                                 onClick = {
-                                    if (isMutualOrFamily) {
-                                        val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-                                        if (hasAudio) {
-                                            val started = voiceNoteManager.startRecording(context)
-                                            if (started) isRecordingAudio = true
-                                        } else {
-                                            recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                        }
-                                    } else {
-                                        restrictedFeatureDialog = "Mensagem de Áudio"
-                                    }
-                                },
-                                colors = IconButtonDefaults.iconButtonColors(
-                                    containerColor = if (isMutualOrFamily) RadarCyan else DarkCardElevated
-                                )
+                                    showResourceDrawer = true
+                                }
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Mic,
-                                    contentDescription = "Gravar Áudio",
-                                    tint = if (isMutualOrFamily) DeepBlack else TextSecondary
+                                    imageVector = Icons.Default.Widgets,
+                                    contentDescription = "Gaveta de Recursos",
+                                    tint = if (isMutualOrFamily) RadarCyan else TextSecondary.copy(alpha = 0.8f)
                                 )
+                            }
+
+                            // Botão de Captura Direta da Câmera
+                            IconButton(
+                                onClick = {
+                                    val hasCamera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                                    if (hasCamera) {
+                                        cameraLauncher.launch(null)
+                                    } else {
+                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PhotoCamera,
+                                    contentDescription = "Câmera",
+                                    tint = RadarCyan
+                                )
+                            }
+
+                            OutlinedTextField(
+                                value = inputText,
+                                onValueChange = { inputText = it },
+                                placeholder = { Text(if (editingMessage != null) "Editar texto..." else "Mensagem cifrada...") },
+                                leadingIcon = {
+                                    IconButton(
+                                        onClick = { showEmojiPicker = !showEmojiPicker }
+                                    ) {
+                                        Icon(
+                                            imageVector = if (showEmojiPicker) Icons.Default.Keyboard else Icons.Default.SentimentSatisfiedAlt,
+                                            contentDescription = if (showEmojiPicker) "Teclado" else "Emojis",
+                                            tint = if (showEmojiPicker) RadarCyan else TextSecondary.copy(alpha = 0.85f),
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(24.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = RadarCyan,
+                                    unfocusedBorderColor = DarkCardElevated
+                                ),
+                                singleLine = true
+                            )
+
+                            Spacer(modifier = Modifier.width(6.dp))
+
+                            if (editingMessage != null) {
+                                // Botão de Confirmação de Edição
+                                IconButton(
+                                    onClick = {
+                                        val ed = editingMessage
+                                        if (ed != null && inputText.isNotBlank()) {
+                                            onEditMessage?.invoke(person.technicalIdentityHash.ifBlank { person.id }, ed.id, inputText.trim())
+                                            editingMessage = null
+                                            inputText = ""
+                                            Toast.makeText(context, "Mensagem editada com sucesso!", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(EmeraldGreen)
+                                ) {
+                                    Icon(Icons.Default.Check, contentDescription = "Salvar Edição", tint = DeepBlack, modifier = Modifier.size(20.dp))
+                                }
+                            } else if (inputText.isNotBlank()) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(RadarCyan)
+                                        .pointerInput(inputText) {
+                                            detectTapGestures(
+                                                onTap = {
+                                                    onSendMessage(inputText)
+                                                    inputText = ""
+                                                },
+                                                onLongPress = {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "⏰ Agendando lembrete com o texto digitado...",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                    reminderInitialText = inputText
+                                                    showRemindersDialog = true
+                                                }
+                                            )
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Send,
+                                        contentDescription = "Enviar (Toque) / Agendar Lembrete (Premir e Segurar)",
+                                        tint = DeepBlack,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            } else {
+                                IconButton(
+                                    onClick = {
+                                        if (isMutualOrFamily) {
+                                            val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                                            if (hasAudio) {
+                                                val started = voiceNoteManager.startRecording(context)
+                                                if (started) isRecordingAudio = true
+                                            } else {
+                                                recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                            }
+                                        } else {
+                                            restrictedFeatureDialog = "Mensagem de Áudio"
+                                        }
+                                    },
+                                    colors = IconButtonDefaults.iconButtonColors(
+                                        containerColor = if (isMutualOrFamily) RadarCyan else DarkCardElevated
+                                    )
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Mic,
+                                        contentDescription = "Gravar Áudio",
+                                        tint = if (isMutualOrFamily) DeepBlack else TextSecondary
+                                    )
+                                }
                             }
                         }
                     }
@@ -2181,6 +2520,247 @@ fun ChatDetailScreen(
                     }
                 },
                 containerColor = DarkSurface
+            )
+        }
+
+        // Editor Avançado de Imagens com Formas, Pincel e Figurinhas
+        if (imageToEdit != null) {
+            ImageEditorDialog(
+                sourceBitmap = imageToEdit!!,
+                isVip = isVip,
+                onSendEditedImage = { editedBmp ->
+                    val b64 = bitmapToBase64(editedBmp)
+                    onSendImageMessage(person, b64)
+                    imageToEdit = null
+                    Toast.makeText(context, "Foto criptografada enviada!", Toast.LENGTH_SHORT).show()
+                },
+                onUpgradeToVip = onUpgradeToVip,
+                onDismiss = { imageToEdit = null }
+            )
+        }
+
+        // Caixinha de Mensagens Importantes (Isolada por conversa)
+        if (showImportantMessagesDialog) {
+            ImportantMessagesDialog(
+                peerAlias = person.alias,
+                importantMessages = messages.filter { it.isImportant },
+                onUnmarkImportant = { msgId ->
+                    onToggleImportantMessage?.invoke(person.technicalIdentityHash.ifBlank { person.id }, msgId)
+                },
+                onDismiss = { showImportantMessagesDialog = false }
+            )
+        }
+
+        // Menu de Ações ao tocar/pressionar uma mensagem (Importante, Editar, Copiar, Lembrete)
+        selectedMessageForActions?.let { msg ->
+            val isMe = msg.isFromMe
+            val elapsedMs = System.currentTimeMillis() - msg.timestampMs
+            val canEdit = isMe && msg.messageType == MessageType.TEXT && (elapsedMs <= 30 * 60 * 1000L)
+            val editTimeRemainingMin = ((30 * 60 * 1000L - elapsedMs) / 60_000L).coerceAtLeast(0)
+
+            AlertDialog(
+                onDismissRequest = { selectedMessageForActions = null },
+                containerColor = DarkSurface,
+                title = {
+                    Text("Opções da Mensagem", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // 1. Marcar / Desmarcar como Importante
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onToggleImportantMessage?.invoke(person.technicalIdentityHash.ifBlank { person.id }, msg.id)
+                                    selectedMessageForActions = null
+                                    Toast.makeText(
+                                        context,
+                                        if (!msg.isImportant) "Mensagem guardada na caixinha de importantes ⭐" else "Mensagem desmarcada",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (msg.isImportant) Icons.Default.StarBorder else Icons.Default.Star,
+                                    contentDescription = null,
+                                    tint = WarningAmber,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = if (msg.isImportant) "Remover de Importantes" else "Marcar como Importante ⭐",
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+
+                        // 2. Editar Mensagem (se enviada por mim e dentro de 30 min)
+                        if (isMe && msg.messageType == MessageType.TEXT) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = DarkCard,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (canEdit) {
+                                            if (isVip) {
+                                                editingMessage = msg
+                                                inputText = msg.text
+                                                selectedMessageForActions = null
+                                            } else {
+                                                selectedMessageForActions = null
+                                                showVipUpsellForFeature = "Edição de Mensagens Enviadas"
+                                            }
+                                        } else {
+                                            Toast.makeText(context, "O limite de 30 minutos para edição já expirou.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(12.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = null,
+                                        tint = if (canEdit) RadarCyan else TextSecondary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = "Editar Mensagem ✏️",
+                                                color = if (canEdit) TextPrimary else TextSecondary,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 13.sp
+                                            )
+                                            if (!isVip) {
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Surface(
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    color = WarningAmber.copy(alpha = 0.2f)
+                                                ) {
+                                                    Text(
+                                                        text = "VIP",
+                                                        color = WarningAmber,
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Text(
+                                            text = if (canEdit) "Restam $editTimeRemainingMin min para editar" else "Limite de 30 minutos expirado",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                color = if (canEdit) RadarCyan else AlertRed,
+                                                fontSize = 10.sp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. Copiar Texto
+                        if (msg.messageType == MessageType.TEXT) {
+                            val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = DarkCard,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(msg.text))
+                                        selectedMessageForActions = null
+                                        Toast.makeText(context, "Texto copiado!", Toast.LENGTH_SHORT).show()
+                                    }
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(12.dp)
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = null, tint = EmeraldGreen, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text("Copiar Texto", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                }
+                            }
+                        }
+
+                        // 4. Agendar Lembrete desta Mensagem
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    selectedMessageForActions = null
+                                    reminderInitialText = msg.text
+                                    showRemindersDialog = true
+                                }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(12.dp)
+                            ) {
+                                Icon(Icons.Default.Schedule, contentDescription = null, tint = FamilyPurple, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text("Agendar Lembrete Desta Mensagem", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { selectedMessageForActions = null }) {
+                        Text("Fechar", color = TextSecondary)
+                    }
+                }
+            )
+        }
+
+        // Diálogo de Cobrança / Upsell para Recursos Extras VIP
+        showVipUpsellForFeature?.let { featureName ->
+            AlertDialog(
+                onDismissRequest = { showVipUpsellForFeature = null },
+                containerColor = DarkSurface,
+                icon = {
+                    Icon(Icons.Default.WorkspacePremium, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(36.dp))
+                },
+                title = {
+                    Text("Recurso VIP Exclusivo ⭐", color = WarningAmber, fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Text(
+                        "$featureName é um recurso exclusivo para assinantes VIP do PessoasAqui. Assine o VIP na Google Play para desbloquear edição de mensagens, ferramentas completas de imagens e caixinha de importantes.",
+                        color = TextPrimary,
+                        fontSize = 13.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showVipUpsellForFeature = null
+                            onUpgradeToVip()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = WarningAmber)
+                    ) {
+                        Text("Conhecer o VIP", color = DeepBlack, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showVipUpsellForFeature = null }) {
+                        Text("Fechar", color = TextSecondary)
+                    }
+                }
             )
         }
     }

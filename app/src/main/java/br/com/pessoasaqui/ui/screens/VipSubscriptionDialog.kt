@@ -237,6 +237,27 @@ fun VipSubscriptionDialog(
                 )
 
                 VipBenefitItem(
+                    icon = Icons.Default.Brush,
+                    title = "Editor Avançado de Fotos & Formas",
+                    description = "Desenhe retângulos, círculos, setas direcionais e figurinhas de conteúdo estilo Stories sobre suas fotos.",
+                    tint = RadarCyan
+                )
+
+                VipBenefitItem(
+                    icon = Icons.Default.Edit,
+                    title = "Edição de Mensagens (até 30 min)",
+                    description = "Corrija qualquer mensagem de texto enviada em até 30 minutos com integridade garantida.",
+                    tint = WarningAmber
+                )
+
+                VipBenefitItem(
+                    icon = Icons.Default.Star,
+                    title = "Caixinha de Mensagens Importantes",
+                    description = "Guarde e filtre mensagens essenciais isoladas na caixinha de cada conversa.",
+                    tint = EmeraldGreen
+                )
+
+                VipBenefitItem(
                     icon = Icons.Default.VerifiedUser,
                     title = "Selo Dourado VIP & Criptografia E2EE",
                     description = "Badge exclusivo visível no seu perfil mantendo 100% da sua privacidade e anonimato.",

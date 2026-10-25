@@ -307,8 +307,9 @@ class ProximitySimulator(
     /**
      * Envia mensagem privada para conexão mútua (qualquer distância)
      */
-    fun sendPrivateMessage(recipientId: String, text: String, myAlias: String) {
+    fun sendPrivateMessage(recipientId: String, text: String, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
         val msg = ChatMessage(
+            id = messageId,
             senderId = "me",
             senderAlias = myAlias,
             text = text,
@@ -333,6 +334,42 @@ class ProximitySimulator(
     fun receivePrivateMessage(senderId: String, senderAlias: String, text: String, messageId: String = "") {
         val cleanId = senderId.removePrefix("peer-")
         val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+
+        // Reconhecimento de confirmação de leitura recebida (Read Receipts)
+        if (text == "[READ_ACK]") {
+            val updatedList = currentList.map { msg ->
+                if (msg.isFromMe && !msg.isRead) {
+                    msg.copy(isRead = true, readTimestampMs = System.currentTimeMillis())
+                } else msg
+            }
+            val updatedMap = _privateChats.value.toMutableMap()
+            updatedMap[cleanId] = updatedList
+            updatedMap["peer-$cleanId"] = updatedList
+            _privateChats.value = updatedMap
+            persistenceManager?.savePrivateChat(cleanId, updatedList)
+            return
+        }
+
+        // Reconhecimento de edição remota de mensagem recebida
+        if (text.startsWith("[MSG_EDIT:")) {
+            val payload = text.removePrefix("[MSG_EDIT:").removeSuffix("]")
+            val firstColon = payload.indexOf(':')
+            if (firstColon > 0) {
+                val targetMsgId = payload.substring(0, firstColon)
+                val editedText = payload.substring(firstColon + 1)
+                val updatedList = currentList.map { msg ->
+                    if (msg.id == targetMsgId) {
+                        msg.copy(text = editedText, isEdited = true, editedTimestampMs = System.currentTimeMillis())
+                    } else msg
+                }
+                val updatedMap = _privateChats.value.toMutableMap()
+                updatedMap[cleanId] = updatedList
+                updatedMap["peer-$cleanId"] = updatedList
+                _privateChats.value = updatedMap
+                persistenceManager?.savePrivateChat(cleanId, updatedList)
+            }
+            return
+        }
 
         // Deduplicação 1: Checa por ID único da mensagem
         if (messageId.isNotBlank() && currentList.any { it.id == messageId }) {
@@ -518,5 +555,75 @@ class ProximitySimulator(
             !it.isUsed && it.expiresAtEpochMs > now &&
                     (it.recoveryKey.uppercase() == trimmed || trimmed.contains(it.recoveryKey.uppercase()))
         }
+    }
+
+    /**
+     * Marca todas as mensagens recebidas de um contato como lidas.
+     */
+    fun markMessagesAsRead(peerId: String) {
+        val cleanId = peerId.removePrefix("peer-")
+        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+        val hasUnread = currentList.any { !it.isFromMe && !it.isRead }
+        if (!hasUnread) return
+
+        val now = System.currentTimeMillis()
+        val updatedList = currentList.map { msg ->
+            if (!msg.isFromMe && !msg.isRead) {
+                msg.copy(isRead = true, readTimestampMs = now)
+            } else msg
+        }
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[cleanId] = updatedList
+        updatedMap["peer-$cleanId"] = updatedList
+        _privateChats.value = updatedMap
+        persistenceManager?.savePrivateChat(cleanId, updatedList)
+    }
+
+    /**
+     * Alterna o estado de Mensagem Importante (favorita com estrela).
+     */
+    fun toggleImportantMessage(peerId: String, messageId: String): Boolean {
+        val cleanId = peerId.removePrefix("peer-")
+        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+        var newStatus = false
+        val updatedList = currentList.map { msg ->
+            if (msg.id == messageId) {
+                newStatus = !msg.isImportant
+                msg.copy(isImportant = newStatus)
+            } else msg
+        }
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[cleanId] = updatedList
+        updatedMap["peer-$cleanId"] = updatedList
+        _privateChats.value = updatedMap
+        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        return newStatus
+    }
+
+    /**
+     * Edita uma mensagem já enviada se estiver dentro do limite de 30 minutos.
+     */
+    fun editPrivateMessage(peerId: String, messageId: String, newText: String): Boolean {
+        val cleanId = peerId.removePrefix("peer-")
+        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+        val target = currentList.firstOrNull { it.id == messageId } ?: return false
+
+        // Limite estrito de 30 minutos a partir do envio
+        val elapsedMs = System.currentTimeMillis() - target.timestampMs
+        if (elapsedMs > 30 * 60 * 1000L) {
+            return false
+        }
+
+        val updatedList = currentList.map { msg ->
+            if (msg.id == messageId) {
+                msg.copy(text = newText, isEdited = true, editedTimestampMs = System.currentTimeMillis())
+            } else msg
+        }
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[cleanId] = updatedList
+        updatedMap["peer-$cleanId"] = updatedList
+        _privateChats.value = updatedMap
+        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        return true
     }
 }

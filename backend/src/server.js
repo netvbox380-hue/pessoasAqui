@@ -449,12 +449,12 @@ app.get('/', (req, res) => {
 app.get('/api/app/version-check', (req, res) => {
   res.json({
     success: true,
-    latestVersionCode: 14,
-    latestVersionName: '1.1.3',
+    latestVersionCode: 15,
+    latestVersionName: '1.2.0',
     minSupportedVersionCode: 8,
     forceUpdate: false,
     playStoreUrl: 'https://play.google.com/store/apps/details?id=br.com.pessoasaqui',
-    releaseNotes: '• Isolamento total e privacidade para novos usuários\n• Radar de Proximidade estrito a até 10m via Bluetooth\n• Menus contextuais otimizados na aba Conversas\n• Correções de segurança e desempenho'
+    releaseNotes: '• Status de mensagens vistas, visto por último e online em tempo real\n• Editor avançado de fotos com formas, pincel, figurinhas e carimbos de conteúdo\n• Envio de fotos direto da câmera\n• Suporte completo a links externos seguros\n• Edição de mensagens enviadas (até 30 min)\n• Caixinha de Mensagens Importantes isolada por conversa'
   });
 });
 

@@ -55,4 +55,53 @@ class ProximitySimulatorTest {
         val stillFound = updatedDiscovered.any { it.id == mariana.id }
         assertFalse("Ao ultrapassar 10 metros sem conexão mútua, pessoa deve desaparecer do radar", stillFound)
     }
+
+    @Test
+    fun testMessageReadStatusAndAcknowledgement() {
+        val peerId = "marcos-mecanico"
+        simulator.receivePrivateMessage(peerId, "Marcos", "Olá! Tudo bem?", "msg-read-1")
+
+        val beforeRead = simulator.privateChats.value[peerId] ?: emptyList()
+        val incoming = beforeRead.first { it.id == "msg-read-1" }
+        assertFalse("Mensagem recebida deve iniciar como não lida", incoming.isRead)
+
+        simulator.markMessagesAsRead(peerId)
+
+        val afterRead = simulator.privateChats.value[peerId] ?: emptyList()
+        val readMsg = afterRead.first { it.id == "msg-read-1" }
+        assertTrue("Mensagem deve ser marcada como lida após markMessagesAsRead", readMsg.isRead)
+        assertTrue("Timestamp de leitura deve ser preenchido", readMsg.readTimestampMs > 0L)
+    }
+
+    @Test
+    fun testToggleImportantMessage() {
+        val peerId = "marcos-mecanico"
+        simulator.sendPrivateMessage(peerId, "Mensagem importante de teste", "Eu", "msg-star-1")
+
+        val initialStarred = simulator.toggleImportantMessage(peerId, "msg-star-1")
+        assertTrue("Mensagem deve ficar marcada como importante", initialStarred)
+
+        val chat = simulator.privateChats.value[peerId] ?: emptyList()
+        val target = chat.first { it.id == "msg-star-1" }
+        assertTrue("Flag isImportant deve ser true", target.isImportant)
+
+        val unstarred = simulator.toggleImportantMessage(peerId, "msg-star-1")
+        assertFalse("Mensagem deve ser desmarcada de importante", unstarred)
+    }
+
+    @Test
+    fun testEditPrivateMessageWithin30MinutesAndExpiration() {
+        val peerId = "marcos-mecanico"
+        simulator.sendPrivateMessage(peerId, "Texto original", "Eu", "msg-edit-1")
+
+        // 1. Edição dentro dos 30 minutos deve ser permitida
+        val editedSuccess = simulator.editPrivateMessage(peerId, "msg-edit-1", "Texto corrigido com sucesso")
+        assertTrue("Edição dentro de 30 minutos deve ser permitida", editedSuccess)
+
+        val chat = simulator.privateChats.value[peerId] ?: emptyList()
+        val editedMsg = chat.first { it.id == "msg-edit-1" }
+        assertEquals("Texto corrigido com sucesso", editedMsg.text)
+        assertTrue("Flag isEdited deve ser true", editedMsg.isEdited)
+        assertTrue("Timestamp de edição deve ser preenchido", editedMsg.editedTimestampMs > 0L)
+    }
 }

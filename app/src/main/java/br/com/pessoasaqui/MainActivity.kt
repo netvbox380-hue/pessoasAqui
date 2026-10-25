@@ -227,13 +227,14 @@ fun PessoasAquiNavHost(
                 @Suppress("DEPRECATION")
                 context.packageManager.getPackageInfo(context.packageName, 0).versionCode.toLong()
             }
-        } catch (_: Exception) { 14L }
+        } catch (_: Exception) { 15L }
         repository.checkForAppUpdates(curCode)
     }
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
     var isCreatingInvite by remember { mutableStateOf(false) }
+    var showVipDialog by remember { mutableStateOf(false) }
 
     val enableBluetoothLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -461,11 +462,15 @@ fun PessoasAquiNavHost(
                     }
                 },
                 isVip = subscriptionTier == SubscriptionTier.PRO_VIP,
+                onUpgradeToVip = { showVipDialog = true },
                 contactTags = contactTags,
                 contactTagAssignments = contactTagAssignments,
                 onToggleContactTag = { contactId, tagId -> repository.toggleTagForContact(contactId, tagId) },
                 onCreateContactTag = { name, colorHex -> repository.createContactTag(name, colorHex) },
-                onDeleteContactTag = { tagId -> repository.deleteContactTag(tagId) }
+                onDeleteContactTag = { tagId -> repository.deleteContactTag(tagId) },
+                onMarkMessagesAsRead = { id -> repository.markMessagesAsRead(id) },
+                onToggleImportantMessage = { peerId, msgId -> repository.toggleImportantMessage(peerId, msgId) },
+                onEditMessage = { peerId, msgId, newText -> repository.editPrivateMessage(peerId, msgId, newText) }
             )
 
             activeFamilyRecoveryAuth?.let { (person, auth) ->
@@ -638,6 +643,13 @@ fun PessoasAquiNavHost(
                 }
             },
             onDismiss = { repository.dismissAppUpdate() }
+        )
+    }
+
+    if (showVipDialog) {
+        VipSubscriptionDialog(
+            repository = repository,
+            onDismissRequest = { showVipDialog = false }
         )
     }
 }
