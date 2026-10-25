@@ -1803,7 +1803,8 @@ class PessoasAquiRepository(
         }
         val cleanRecipient = matchedPeer?.technicalIdentityHash?.let { cleanId(it) }?.takeIf { it.isNotBlank() } ?: rawClean
 
-        val isSignaling = text.startsWith("[CALL_") || text.startsWith("[FAMILY_") || text.startsWith("[MARK_")
+        val isSignaling = text.startsWith("[CALL_") || text.startsWith("[FAMILY_") || text.startsWith("[MARK_") ||
+                          text == "[READ_ACK]" || text.startsWith("[MSG_EDIT:") || text.startsWith("[MSG_DELETE:")
         val isAudio = text.startsWith("[AUDIO:")
         val isImage = text.startsWith("[IMAGE:")
         val isDoc = text.startsWith("[DOC:")
@@ -1869,10 +1870,34 @@ class PessoasAquiRepository(
         sendPrivateMessage(cleanRecipient, "[IMAGE:$base64]")
     }
 
+    private val lastReadAckSentTime = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     fun markMessagesAsRead(peerId: String) {
         val cleanRecipient = peerId.removePrefix("peer-")
-        proximitySimulator.markMessagesAsRead(cleanRecipient)
+        val hadUnread = proximitySimulator.markMessagesAsRead(cleanRecipient)
+        if (!hadUnread) return
+
+        // Debounce anti-flood: no máximo 1 envio de [READ_ACK] a cada 3 segundos por contato
+        val now = System.currentTimeMillis()
+        val lastSent = lastReadAckSentTime[cleanRecipient] ?: 0L
+        if (now - lastSent < 3000L) return
+        lastReadAckSentTime[cleanRecipient] = now
+
         sendPrivateMessage(cleanRecipient, "[READ_ACK]")
+    }
+
+    fun deleteMessageForMe(peerId: String, messageId: String): Boolean {
+        val cleanRecipient = peerId.removePrefix("peer-")
+        return proximitySimulator.deleteMessageForMe(cleanRecipient, messageId)
+    }
+
+    fun deleteMessageForEveryone(peerId: String, messageId: String): Boolean {
+        val cleanRecipient = peerId.removePrefix("peer-")
+        val success = proximitySimulator.deleteMessageForEveryone(cleanRecipient, messageId)
+        if (success) {
+            sendPrivateMessage(cleanRecipient, "[MSG_DELETE:$messageId]")
+        }
+        return success
     }
 
     fun toggleImportantMessage(peerId: String, messageId: String): Boolean {

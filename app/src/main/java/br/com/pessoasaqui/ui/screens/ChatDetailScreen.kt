@@ -74,34 +74,55 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.foundation.text.ClickableText
 import java.io.ByteArrayOutputStream
 
-fun uriToBase64Image(context: android.content.Context, uri: Uri): String? {
+fun uriToBitmap(context: android.content.Context, uri: Uri): android.graphics.Bitmap? {
     return try {
-        val inputStream = context.contentResolver.openInputStream(uri)
-        val originalBitmap = BitmapFactory.decodeStream(inputStream) ?: return null
-        inputStream?.close()
+        // 1. Obtém as dimensões originais sem carregar tudo em memória
+        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, boundsOptions)
+        }
+        val origW = boundsOptions.outWidth
+        val origH = boundsOptions.outHeight
+        if (origW <= 0 || origH <= 0) return null
 
-        // Qualidade Cristalina (2K Quad HD - 2048px)
+        // 2. Calcula sample size para manter resolução cristalina (2K Quad HD / até 2048px)
         val maxDim = 2048
-        val width = originalBitmap.width
-        val height = originalBitmap.height
-        val scaledBitmap = if (width > maxDim || height > maxDim) {
-            val ratio = width.toFloat() / height.toFloat()
-            if (width > height) {
-                android.graphics.Bitmap.createScaledBitmap(originalBitmap, maxDim, (maxDim / ratio).toInt(), true)
-            } else {
-                android.graphics.Bitmap.createScaledBitmap(originalBitmap, (maxDim * ratio).toInt(), maxDim, true)
-            }
-        } else {
-            originalBitmap
+        val maxSide = maxOf(origW, origH)
+        var sampleSize = 1
+        while (maxSide / (sampleSize * 2) >= maxDim) {
+            sampleSize *= 2
         }
 
-        val outputStream = ByteArrayOutputStream()
-        scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, outputStream)
-        val byteArray = outputStream.toByteArray()
-        Base64.encodeToString(byteArray, Base64.NO_WRAP)
-    } catch (_: Exception) {
-        null
-    }
+        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val rawBmp = context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, decodeOptions)
+        } ?: return null
+
+        // 3. Normalização Universal de Orientação EXIF (Unifica Android 14, 15, 16 e todas as fabricantes)
+        val rotationDegrees = try {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                val exif = android.media.ExifInterface(stream)
+                when (exif.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)) {
+                    android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+            } ?: 0f
+        } catch (_: Exception) { 0f }
+
+        if (rotationDegrees != 0f) {
+            val matrix = android.graphics.Matrix().apply { postRotate(rotationDegrees) }
+            android.graphics.Bitmap.createBitmap(rawBmp, 0, 0, rawBmp.width, rawBmp.height, matrix, true)
+        } else {
+            rawBmp
+        }
+    } catch (_: Exception) { null }
+}
+
+fun uriToBase64Image(context: android.content.Context, uri: Uri): String? {
+    val bmp = uriToBitmap(context, uri) ?: return null
+    return bitmapToBase64(bmp)
 }
 
 fun uriToBase64Doc(context: android.content.Context, uri: Uri, maxBytes: Long = 40L * 1024L * 1024L): Pair<String, Long>? {
@@ -187,14 +208,7 @@ private fun formatLastSeen(lastSeenEpochMs: Long): String {
     }
 }
 
-fun uriToBitmap(context: android.content.Context, uri: Uri): android.graphics.Bitmap? {
-    return try {
-        val inputStream = context.contentResolver.openInputStream(uri)
-        val bmp = BitmapFactory.decodeStream(inputStream)
-        inputStream?.close()
-        bmp
-    } catch (_: Exception) { null }
-}
+
 
 fun bitmapToBase64(bitmap: android.graphics.Bitmap): String {
     val outputStream = ByteArrayOutputStream()
@@ -340,7 +354,9 @@ fun ChatDetailScreen(
     onDeleteContactTag: (String) -> Unit = {},
     onMarkMessagesAsRead: ((String) -> Unit)? = null,
     onToggleImportantMessage: ((String, String) -> Boolean)? = null,
-    onEditMessage: ((String, String, String) -> Boolean)? = null
+    onEditMessage: ((String, String, String) -> Boolean)? = null,
+    onDeleteMessageForMe: ((String, String) -> Boolean)? = null,
+    onDeleteMessageForEveryone: ((String, String) -> Boolean)? = null
 ) {
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
@@ -357,6 +373,7 @@ fun ChatDetailScreen(
     var restrictedFeatureDialog by remember { mutableStateOf<String?>(null) }
     var showImportantMessagesDialog by remember { mutableStateOf(false) }
     var selectedMessageForActions by remember { mutableStateOf<ChatMessage?>(null) }
+    var messageToDelete by remember { mutableStateOf<ChatMessage?>(null) }
     var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var imageToEdit by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var showVipUpsellForFeature by remember { mutableStateOf<String?>(null) }
@@ -401,11 +418,30 @@ fun ChatDetailScreen(
         pendingCallType = null
     }
 
+    var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
+
     val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview()
-    ) { bitmap ->
-        if (bitmap != null) {
-            imageToEdit = bitmap
+        contract = ActivityResultContracts.TakePicture()
+    ) { isSuccess ->
+        if (isSuccess) {
+            cameraTempUri?.let { uri ->
+                val bmp = uriToBitmap(context, uri)
+                if (bmp != null) {
+                    imageToEdit = bmp
+                }
+            }
+        }
+    }
+
+    val launchHighResCamera = {
+        try {
+            val photosDir = java.io.File(context.cacheDir, "camera_photos").apply { if (!exists()) mkdirs() }
+            val photoFile = java.io.File(photosDir, "capture_${System.currentTimeMillis()}.jpg")
+            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+            cameraTempUri = uri
+            cameraLauncher.launch(uri)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Erro ao abrir câmera: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -413,15 +449,18 @@ fun ChatDetailScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            cameraLauncher.launch(null)
+            launchHighResCamera()
         } else {
             Toast.makeText(context, "Permissão de câmera necessária para tirar fotos.", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // Marca mensagens recebidas como lidas automaticamente ao abrir ou receber
-    LaunchedEffect(messages.size) {
-        onMarkMessagesAsRead?.invoke(person.technicalIdentityHash.ifBlank { person.id })
+    // Marca mensagens recebidas como lidas automaticamente se houverem mensagens pendentes de leitura
+    val unreadCount = remember(messages) { messages.count { !it.isFromMe && !it.isRead && !it.isDeleted } }
+    LaunchedEffect(unreadCount) {
+        if (unreadCount > 0) {
+            onMarkMessagesAsRead?.invoke(person.technicalIdentityHash.ifBlank { person.id })
+        }
     }
 
     val isMutualOrFamily = person.isMutualConnection || person.isFamily
@@ -1044,7 +1083,29 @@ fun ChatDetailScreen(
                                 }
                         ) {
                             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                when (msg.messageType) {
+                                if (msg.isDeleted) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(vertical = 4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Block,
+                                            contentDescription = null,
+                                            tint = if (isMe) DeepBlack.copy(alpha = 0.55f) else TextSecondary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Esta mensagem foi apagada",
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                                color = if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
+                                                fontSize = 13.sp
+                                            )
+                                        )
+                                    }
+                                } else {
+                                    when (msg.messageType) {
                                     MessageType.AUDIO -> {
                                         // Player de Áudio Criptografado
                                         val isPlaying = playingAudioId == msg.id
@@ -1347,13 +1408,14 @@ fun ChatDetailScreen(
                                         )
                                     }
                                 }
+                                }
 
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Row(
                                     modifier = Modifier.align(Alignment.End),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    if (msg.isImportant) {
+                                    if (msg.isImportant && !msg.isDeleted) {
                                         Icon(
                                             imageVector = Icons.Default.Star,
                                             contentDescription = "Importante",
@@ -1362,7 +1424,7 @@ fun ChatDetailScreen(
                                         )
                                         Spacer(modifier = Modifier.width(3.dp))
                                     }
-                                    if (msg.isEdited) {
+                                    if (msg.isEdited && !msg.isDeleted) {
                                         Text(
                                             text = "(editada)",
                                             style = MaterialTheme.typography.labelSmall.copy(
@@ -1620,12 +1682,12 @@ fun ChatDetailScreen(
                                 )
                             }
 
-                            // Botão de Captura Direta da Câmera
+                            // Botão de Captura Direta da Câmera (Qualidade Alta + EXIF Normalizado)
                             IconButton(
                                 onClick = {
                                     val hasCamera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
                                     if (hasCamera) {
-                                        cameraLauncher.launch(null)
+                                        launchHighResCamera()
                                     } else {
                                         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                                     }
@@ -1660,7 +1722,9 @@ fun ChatDetailScreen(
                                     focusedBorderColor = RadarCyan,
                                     unfocusedBorderColor = DarkCardElevated
                                 ),
-                                singleLine = true
+                                singleLine = false,
+                                maxLines = 5,
+                                minLines = 1
                             )
 
                             Spacer(modifier = Modifier.width(6.dp))
@@ -2697,24 +2761,53 @@ fun ChatDetailScreen(
                         }
 
                         // 4. Agendar Lembrete desta Mensagem
+                        if (!msg.isDeleted) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = DarkCard,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedMessageForActions = null
+                                        reminderInitialText = msg.text
+                                        showRemindersDialog = true
+                                    }
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(12.dp)
+                                ) {
+                                    Icon(Icons.Default.Schedule, contentDescription = null, tint = FamilyPurple, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text("Agendar Lembrete Desta Mensagem", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                }
+                            }
+                        }
+
+                        // 5. Apagar Mensagem (Para mim ou Para todos dentro de 30 min)
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = DarkCard,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
+                                    val toDelete = msg
                                     selectedMessageForActions = null
-                                    reminderInitialText = msg.text
-                                    showRemindersDialog = true
+                                    messageToDelete = toDelete
                                 }
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(12.dp)
                             ) {
-                                Icon(Icons.Default.Schedule, contentDescription = null, tint = FamilyPurple, modifier = Modifier.size(20.dp))
+                                Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = AlertRed, modifier = Modifier.size(20.dp))
                                 Spacer(modifier = Modifier.width(10.dp))
-                                Text("Agendar Lembrete Desta Mensagem", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                Text(
+                                    text = if (msg.isDeleted) "Apagar do meu histórico" else "Apagar Mensagem...",
+                                    color = AlertRed,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
                             }
                         }
                     }
@@ -2722,6 +2815,98 @@ fun ChatDetailScreen(
                 confirmButton = {
                     TextButton(onClick = { selectedMessageForActions = null }) {
                         Text("Fechar", color = TextSecondary)
+                    }
+                }
+            )
+        }
+
+        // Diálogo de Confirmação para Apagar Mensagem (Para mim vs Para todos)
+        messageToDelete?.let { msg ->
+            val isMe = msg.isFromMe
+            val elapsedMs = System.currentTimeMillis() - msg.timestampMs
+            val canDeleteEveryone = isMe && !msg.isDeleted && (elapsedMs <= 30 * 60 * 1000L)
+            val remainingMin = ((30 * 60 * 1000L - elapsedMs) / 60_000L).coerceAtLeast(0)
+
+            AlertDialog(
+                onDismissRequest = { messageToDelete = null },
+                containerColor = DarkSurface,
+                title = {
+                    Text("Deseja apagar a mensagem?", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        // Opção 1: Apagar para mim
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = DarkCard,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val id = msg.id
+                                    messageToDelete = null
+                                    onDeleteMessageForMe?.invoke(person.technicalIdentityHash.ifBlank { person.id }, id)
+                                    Toast.makeText(context, "Mensagem apagada para você.", Toast.LENGTH_SHORT).show()
+                                }
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
+                                Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = AlertRed, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text("Apagar para mim", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                    Text("Remove apenas deste dispositivo", color = TextSecondary, fontSize = 11.sp)
+                                }
+                            }
+                        }
+
+                        // Opção 2: Apagar para todos (se enviada por mim e dentro de 30 min)
+                        if (canDeleteEveryone) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = DarkCard,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val id = msg.id
+                                        messageToDelete = null
+                                        val ok = onDeleteMessageForEveryone?.invoke(person.technicalIdentityHash.ifBlank { person.id }, id) == true
+                                        if (ok) {
+                                            Toast.makeText(context, "Mensagem apagada para todos.", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            Toast.makeText(context, "Não foi possível apagar para todos (tempo expirado).", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
+                                    Icon(Icons.Default.DeleteForever, contentDescription = null, tint = AlertRed, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text("Apagar para todos", color = AlertRed, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                        Text("Apaga em ambos os aparelhos (restam $remainingMin min)", color = RadarCyan, fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        } else if (isMe && !msg.isDeleted) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = DarkCard.copy(alpha = 0.5f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
+                                    Icon(Icons.Default.TimerOff, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text("Apagar para todos (indisponível)", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                        Text("O limite de 30 minutos já expirou", color = TextSecondary.copy(alpha = 0.7f), fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { messageToDelete = null }) {
+                        Text("Cancelar", color = TextSecondary)
                     }
                 }
             )

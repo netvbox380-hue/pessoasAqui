@@ -111,9 +111,10 @@ class ChatMessagePersistenceManager(
 
                 val content = file.readText(Charsets.UTF_8)
                 val msgList = json.decodeFromString(ListSerializer(ChatMessage.serializer()), content)
-                if (msgList.isNotEmpty()) {
-                    resultMap[cleanPeerId] = msgList
-                    resultMap["peer-$cleanPeerId"] = msgList
+                val sanitizedList = msgList.filter { it.text != "[READ_ACK]" && !it.text.startsWith("[MSG_EDIT:") && !it.text.startsWith("[MSG_DELETE:") }
+                if (sanitizedList.isNotEmpty()) {
+                    resultMap[cleanPeerId] = sanitizedList
+                    resultMap["peer-$cleanPeerId"] = sanitizedList
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Falha ao ler arquivo de chat ${file.name}: ${e.message}")

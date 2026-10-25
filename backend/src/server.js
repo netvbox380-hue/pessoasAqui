@@ -125,6 +125,28 @@ const activeInvites = new Map();
 const pendingMessages = new Map();
 // Cache de deduplicação de mensagens (evita mensagens repetidas/duplicadas)
 const recentMessageIds = new Map();
+// Controle anti-flood / taxa de envio de mensagens por cliente (max 25 msg/s para mensagens discretas)
+const clientMessageRate = new Map();
+
+function checkRateLimit(identity, isStream) {
+  if (isStream || !identity) return true;
+  const now = Date.now();
+  const rate = clientMessageRate.get(identity) || { count: 0, windowStart: now };
+  if (now - rate.windowStart > 1000) {
+    rate.count = 1;
+    rate.windowStart = now;
+    clientMessageRate.set(identity, rate);
+    return true;
+  }
+  rate.count++;
+  if (rate.count > 25) {
+    if (rate.count === 26) {
+      console.warn(`[ANTI-FLOOD] Taxa de mensagens excedida para ${identity} (${rate.count}/seg). Descartando mensagens excedentes.`);
+    }
+    return false;
+  }
+  return true;
+}
 // Conjunto de identidades banidas da rede (rejeição em tempo real)
 const bannedIdentities = new Set();
 
@@ -269,8 +291,16 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
     }
 
     // Também armazena na fila pendente HTTP (com limite de 50 mensagens) para garantir entrega
-    // mesmo se o WebSocket do destinatário estiver em transição de rede (o cliente deduplica por messageId)
-    if (!String(compatiblePayload).startsWith('[CALL_AUDIO_FRAME:') && !String(compatiblePayload).startsWith('[CALL_VIDEO_FRAME:')) {
+    // mesmo se o WebSocket do destinatário estiver em transição de rede (o cliente deduplica por messageId).
+    // Mensagens efêmeras / de sinalização como [READ_ACK] ou frames de áudio/vídeo não devem ser acumuladas em fila.
+    const payloadStr = String(compatiblePayload || '');
+    const isEphemeral = payloadStr.startsWith('[CALL_') ||
+                        payloadStr.startsWith('[FAMILY_') ||
+                        payloadStr === '[READ_ACK]' ||
+                        payloadStr.startsWith('[MSG_DELETE:') ||
+                        payloadStr.startsWith('[MSG_EDIT:');
+
+    if (!isEphemeral) {
       if (!pendingMessages.has(tk)) {
         pendingMessages.set(tk, []);
       }
@@ -282,7 +312,11 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
     }
   }
 
-  console.log(`[MSG] De ${resolvedSenderAlias} (${cleanSender}) -> ${cleanRecipient} (WS=${deliveredWs})`);
+  // Log resumido (ignora frames contínuos de chamada ou acks em lote para não poluir o console)
+  const isContinuous = String(compatiblePayload).startsWith('[CALL_AUDIO_FRAME:') || String(compatiblePayload).startsWith('[CALL_VIDEO_FRAME:') || compatiblePayload === '[READ_ACK]';
+  if (!isContinuous) {
+    console.log(`[MSG] De ${resolvedSenderAlias} (${cleanSender}) -> ${cleanRecipient} (WS=${deliveredWs})`);
+  }
   return deliveredWs;
 }
 
@@ -401,6 +435,11 @@ wss.on('connection', (ws, req) => {
       // Relay de Mensagem Ponta a Ponta (E2EE)
       if (msg.type === 'E2EE_MESSAGE' && authenticatedIdentity) {
         const { recipientHash, ciphertextPayload, ivNonce, messageId } = msg;
+        const isStream = String(ciphertextPayload).startsWith('[CALL_AUDIO_FRAME:') || String(ciphertextPayload).startsWith('[CALL_VIDEO_FRAME:');
+        if (!checkRateLimit(authenticatedIdentity, isStream)) {
+          return;
+        }
+
         const kAuth = keyId(authenticatedIdentity);
         const msgId = messageId || `${authenticatedIdentity}_${Date.now()}_${Math.random()}`;
 
@@ -595,6 +634,11 @@ app.post('/api/messages/send', (req, res) => {
   }
 
   const cleanSender = cleanId(senderHash);
+  const isStream = String(ciphertextPayload).startsWith('[CALL_AUDIO_FRAME:') || String(ciphertextPayload).startsWith('[CALL_VIDEO_FRAME:');
+  if (!checkRateLimit(cleanSender, isStream)) {
+    return res.status(429).json({ error: 'Muitas requisições. Limite de envio por segundo excedido.' });
+  }
+
   const msgId = messageId || `${cleanSender}_${Date.now()}_${Math.random()}`;
 
   if (isDuplicateMessage(msgId)) {

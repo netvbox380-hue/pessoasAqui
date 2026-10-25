@@ -15,9 +15,9 @@ enum class SubscriptionTier(
     val maxReminders: Int,
     val broadcastCooldownMs: Long = if (maxBroadcastRecipients > 10) 3 * 60 * 1000L else 15 * 60 * 1000L,
     val playStoreSkuId: String? = if (maxBroadcastRecipients > 10) "pessoasaqui_vip_monthly_v1" else null,
-    val hasAdvancedPhotoEditor: Boolean = maxBroadcastRecipients > 10,
-    val hasMessageEditing: Boolean = maxBroadcastRecipients > 10,
-    val hasImportantMessagesBox: Boolean = maxBroadcastRecipients > 10
+    val hasAdvancedPhotoEditor: Boolean = true,
+    val hasMessageEditing: Boolean = true,
+    val hasImportantMessagesBox: Boolean = true
 ) {
     FREE("Gratuito", maxBroadcastRecipients = 3, maxReminders = 3),
     PRO_VIP("VIP / Pro", maxBroadcastRecipients = 100, maxReminders = 999)

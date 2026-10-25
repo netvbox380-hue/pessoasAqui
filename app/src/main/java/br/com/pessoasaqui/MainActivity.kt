@@ -461,7 +461,7 @@ fun PessoasAquiNavHost(
                         onResult(false, "Link ou formato de convite inválido.", null)
                     }
                 },
-                isVip = subscriptionTier == SubscriptionTier.PRO_VIP,
+                isVip = true, // Recursos VIP pré-ativados conforme diretriz do usuário
                 onUpgradeToVip = { showVipDialog = true },
                 contactTags = contactTags,
                 contactTagAssignments = contactTagAssignments,
@@ -470,7 +470,9 @@ fun PessoasAquiNavHost(
                 onDeleteContactTag = { tagId -> repository.deleteContactTag(tagId) },
                 onMarkMessagesAsRead = { id -> repository.markMessagesAsRead(id) },
                 onToggleImportantMessage = { peerId, msgId -> repository.toggleImportantMessage(peerId, msgId) },
-                onEditMessage = { peerId, msgId, newText -> repository.editPrivateMessage(peerId, msgId, newText) }
+                onEditMessage = { peerId, msgId, newText -> repository.editPrivateMessage(peerId, msgId, newText) },
+                onDeleteMessageForMe = { peerId, msgId -> repository.deleteMessageForMe(peerId, msgId) },
+                onDeleteMessageForEveryone = { peerId, msgId -> repository.deleteMessageForEveryone(peerId, msgId) }
             )
 
             activeFamilyRecoveryAuth?.let { (person, auth) ->

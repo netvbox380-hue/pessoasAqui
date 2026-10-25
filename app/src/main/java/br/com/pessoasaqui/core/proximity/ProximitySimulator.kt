@@ -371,6 +371,26 @@ class ProximitySimulator(
             return
         }
 
+        // Reconhecimento de exclusão remota de mensagem recebida (Apagar para todos)
+        if (text.startsWith("[MSG_DELETE:")) {
+            val targetMsgId = text.removePrefix("[MSG_DELETE:").removeSuffix("]")
+            val updatedList = currentList.map { msg ->
+                if (msg.id == targetMsgId) {
+                    msg.copy(
+                        text = "🚫 Esta mensagem foi apagada",
+                        isDeleted = true,
+                        mediaBase64 = null
+                    )
+                } else msg
+            }
+            val updatedMap = _privateChats.value.toMutableMap()
+            updatedMap[cleanId] = updatedList
+            updatedMap["peer-$cleanId"] = updatedList
+            _privateChats.value = updatedMap
+            persistenceManager?.savePrivateChat(cleanId, updatedList)
+            return
+        }
+
         // Deduplicação 1: Checa por ID único da mensagem
         if (messageId.isNotBlank() && currentList.any { it.id == messageId }) {
             return
@@ -558,17 +578,26 @@ class ProximitySimulator(
     }
 
     /**
-     * Marca todas as mensagens recebidas de um contato como lidas.
+     * Verifica se existem mensagens não lidas de um contato.
      */
-    fun markMessagesAsRead(peerId: String) {
+    fun hasUnreadMessages(peerId: String): Boolean {
         val cleanId = peerId.removePrefix("peer-")
         val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
-        val hasUnread = currentList.any { !it.isFromMe && !it.isRead }
-        if (!hasUnread) return
+        return currentList.any { !it.isFromMe && !it.isRead && !it.isDeleted }
+    }
+
+    /**
+     * Marca todas as mensagens recebidas de um contato como lidas. Retorna true se houveram mensagens marcadas.
+     */
+    fun markMessagesAsRead(peerId: String): Boolean {
+        val cleanId = peerId.removePrefix("peer-")
+        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+        val hasUnread = currentList.any { !it.isFromMe && !it.isRead && !it.isDeleted }
+        if (!hasUnread) return false
 
         val now = System.currentTimeMillis()
         val updatedList = currentList.map { msg ->
-            if (!msg.isFromMe && !msg.isRead) {
+            if (!msg.isFromMe && !msg.isRead && !msg.isDeleted) {
                 msg.copy(isRead = true, readTimestampMs = now)
             } else msg
         }
@@ -577,6 +606,7 @@ class ProximitySimulator(
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
         persistenceManager?.savePrivateChat(cleanId, updatedList)
+        return true
     }
 
     /**
@@ -617,6 +647,58 @@ class ProximitySimulator(
         val updatedList = currentList.map { msg ->
             if (msg.id == messageId) {
                 msg.copy(text = newText, isEdited = true, editedTimestampMs = System.currentTimeMillis())
+            } else msg
+        }
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[cleanId] = updatedList
+        updatedMap["peer-$cleanId"] = updatedList
+        _privateChats.value = updatedMap
+        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        return true
+    }
+
+    /**
+     * Apaga uma mensagem apenas para mim (remove do histórico local).
+     */
+    fun deleteMessageForMe(peerId: String, messageId: String): Boolean {
+        val cleanId = peerId.removePrefix("peer-")
+        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+        val exists = currentList.any { it.id == messageId }
+        if (!exists) return false
+
+        val updatedList = currentList.filter { it.id != messageId }
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[cleanId] = updatedList
+        updatedMap["peer-$cleanId"] = updatedList
+        _privateChats.value = updatedMap
+        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        return true
+    }
+
+    /**
+     * Apaga uma mensagem enviada por mim para todos (dentro do limite de 30 minutos).
+     */
+    fun deleteMessageForEveryone(peerId: String, messageId: String): Boolean {
+        val cleanId = peerId.removePrefix("peer-")
+        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+        val target = currentList.firstOrNull { it.id == messageId } ?: return false
+
+        // Só pode apagar para todos se foi enviada por mim
+        if (!target.isFromMe) return false
+
+        // Limite estrito de 30 minutos a partir do envio
+        val elapsedMs = System.currentTimeMillis() - target.timestampMs
+        if (elapsedMs > 30 * 60 * 1000L) {
+            return false
+        }
+
+        val updatedList = currentList.map { msg ->
+            if (msg.id == messageId) {
+                msg.copy(
+                    text = "🚫 Esta mensagem foi apagada",
+                    isDeleted = true,
+                    mediaBase64 = null
+                )
             } else msg
         }
         val updatedMap = _privateChats.value.toMutableMap()

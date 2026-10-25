@@ -87,7 +87,8 @@ data class ChatMessage(
     val readTimestampMs: Long = 0L,
     val isImportant: Boolean = false,
     val isEdited: Boolean = false,
-    val editedTimestampMs: Long = 0L
+    val editedTimestampMs: Long = 0L,
+    val isDeleted: Boolean = false
 )
 
 /**
