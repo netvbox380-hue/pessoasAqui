@@ -593,8 +593,8 @@ class PessoasAquiRepository(
 
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         val cleanSender = cleanId(senderHash)
-        // Decifra o payload E2EE se estiver protegido com AES-256-GCM
-        val payload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId)
+        // Decifra o payload E2EE se estiver protegido com AES-256-GCM ou ECDH
+        val payload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, cryptoIdentityManager.getActivePrivateKey())
 
         when {
             payload.startsWith("[CALL_AUDIO_FRAME:") -> {
@@ -1102,7 +1102,9 @@ class PessoasAquiRepository(
                             },
                             onPeerOffline = { peerHash ->
                                 handlePeerOffline(peerHash)
-                            }
+                            },
+                            myPublicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                            signChallenge = { data -> cryptoIdentityManager.signChallenge(data) }
                         )
                     }
 
@@ -1226,6 +1228,9 @@ class PessoasAquiRepository(
 
         distinctPeers.forEach { p ->
             val cId = cleanId(p.identityHash)
+            p.publicKeyBase64?.let { pubKey ->
+                E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
+            }
             if (p.isMutual) {
                 savedMutualPeople.add(cId)
                 savedMarkedPeople.add(cId)
@@ -1288,6 +1293,10 @@ class PessoasAquiRepository(
         val cId = cleanId(peer.identityHash)
         if (cId == myId) return
         if (myAlias.isNotBlank() && peer.alias.trim().equals(myAlias, ignoreCase = true)) return
+
+        peer.publicKeyBase64?.let { pubKey ->
+            E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
+        }
 
         if (peer.isMutual) {
             savedMutualPeople.add(cId)
@@ -1927,8 +1936,8 @@ class PessoasAquiRepository(
         }
 
         val myId = cryptoIdentityManager.getTechnicalIdentity()
-        // Criptografia de Ponta a Ponta com AES-256-GCM
-        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient)
+        // Criptografia de Ponta a Ponta com AES-256-GCM e ECDH Zero-Knowledge
+        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, cryptoIdentityManager.getActivePrivateKey())
 
         // 1. Envio instantâneo prioritário via WebSocket (0ms latência)
         networkClient.sendE2eeEnvelope(
@@ -2228,7 +2237,9 @@ class PessoasAquiRepository(
             onPeerMarkedYou = { markerId, _ ->
                 savedMarkingMePeople.add(cleanId(markerId))
                 saveConnectionsToPrefs()
-            }
+            },
+            myPublicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+            signChallenge = { data -> cryptoIdentityManager.signChallenge(data) }
         )
 
         // 4. Sincroniza e recarrega os contatos mútuos desta identidade no backend

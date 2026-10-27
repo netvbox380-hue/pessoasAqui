@@ -41,6 +41,8 @@ class PessoasAquiNetworkClient(
     private var lastIdentityHash: String? = null
     private var lastAlias: String? = null
     private var lastIntent: String? = null
+    private var lastPublicKeyBase64: String? = null
+    private var lastSignChallenge: ((ByteArray) -> String)? = null
     private var lastOnE2ee: ((String, String, String, String) -> Unit)? = null
     private var lastOnRevoked: ((String) -> Unit)? = null
     private var lastOnPresenceSync: ((List<RemotePeer>) -> Unit)? = null
@@ -71,7 +73,9 @@ class PessoasAquiNetworkClient(
                     onPeerOnline = lastOnPeerOnline,
                     onPeerOffline = lastOnPeerOffline,
                     onMutualConnection = lastOnMutualConnection,
-                    onPeerMarkedYou = lastOnPeerMarkedYou
+                    onPeerMarkedYou = lastOnPeerMarkedYou,
+                    myPublicKeyBase64 = lastPublicKeyBase64,
+                    signChallenge = lastSignChallenge
                 )
             }
         }
@@ -223,7 +227,9 @@ class PessoasAquiNetworkClient(
         onPeerOnline: ((RemotePeer) -> Unit)? = null,
         onPeerOffline: ((String) -> Unit)? = null,
         onMutualConnection: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
-        onPeerMarkedYou: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null
+        onPeerMarkedYou: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
+        myPublicKeyBase64: String? = null,
+        signChallenge: ((ByteArray) -> String)? = null
     ) {
         disconnectSocket()
 
@@ -231,6 +237,8 @@ class PessoasAquiNetworkClient(
         lastIdentityHash = myIdentityHash
         lastAlias = myAlias
         lastIntent = myIntent
+        lastPublicKeyBase64 = myPublicKeyBase64
+        lastSignChallenge = signChallenge
         lastOnE2ee = onE2eeMessageReceived
         lastOnRevoked = onSessionRevoked
         lastOnPresenceSync = onPresenceSync
@@ -243,12 +251,19 @@ class PessoasAquiNetworkClient(
         activeWebSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 isWsConnected = true
-                // Autentica este dispositivo no socket com sua identidade, alias e intenção
+                val authNonce = java.util.UUID.randomUUID().toString()
+                val authSignature = signChallenge?.invoke("$myIdentityHash:$authNonce".toByteArray(Charsets.UTF_8))
+                // Autentica este dispositivo no socket com sua identidade, alias, intenção e prova criptográfica
                 val authMsg = JSONObject().apply {
                     put("type", "AUTH")
                     put("identityHash", myIdentityHash)
                     put("alias", myAlias)
                     put("intent", myIntent)
+                    myPublicKeyBase64?.let { put("publicKey", it) }
+                    put("authNonce", authNonce)
+                    if (!authSignature.isNullOrBlank()) {
+                        put("signature", authSignature)
+                    }
                 }
                 webSocket.send(authMsg.toString())
             }
@@ -295,7 +310,8 @@ class PessoasAquiNetworkClient(
                                             intent = p.optString("intent", "QUERO_CONVERSAR"),
                                             isMutual = p.optBoolean("isMutual", false),
                                             isMarkedByMe = p.optBoolean("isMarkedByMe", false),
-                                            isMarkingMe = p.optBoolean("isMarkingMe", false)
+                                            isMarkingMe = p.optBoolean("isMarkingMe", false),
+                                            publicKeyBase64 = p.optString("publicKey").takeIf { it.isNotBlank() }
                                         )
                                     )
                                 }
@@ -311,7 +327,8 @@ class PessoasAquiNetworkClient(
                                     intent = p.optString("intent", "QUERO_CONVERSAR"),
                                     isMutual = p.optBoolean("isMutual", false),
                                     isMarkedByMe = p.optBoolean("isMarkedByMe", false),
-                                    isMarkingMe = p.optBoolean("isMarkingMe", false)
+                                    isMarkingMe = p.optBoolean("isMarkingMe", false),
+                                    publicKeyBase64 = p.optString("publicKey").takeIf { it.isNotBlank() }
                                 )
                                 onPeerOnline?.invoke(peer)
                             }
@@ -464,7 +481,8 @@ class PessoasAquiNetworkClient(
                                 intent = p.optString("intent", "QUERO_CONVERSAR"),
                                 isMutual = p.optBoolean("isMutual", false),
                                 isMarkedByMe = p.optBoolean("isMarkedByMe", false),
-                                isMarkingMe = p.optBoolean("isMarkingMe", false)
+                                isMarkingMe = p.optBoolean("isMarkingMe", false),
+                                publicKeyBase64 = p.optString("publicKey").takeIf { it.isNotBlank() }
                             )
                         )
                     }
@@ -979,7 +997,8 @@ data class RemotePeer(
     val intent: String,
     val isMutual: Boolean = false,
     val isMarkedByMe: Boolean = false,
-    val isMarkingMe: Boolean = false
+    val isMarkingMe: Boolean = false,
+    val publicKeyBase64: String? = null
 )
 
 data class PendingMessage(

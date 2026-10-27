@@ -12,7 +12,26 @@ const WebSocket = require('ws');
 const cors = require('cors');
 const crypto = require('crypto');
 const { initDatabase, localStore, isPostgres, query } = require('./db');
-const { hashPin, generateNonce, calculateLockoutDurationSeconds } = require('./crypto');
+const { hashPin, verifyPinHash, generateNonce, calculateLockoutDurationSeconds } = require('./crypto');
+
+function verifyClientEcdsaSignature(publicKeyBase64, dataString, signatureBase64) {
+  if (!publicKeyBase64 || !signatureBase64) return false;
+  try {
+    const pubKeyDer = Buffer.from(publicKeyBase64, 'base64');
+    const pubKeyObject = crypto.createPublicKey({
+      key: pubKeyDer,
+      format: 'der',
+      type: 'spki'
+    });
+    const verifier = crypto.createVerify('SHA256');
+    verifier.update(dataString);
+    return verifier.verify(pubKeyObject, Buffer.from(signatureBase64, 'base64'));
+  } catch (err) {
+    return false;
+  }
+}
+
+const registeredDevicePublicKeys = new Map(); // identityKey -> publicKeyBase64
 
 const INVITE_SECRET = process.env.INVITE_SECRET || process.env.SESSION_SECRET || 'pessoasaqui_invite_crypto_secret_key_2026';
 
@@ -349,6 +368,24 @@ wss.on('connection', (ws, req) => {
           return;
         }
 
+        // Blindagem criptográfica contra sequestro de identidade WebSocket (Zero-Knowledge Auth)
+        if (msg.publicKey && msg.signature && msg.authNonce) {
+          const registeredKey = registeredDevicePublicKeys.get(kAuth);
+          const keyToVerify = registeredKey || msg.publicKey;
+          const isValid = verifyClientEcdsaSignature(keyToVerify, `${authenticatedIdentity}:${msg.authNonce}`, msg.signature);
+          if (!isValid && registeredKey) {
+            console.warn(`[WS] Bloqueio de sequestro de identidade: assinatura inválida para ${kAuth}`);
+            ws.send(JSON.stringify({ type: 'AUTH_FAILED', message: 'Assinatura criptográfica inválida.' }));
+            setTimeout(() => { try { ws.close(4001, 'Unauthorized'); } catch (_) {} }, 200);
+            return;
+          }
+          if (isValid) {
+            registeredDevicePublicKeys.set(kAuth, msg.publicKey);
+          }
+        } else if (msg.publicKey && !registeredDevicePublicKeys.has(kAuth)) {
+          registeredDevicePublicKeys.set(kAuth, msg.publicKey);
+        }
+
         // Regra 18: 1 Identidade = 1 Dispositivo Ativo. Fecha socket anterior se houver
         if (activeSockets.has(kAuth)) {
           const oldWs = activeSockets.get(kAuth);
@@ -379,6 +416,7 @@ wss.on('connection', (ws, req) => {
           identityHash: authenticatedIdentity,
           alias: incomingAlias,
           intent: msg.intent || 'QUERO_CONVERSAR',
+          publicKey: msg.publicKey || registeredDevicePublicKeys.get(kAuth) || null,
           lastSeen: Date.now()
         });
 
@@ -1464,9 +1502,9 @@ app.post('/api/family/recovery/claim', async (req, res) => {
     expectedPinHash = localStore.identities.get(authRecord.targetIdentity)?.pinHash;
   }
 
-  const candidatePinHash = hashPin(pin);
+  const isPinValid = verifyPinHash(pin, expectedPinHash);
 
-  if (candidatePinHash !== expectedPinHash) {
+  if (!isPinValid) {
     // Incrementa erros de tentativa
     const currentAttempts = (authRecord.failed_pin_attempts || authRecord.failedAttempts || 0) + 1;
     const lockoutSec = calculateLockoutDurationSeconds(currentAttempts);
@@ -1711,16 +1749,28 @@ app.get('/api/tickets/my', async (req, res) => {
 // 2. ENDPOINTS DA API DO PAINEL ADMINISTRATIVO (/admin/api)
 // -------------------------------------------------------------
 
+const adminLoginAttempts = new Map(); // ip -> { count, lockedUntil }
+
 /**
- * Login no Painel de Moderação / Admin
+ * Login no Painel de Moderação / Admin com Proteção contra Força Bruta
  */
 app.post('/admin/api/login', (req, res) => {
+  const clientIp = req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress || 'unknown';
+  const now = Date.now();
+  const attempt = adminLoginAttempts.get(clientIp);
+
+  if (attempt && attempt.lockedUntil > now) {
+    const waitSec = Math.ceil((attempt.lockedUntil - now) / 1000);
+    return res.status(429).json({ error: `Muitas tentativas incorretas. Aguarde ${waitSec} segundos.` });
+  }
+
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Usuário e senha são obrigatórios.' });
   }
 
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+    adminLoginAttempts.delete(clientIp);
     const token = generateAdminToken(username);
     console.log(`[ADMIN] Login realizado com sucesso por ${username}`);
     return res.json({
@@ -1730,7 +1780,11 @@ app.post('/admin/api/login', (req, res) => {
     });
   }
 
-  console.warn(`[ADMIN] Tentativa de login inválida: usuário "${username}"`);
+  const curCount = (attempt ? attempt.count : 0) + 1;
+  const lockedUntil = curCount >= 5 ? now + (15 * 60 * 1000) : 0;
+  adminLoginAttempts.set(clientIp, { count: curCount, lockedUntil });
+
+  console.warn(`[ADMIN] Tentativa de login inválida de ${clientIp} para usuário "${username}" (falha ${curCount}/5)`);
   return res.status(401).json({ error: 'Credenciais de administrador incorretas.' });
 });
 

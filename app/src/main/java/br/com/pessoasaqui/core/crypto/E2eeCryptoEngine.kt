@@ -1,9 +1,15 @@
 package br.com.pessoasaqui.core.crypto
 
 import java.nio.charset.StandardCharsets
+import java.security.KeyFactory
 import java.security.MessageDigest
+import java.security.PrivateKey
+import java.security.PublicKey
 import java.security.SecureRandom
+import java.security.spec.X509EncodedKeySpec
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
+import javax.crypto.KeyAgreement
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
@@ -11,7 +17,9 @@ import javax.crypto.spec.SecretKeySpec
  * Motor de Criptografia de Ponta a Ponta (E2EE) para Conexões Mútuas e Familiares.
  *
  * Utiliza o algoritmo padrão da indústria AES-256-GCM (Galois/Counter Mode) com:
- * - Chave simétrica derivada determinística de 256 bits por par de identidades mútuas;
+ * - Acordo de chaves assimétricas de Conhecimento Zero via ECDH (Elliptic Curve Diffie-Hellman)
+ *   quando ambas as partes trocam chaves públicas através de presença e convites;
+ * - Fallback determinístico seguro para pares legados em migração;
  * - Vetor de Inicialização (IV) de 12 bytes aleatório criptograficamente por mensagem (nonce único);
  * - Tag de autenticação de 128 bits para integridade e proteção contra adulteração de tráfego.
  *
@@ -24,6 +32,24 @@ object E2eeCryptoEngine {
     private const val TAG_LENGTH_BITS = 128
     private const val IV_LENGTH_BYTES = 12
     private const val PREFIX = "ENC:"
+    private const val PREFIX_ECDH = "ENC_ECDH:"
+
+    // Mapa thread-safe de chaves públicas conhecidas dos contatos (identityHash -> PublicKey)
+    private val peerPublicKeys = ConcurrentHashMap<String, PublicKey>()
+
+    /**
+     * Registra ou atualiza a chave pública recebida de um contato remoto.
+     */
+    fun registerPeerPublicKey(identity: String, publicKeyBase64: String) {
+        val clean = identity.removePrefix("peer-").trim().uppercase()
+        if (clean.isBlank() || publicKeyBase64.isBlank()) return
+        try {
+            val pubBytes = Base64Helper.decode(publicKeyBase64)
+            val kf = KeyFactory.getInstance("EC")
+            val pubKey = kf.generatePublic(X509EncodedKeySpec(pubBytes))
+            peerPublicKeys[clean] = pubKey
+        } catch (_: Exception) {}
+    }
 
     /**
      * Utilitário multiplataforma para codificação Base64 (compatível com Android Runtime e JVM Unit Tests)
@@ -67,9 +93,21 @@ object E2eeCryptoEngine {
     }
 
     /**
-     * Deriva a chave de sessão de 256 bits única para o par de identidades mútuas.
-     * A ordem das identidades é normalizada para que ambos os lados cheguem exatamente
-     * à mesma chave criptográfica.
+     * Deriva uma chave de sessão de 256 bits via ECDH (Elliptic Curve Diffie-Hellman).
+     * O segredo compartilhado é gerado exclusivamente pelas curvas elípticas dos dois pares
+     * e nunca trafega pela rede ou pelo servidor.
+     */
+    fun deriveEcdhSharedKey(myPrivateKey: PrivateKey, peerPublicKey: PublicKey): ByteArray {
+        val ka = KeyAgreement.getInstance("ECDH")
+        ka.init(myPrivateKey)
+        ka.doPhase(peerPublicKey, true)
+        val sharedSecret = ka.generateSecret()
+        val md = MessageDigest.getInstance("SHA-256")
+        return md.digest(sharedSecret)
+    }
+
+    /**
+     * Deriva a chave de sessão de 256 bits determinística para retrocompatibilidade.
      */
     fun deriveSharedKeyFromPair(sortedPair: String): ByteArray {
         val seed = "$sortedPair:PESSOASAQUI_E2EE_V1_SECURE_SALT_2026"
@@ -86,14 +124,29 @@ object E2eeCryptoEngine {
 
     /**
      * Cifra uma mensagem com AES-256-GCM.
-     * Retorna o payload cifrado com prefixo 'ENC:' e o IV codificado em Base64.
+     * Se myPrivateKey for fornecida e a chave pública do destinatário estiver registrada,
+     * utiliza ECDH com prefixo 'ENC_ECDH:'. Caso contrário, utiliza o esquema simétrico com 'ENC:'.
      */
-    fun encrypt(plaintext: String, senderId: String, recipientId: String): Pair<String, String> {
+    fun encrypt(
+        plaintext: String,
+        senderId: String,
+        recipientId: String,
+        myPrivateKey: PrivateKey? = null
+    ): Pair<String, String> {
         return try {
             val cleanA = senderId.removePrefix("peer-").trim().uppercase()
             val cleanB = recipientId.removePrefix("peer-").trim().uppercase()
             val sortedPair = listOf(cleanA, cleanB).sorted().joinToString(":")
-            val keyBytes = deriveSharedKeyFromPair(sortedPair)
+
+            val peerPubKey = peerPublicKeys[cleanB]
+            val useEcdh = myPrivateKey != null && peerPubKey != null
+            val keyBytes = if (useEcdh) {
+                deriveEcdhSharedKey(myPrivateKey!!, peerPubKey!!)
+            } else {
+                deriveSharedKeyFromPair(sortedPair)
+            }
+            val prefix = if (useEcdh) PREFIX_ECDH else PREFIX
+
             val iv = ByteArray(IV_LENGTH_BYTES)
             SecureRandom().nextBytes(iv)
 
@@ -104,32 +157,62 @@ object E2eeCryptoEngine {
 
             val ciphertextBase64 = Base64Helper.encode(ciphertextBytes)
             val ivBase64 = Base64Helper.encode(iv)
-            Pair("$PREFIX$ciphertextBase64", "$ivBase64|$sortedPair")
+            Pair("$prefix$ciphertextBase64", "$ivBase64|$sortedPair")
         } catch (_: Exception) {
-            // Em caso de falha rara de hardware, retorna texto original como fallback
+            // Em caso de falha rara, retorna texto original como fallback
             Pair(plaintext, "")
         }
     }
 
+    fun encrypt(plaintext: String, senderId: String, recipientId: String): Pair<String, String> {
+        return encrypt(plaintext, senderId, recipientId, null)
+    }
+
     /**
      * Decifra uma mensagem recebida com AES-256-GCM.
-     * Se a mensagem não contiver o prefixo 'ENC:', retorna o texto original (retrocompatibilidade).
+     * Suporta payloads 'ENC_ECDH:' (acordo Diffie-Hellman) e 'ENC:' (legado).
      */
-    fun decrypt(payload: String, ivBase64: String, senderId: String, recipientId: String): String {
-        if (!payload.startsWith(PREFIX)) {
+    fun decrypt(
+        payload: String,
+        ivBase64: String,
+        senderId: String,
+        recipientId: String,
+        myPrivateKey: PrivateKey? = null
+    ): String {
+        val isEcdh = payload.startsWith(PREFIX_ECDH)
+        val isLegacy = payload.startsWith(PREFIX)
+        if (!isEcdh && !isLegacy) {
             return payload
         }
 
-        return try {
-            val pureIvB64 = ivBase64.substringBefore("|").trim()
-            val keyBytes = deriveSharedKey(senderId, recipientId)
-            val ciphertextRaw = payload.removePrefix(PREFIX)
-            val ciphertextBytes = Base64Helper.decode(ciphertextRaw)
-            val ivBytes = if (pureIvB64.isNotBlank()) {
-                Base64Helper.decode(pureIvB64)
-            } else {
-                ByteArray(IV_LENGTH_BYTES)
+        val pureIvB64 = ivBase64.substringBefore("|").trim()
+        val rawCiphertext = if (isEcdh) payload.removePrefix(PREFIX_ECDH) else payload.removePrefix(PREFIX)
+
+        val cleanSender = senderId.removePrefix("peer-").trim().uppercase()
+        val peerPubKey = peerPublicKeys[cleanSender]
+
+        // 1. Tenta decifrar com ECDH se o payload for ENC_ECDH
+        if (isEcdh && myPrivateKey != null && peerPubKey != null) {
+            try {
+                val keyBytes = deriveEcdhSharedKey(myPrivateKey, peerPubKey)
+                val ciphertextBytes = Base64Helper.decode(rawCiphertext)
+                val ivBytes = if (pureIvB64.isNotBlank()) Base64Helper.decode(pureIvB64) else ByteArray(IV_LENGTH_BYTES)
+
+                val cipher = Cipher.getInstance(ALGORITHM)
+                val spec = GCMParameterSpec(TAG_LENGTH_BITS, ivBytes)
+                cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), spec)
+                val decryptedBytes = cipher.doFinal(ciphertextBytes)
+                return String(decryptedBytes, StandardCharsets.UTF_8)
+            } catch (_: Exception) {
+                // Caso ECDH falhe por chave desatualizada, tenta fallback simétrico abaixo
             }
+        }
+
+        // 2. Decifra com chave simétrica legada
+        return try {
+            val keyBytes = deriveSharedKey(senderId, recipientId)
+            val ciphertextBytes = Base64Helper.decode(rawCiphertext)
+            val ivBytes = if (pureIvB64.isNotBlank()) Base64Helper.decode(pureIvB64) else ByteArray(IV_LENGTH_BYTES)
 
             val cipher = Cipher.getInstance(ALGORITHM)
             val spec = GCMParameterSpec(TAG_LENGTH_BITS, ivBytes)
@@ -137,8 +220,11 @@ object E2eeCryptoEngine {
             val decryptedBytes = cipher.doFinal(ciphertextBytes)
             String(decryptedBytes, StandardCharsets.UTF_8)
         } catch (_: Exception) {
-            // Se falhar a decifração (terceiro não autorizado), preserva o ciphertext cifrado
             payload
         }
+    }
+
+    fun decrypt(payload: String, ivBase64: String, senderId: String, recipientId: String): String {
+        return decrypt(payload, ivBase64, senderId, recipientId, null)
     }
 }

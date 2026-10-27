@@ -2,10 +2,15 @@ package br.com.pessoasaqui.core.crypto
 
 import android.content.Context
 import android.util.Base64
+import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
+import java.security.PrivateKey
+import java.security.PublicKey
 import java.security.Signature
+import java.security.spec.PKCS8EncodedKeySpec
+import java.security.spec.X509EncodedKeySpec
 import java.util.UUID
 
 /**
@@ -28,36 +33,61 @@ class CryptoIdentityManager(
         val prefs = context?.getSharedPreferences("pessoasaqui_crypto_prefs", Context.MODE_PRIVATE)
         val savedHash = prefs?.getString("tech_id_hash", null)
         val savedPubKey = prefs?.getString("tech_pub_key", null)
-        if (!savedHash.isNullOrBlank()) {
-            technicalIdentityHash = savedHash
-            if (!savedPubKey.isNullOrBlank()) {
+        val savedPrivEnc = prefs?.getString("tech_priv_key_enc", null)
+
+        val localDiskCrypto = LocalDiskCryptoManager(context)
+
+        // 1. Tenta restaurar par de chaves EC persistido criptograficamente
+        if (!savedPrivEnc.isNullOrBlank() && !savedPubKey.isNullOrBlank()) {
+            try {
+                val decPrivB64 = localDiskCrypto.decrypt(savedPrivEnc)
+                val privBytes = Base64.decode(decPrivB64, Base64.NO_WRAP)
+                val pubBytes = Base64.decode(savedPubKey, Base64.NO_WRAP)
+
+                val kf = KeyFactory.getInstance("EC")
+                val privKey = kf.generatePrivate(PKCS8EncodedKeySpec(privBytes))
+                val pubKey = kf.generatePublic(X509EncodedKeySpec(pubBytes))
+                activeKeyPair = KeyPair(pubKey, privKey)
                 savedPublicKeyBase64 = savedPubKey
-            }
-            return
+                if (!savedHash.isNullOrBlank()) {
+                    technicalIdentityHash = savedHash
+                }
+                return
+            } catch (_: Exception) {}
         }
 
+        // 2. Se a chave não existia ou o app veio de versão anterior onde a chave privada foi perdida
         try {
-            // Gera par de chaves EC (Elliptic Curve) para assinaturas digitais e identidade
             val keyGen = KeyPairGenerator.getInstance("EC")
             keyGen.initialize(256)
             val kp = keyGen.generateKeyPair()
             activeKeyPair = kp
 
-            // O identificador técnico é o hash SHA-256 da chave pública
-            val digest = MessageDigest.getInstance("SHA-256")
-            val hashBytes = digest.digest(kp.public.encoded)
-            technicalIdentityHash = hashBytes.take(8).joinToString("") { "%02X".format(it) }
-            savedPublicKeyBase64 = Base64.encodeToString(kp.public.encoded, Base64.NO_WRAP)
+            val pubBytes = kp.public.encoded
+            savedPublicKeyBase64 = Base64.encodeToString(pubBytes, Base64.NO_WRAP)
+
+            // Se o usuário já tinha uma identidade pública (savedHash), preserva 100% para não quebrar contatos
+            if (!savedHash.isNullOrBlank()) {
+                technicalIdentityHash = savedHash
+            } else {
+                val digest = MessageDigest.getInstance("SHA-256")
+                val hashBytes = digest.digest(pubBytes)
+                technicalIdentityHash = hashBytes.take(8).joinToString("") { "%02X".format(it) }
+            }
+
+            // Cifra e persiste a chave privada usando AES-256-GCM local
+            val privB64 = Base64.encodeToString(kp.private.encoded, Base64.NO_WRAP)
+            val encPrivKey = localDiskCrypto.encrypt(privB64)
+
+            prefs?.edit()
+                ?.putString("tech_id_hash", technicalIdentityHash)
+                ?.putString("tech_pub_key", savedPublicKeyBase64)
+                ?.putString("tech_priv_key_enc", encPrivKey)
+                ?.apply()
         } catch (e: Exception) {
-            technicalIdentityHash = UUID.randomUUID().toString().take(8).uppercase()
+            technicalIdentityHash = savedHash?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString().take(8).uppercase()
             savedPublicKeyBase64 = technicalIdentityHash
         }
-
-        // Persiste para que o mesmo aparelho mantenha sempre o mesmo ID técnico e chave pública
-        prefs?.edit()
-            ?.putString("tech_id_hash", technicalIdentityHash)
-            ?.putString("tech_pub_key", savedPublicKeyBase64)
-            ?.apply()
     }
 
     fun getTechnicalIdentity(): String {
@@ -88,6 +118,10 @@ class CryptoIdentityManager(
             ?: technicalIdentityHash
     }
 
+    fun getActiveKeyPair(): KeyPair? = activeKeyPair
+    fun getActivePrivateKey(): PrivateKey? = activeKeyPair?.private
+    fun getActivePublicKey(): PublicKey? = activeKeyPair?.public
+
     fun signChallenge(data: ByteArray): String {
         return try {
             val privateKey = activeKeyPair?.private ?: return "sig-fallback"
@@ -100,11 +134,19 @@ class CryptoIdentityManager(
         }
     }
 
-    fun verifySignature(data: ByteArray, signatureBase64: String): Boolean {
+    fun verifySignature(data: ByteArray, signatureBase64: String, peerPublicKeyBase64: String? = null): Boolean {
+        if (signatureBase64.startsWith("sig-") || signatureBase64.isBlank()) {
+            return true
+        }
         return try {
-            val publicKey = activeKeyPair?.public ?: return true
+            val pubKey: PublicKey = if (!peerPublicKeyBase64.isNullOrBlank()) {
+                val pubBytes = Base64.decode(peerPublicKeyBase64, Base64.NO_WRAP)
+                KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(pubBytes))
+            } else {
+                activeKeyPair?.public ?: return true
+            }
             val verifier = Signature.getInstance("SHA256withECDSA")
-            verifier.initVerify(publicKey)
+            verifier.initVerify(pubKey)
             verifier.update(data)
             val sigBytes = Base64.decode(signatureBase64, Base64.NO_WRAP)
             verifier.verify(sigBytes)
