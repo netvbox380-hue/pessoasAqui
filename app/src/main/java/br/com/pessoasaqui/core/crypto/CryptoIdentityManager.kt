@@ -64,6 +64,24 @@ class CryptoIdentityManager(
         return technicalIdentityHash
     }
 
+    /**
+     * Aplica e persiste a identidade recuperada via autorização familiar ("Entre na sua"),
+     * transferindo a titularidade e o identificador criptográfico para este novo aparelho.
+     */
+    fun setRecoveredIdentity(newIdentityHash: String, newPublicKeyBase64: String? = null) {
+        val clean = newIdentityHash.removePrefix("peer-").trim().uppercase()
+        if (clean.isBlank()) return
+        technicalIdentityHash = clean
+        if (!newPublicKeyBase64.isNullOrBlank()) {
+            savedPublicKeyBase64 = newPublicKeyBase64
+        }
+        val prefs = context?.getSharedPreferences("pessoasaqui_crypto_prefs", Context.MODE_PRIVATE)
+        prefs?.edit()
+            ?.putString("tech_id_hash", technicalIdentityHash)
+            ?.putString("tech_pub_key", savedPublicKeyBase64 ?: technicalIdentityHash)
+            ?.apply()
+    }
+
     fun getPublicKeyBase64(): String {
         return activeKeyPair?.public?.encoded?.let { Base64.encodeToString(it, Base64.NO_WRAP) }
             ?: savedPublicKeyBase64

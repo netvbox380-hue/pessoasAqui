@@ -505,19 +505,59 @@ app.get('/', (req, res) => {
   });
 });
 
+let appVersionConfig = {
+  latestVersionCode: parseInt(process.env.APP_LATEST_VERSION_CODE || '21', 10),
+  latestVersionName: process.env.APP_LATEST_VERSION_NAME || '1.2.5',
+  minSupportedVersionCode: parseInt(process.env.APP_MIN_SUPPORTED_VERSION_CODE || '8', 10),
+  forceUpdate: process.env.APP_FORCE_UPDATE === 'true',
+  playStoreUrl: process.env.APP_PLAY_STORE_URL || 'https://play.google.com/store/apps/details?id=br.com.pessoasaqui',
+  releaseNotes: process.env.APP_RELEASE_NOTES || '• Atualização oficial do PessoasAqui disponível na Google Play Store\n• Criptografia ponta a ponta reforçada e melhorias de conectividade em chamadas\n• Backup silencioso e restauração de dados 100% integrados\n• Correções gerais de estabilidade e desempenho'
+};
+
 /**
  * Verificação de Versão do Aplicativo (Google Play Update Check)
+ * Dinâmico e configurável via variáveis de ambiente, banco de dados ou painel admin
  */
-app.get('/api/app/version-check', (req, res) => {
+app.get('/api/app/version-check', async (req, res) => {
+  if (isPostgres()) {
+    try {
+      const vRes = await query(`SELECT value FROM app_config WHERE key = 'version_config'`);
+      if (vRes.rows.length > 0) {
+        const parsed = JSON.parse(vRes.rows[0].value);
+        appVersionConfig = { ...appVersionConfig, ...parsed };
+      }
+    } catch (_) {}
+  }
+
   res.json({
     success: true,
-    latestVersionCode: 15,
-    latestVersionName: '1.2.0',
-    minSupportedVersionCode: 8,
-    forceUpdate: false,
-    playStoreUrl: 'https://play.google.com/store/apps/details?id=br.com.pessoasaqui',
-    releaseNotes: '• Status de mensagens vistas, visto por último e online em tempo real\n• Editor avançado de fotos com formas, pincel, figurinhas e carimbos de conteúdo\n• Envio de fotos direto da câmera\n• Suporte completo a links externos seguros\n• Edição de mensagens enviadas (até 30 min)\n• Caixinha de Mensagens Importantes isolada por conversa'
+    ...appVersionConfig
   });
+});
+
+/**
+ * Atualização da Versão Oficial do App (Permite ao administrador ou CI/CD sincronizar a Play Store)
+ */
+app.post(['/api/app/version-update', '/admin/api/app-version'], async (req, res) => {
+  const { latestVersionCode, latestVersionName, minSupportedVersionCode, forceUpdate, playStoreUrl, releaseNotes } = req.body;
+  if (latestVersionCode !== undefined) appVersionConfig.latestVersionCode = parseInt(latestVersionCode, 10);
+  if (latestVersionName !== undefined) appVersionConfig.latestVersionName = String(latestVersionName);
+  if (minSupportedVersionCode !== undefined) appVersionConfig.minSupportedVersionCode = parseInt(minSupportedVersionCode, 10);
+  if (forceUpdate !== undefined) appVersionConfig.forceUpdate = Boolean(forceUpdate);
+  if (playStoreUrl !== undefined) appVersionConfig.playStoreUrl = String(playStoreUrl);
+  if (releaseNotes !== undefined) appVersionConfig.releaseNotes = String(releaseNotes);
+
+  if (isPostgres()) {
+    try {
+      await query(`CREATE TABLE IF NOT EXISTS app_config (key VARCHAR(64) PRIMARY KEY, value TEXT)`);
+      await query(`INSERT INTO app_config (key, value) VALUES ('version_config', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [JSON.stringify(appVersionConfig)]);
+    } catch (e) {
+      console.warn('[Version] Aviso ao persistir config de versão no PostgreSQL:', e.message);
+    }
+  }
+
+  console.log(`[Version] Nova versão configurada com sucesso: v${appVersionConfig.latestVersionName} (code: ${appVersionConfig.latestVersionCode})`);
+  res.json({ success: true, appVersion: appVersionConfig });
 });
 
 

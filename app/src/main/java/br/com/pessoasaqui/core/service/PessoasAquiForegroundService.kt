@@ -48,6 +48,7 @@ class PessoasAquiForegroundService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private val serviceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
     private var reminderTickerJob: kotlinx.coroutines.Job? = null
+    private var lastVaultCheckMs = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -73,8 +74,15 @@ class PessoasAquiForegroundService : Service() {
                 try {
                     val repo = (application as? PessoasAquiApp)?.repository
                     repo?.triggerDueRemindersNow()
+
+                    // Verifica se há backup silencioso de cofre pendente (a cada 15 minutos)
+                    val now = System.currentTimeMillis()
+                    if (now - lastVaultCheckMs > 15 * 60 * 1000L) {
+                        lastVaultCheckMs = now
+                        repo?.executeSilentBackgroundBackupIfDue()
+                    }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Erro no ticker de lembretes: ${e.message}")
+                    Log.w(TAG, "Erro no ticker de lembretes e cofre: ${e.message}")
                 }
                 delay(30_000L) // Checa a cada 30 segundos
             }

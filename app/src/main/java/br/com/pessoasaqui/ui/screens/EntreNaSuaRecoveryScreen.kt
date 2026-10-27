@@ -300,6 +300,7 @@ fun EntreNaSuaRecoveryScreen(
                                         isLoading = false
                                         if (result.isSuccess) {
                                             isSuccess = true
+                                            pinSecurityManager.registerUserPin(pinInput)
                                             onRecoverySuccess(result.getOrThrow())
                                         } else {
                                             statusMessage = result.exceptionOrNull()?.message
@@ -309,6 +310,7 @@ fun EntreNaSuaRecoveryScreen(
                                     val result = pinSecurityManager.verifyPinForRecovery(recoverySessionId, pinInput)
                                     if (result.isSuccess) {
                                         isSuccess = true
+                                        pinSecurityManager.registerUserPin(pinInput)
                                         onRecoverySuccess(validatedAuth!!.targetIdentityHash)
                                     } else {
                                         statusMessage = result.exceptionOrNull()?.message

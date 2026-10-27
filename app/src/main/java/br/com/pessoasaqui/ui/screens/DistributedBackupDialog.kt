@@ -488,6 +488,7 @@ fun DistributedBackupDialog(
                             return@Button
                         }
                         showPinPromptForBackup = false
+                        repository.pinSecurityManager.registerUserPin(pinInput)
                         isBackingUp = true
                         scope.launch {
                             val result = repository.executeDistributedBackup(pinInput)
@@ -551,6 +552,7 @@ fun DistributedBackupDialog(
                             return@Button
                         }
                         showPinPromptForExport = false
+                        repository.pinSecurityManager.registerUserPin(pinInput)
                         val exportRes = repository.exportLocalBackupJson(pinInput)
                         if (exportRes.isSuccess) {
                             val jsonStr = exportRes.getOrNull() ?: ""
@@ -629,8 +631,9 @@ fun DistributedBackupDialog(
                         val restoreRes = repository.restoreFromLocalBackupJson(restoreTextInput, pinInput)
                         if (restoreRes.isSuccess) {
                             val count = restoreRes.getOrNull() ?: 0
+                            repository.pinSecurityManager.registerUserPin(pinInput)
                             showRestoreFromTextDialog = false
-                            backupStatusMessage = "Sucesso! $count mensagens restauradas com perfeição!"
+                            backupStatusMessage = "Sucesso! $count mensagens e contatos restaurados com perfeição!"
                             Toast.makeText(context, backupStatusMessage, Toast.LENGTH_LONG).show()
                         } else {
                             Toast.makeText(

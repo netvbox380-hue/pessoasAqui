@@ -2,6 +2,7 @@ package br.com.pessoasaqui.core.chat
 
 import android.content.Context
 import android.util.Log
+import br.com.pessoasaqui.core.crypto.LocalDiskCryptoManager
 import br.com.pessoasaqui.domain.model.ChatMessage
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -9,14 +10,14 @@ import java.io.File
 
 /**
  * Gerenciador de Persistência em Disco para Mensagens do Chat.
- * Garante que todas as mensagens enviadas e recebidas (privadas ou do mural local)
- * fiquem gravadas permanentemente e nunca desapareçam ou zerem quando o app for
- * encerrado em segundo plano no Android 14 ou reiniciar o aparelho.
+ * Garante que todas as mensagens enviadas e recebidas fiquem gravadas
+ * permanentemente com criptografia militar AES-256-GCM em repouso no disco.
  */
 class ChatMessagePersistenceManager(
     private val context: Context? = null,
     baseDir: File? = null
 ) {
+    private val diskCrypto = LocalDiskCryptoManager(context)
 
     private val rootDir: File? = when {
         baseDir != null -> File(baseDir, CHATS_DIR_NAME)
@@ -81,9 +82,10 @@ class ChatMessagePersistenceManager(
             // Limita histórico a 500 mensagens mais recentes por contato para otimização de espaço
             val toSave = if (messages.size > 500) messages.takeLast(500) else messages
             val serialized = json.encodeToString(ListSerializer(ChatMessage.serializer()), toSave)
+            val encrypted = diskCrypto.encrypt(serialized)
 
             val tempFile = File(targetFile.parentFile, "${targetFile.name}.tmp")
-            tempFile.writeText(serialized, Charsets.UTF_8)
+            tempFile.writeText(encrypted, Charsets.UTF_8)
             if (targetFile.exists()) {
                 targetFile.delete()
             }
@@ -109,7 +111,8 @@ class ChatMessagePersistenceManager(
                     .removePrefix(PEER_FILE_PREFIX)
                     .removeSuffix(FILE_EXT)
 
-                val content = file.readText(Charsets.UTF_8)
+                val raw = file.readText(Charsets.UTF_8)
+                val content = diskCrypto.decrypt(raw)
                 val msgList = json.decodeFromString(ListSerializer(ChatMessage.serializer()), content)
                 val sanitizedList = msgList.filter { it.text != "[READ_ACK]" && !it.text.startsWith("[MSG_EDIT:") && !it.text.startsWith("[MSG_DELETE:") }
                 if (sanitizedList.isNotEmpty()) {
@@ -124,16 +127,17 @@ class ChatMessagePersistenceManager(
     }
 
     /**
-     * Salva as mensagens do Mural Local (10m).
+     * Salva as mensagens do Mural Local (10m) com criptografia em repouso.
      */
     fun saveLocalMural(messages: List<ChatMessage>) {
         val targetFile = getLocalMuralFile() ?: return
         try {
             val toSave = if (messages.size > 200) messages.takeLast(200) else messages
             val serialized = json.encodeToString(ListSerializer(ChatMessage.serializer()), toSave)
+            val encrypted = diskCrypto.encrypt(serialized)
 
             val tempFile = File(targetFile.parentFile, "${targetFile.name}.tmp")
-            tempFile.writeText(serialized, Charsets.UTF_8)
+            tempFile.writeText(encrypted, Charsets.UTF_8)
             if (targetFile.exists()) {
                 targetFile.delete()
             }
@@ -144,14 +148,15 @@ class ChatMessagePersistenceManager(
     }
 
     /**
-     * Carrega as mensagens do Mural Local salvas em disco.
+     * Carrega as mensagens do Mural Local salvas em disco com suporte a decifração.
      */
     fun loadLocalMural(): List<ChatMessage> {
         val file = getLocalMuralFile() ?: return emptyList()
         if (!file.exists()) return emptyList()
 
         return try {
-            val content = file.readText(Charsets.UTF_8)
+            val raw = file.readText(Charsets.UTF_8)
+            val content = diskCrypto.decrypt(raw)
             json.decodeFromString(ListSerializer(ChatMessage.serializer()), content)
         } catch (e: Exception) {
             Log.w(TAG, "Falha ao ler mural local em disco: ${e.message}")

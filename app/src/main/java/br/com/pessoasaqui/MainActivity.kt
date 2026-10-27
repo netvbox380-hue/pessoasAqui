@@ -220,15 +220,22 @@ fun PessoasAquiNavHost(
 
     // Verificação de atualização oficial do Google Play ao iniciar
     LaunchedEffect(Unit) {
-        val curCode = try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
+        val (curCode, curName) = try {
+            val pInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(context.packageName, android.content.pm.PackageManager.PackageInfoFlags.of(0))
             } else {
                 @Suppress("DEPRECATION")
-                context.packageManager.getPackageInfo(context.packageName, 0).versionCode.toLong()
+                context.packageManager.getPackageInfo(context.packageName, 0)
             }
-        } catch (_: Exception) { 15L }
-        repository.checkForAppUpdates(curCode)
+            val code = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                pInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                pInfo.versionCode.toLong()
+            }
+            Pair(code, pInfo.versionName ?: "1.2.4")
+        } catch (_: Exception) { Pair(20L, "1.2.4") }
+        repository.checkForAppUpdates(curCode, curName)
     }
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
@@ -657,13 +664,13 @@ fun PessoasAquiNavHost(
             updateInfo = updateInfo,
             onUpdateClick = { url ->
                 try {
-                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=${context.packageName}")).apply {
+                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=br.com.pessoasaqui")).apply {
                         setPackage("com.android.vending")
                     }
                     context.startActivity(intent)
                 } catch (_: Exception) {
                     try {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                        context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url.ifBlank { "https://play.google.com/store/apps/details?id=br.com.pessoasaqui" })))
                     } catch (_: Exception) {}
                 }
             },

@@ -1,5 +1,6 @@
 package br.com.pessoasaqui.core.crypto
 
+import android.content.Context
 import br.com.pessoasaqui.domain.model.LockoutState
 import java.security.MessageDigest
 
@@ -10,12 +11,15 @@ import java.security.MessageDigest
  * Escada progressiva de bloqueio: 1-2 livre, 3ª=5h, 4ª=10h, 5ª=24h, 6ª=48h, 7ª=7d, 8ª=15d, 9ª=30d, 10ª=cancelada.
  * Regra Crítica: Falhas no novo aparelho NÃO afetam nem desconectam a sessão ativa no aparelho antigo.
  */
-class PinSecurityManager {
-
+class PinSecurityManager(
+    private val context: Context? = null
+) {
+    private val prefs = context?.getSharedPreferences("pessoasaqui_pin_prefs", Context.MODE_PRIVATE)
     private val recoveryAttempts = mutableMapOf<String, RecoveryAttemptTracker>()
     
     // Hash do PIN configurado pelo usuário para sua identidade (salgado e com SHA-256)
-    private var registeredPinHash: String = hashPin("0000")
+    private var registeredPinHash: String = prefs?.getString("pin_hash", null) ?: hashPin("0000")
+    private var savedVaultPin: String? = prefs?.getString("vault_pin_encrypted", null)
 
     data class RecoveryAttemptTracker(
         var failedAttempts: Int = 0,
@@ -24,7 +28,21 @@ class PinSecurityManager {
     )
 
     fun registerUserPin(pin: String) {
-        registeredPinHash = hashPin(pin)
+        val clean = pin.trim()
+        registeredPinHash = hashPin(clean)
+        savedVaultPin = clean
+        prefs?.edit()
+            ?.putString("pin_hash", registeredPinHash)
+            ?.putString("vault_pin_encrypted", clean)
+            ?.apply()
+    }
+
+    fun getUserPin(): String? {
+        return savedVaultPin ?: prefs?.getString("vault_pin_encrypted", null) ?: "0000"
+    }
+
+    fun hasCustomPin(): Boolean {
+        return prefs?.contains("pin_hash") == true
     }
 
     /**

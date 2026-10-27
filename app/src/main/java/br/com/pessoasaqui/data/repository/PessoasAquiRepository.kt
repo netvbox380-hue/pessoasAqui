@@ -22,6 +22,8 @@ import br.com.pessoasaqui.core.subscription.SubscriptionTier
 import br.com.pessoasaqui.core.subscription.PlayBillingManager
 import br.com.pessoasaqui.core.backup.P2PVaultManager
 import br.com.pessoasaqui.core.backup.EncryptedVaultPackage
+import br.com.pessoasaqui.core.backup.VaultContact
+import br.com.pessoasaqui.core.crypto.LocalDiskCryptoManager
 import br.com.pessoasaqui.domain.model.RecurringReminder
 import android.util.Base64
 import br.com.pessoasaqui.domain.model.ActiveCallState
@@ -54,7 +56,7 @@ import java.util.UUID
 class PessoasAquiRepository(
     val context: Context? = null,
     val cryptoIdentityManager: CryptoIdentityManager = CryptoIdentityManager(context),
-    val pinSecurityManager: PinSecurityManager = PinSecurityManager(),
+    val pinSecurityManager: PinSecurityManager = PinSecurityManager(context),
     val deviceSessionManager: DeviceSessionManager = DeviceSessionManager(),
     val proximitySimulator: ProximitySimulator = ProximitySimulator(),
     val moderationManager: ContentModerationManager = ContentModerationManager(),
@@ -62,6 +64,7 @@ class PessoasAquiRepository(
     val networkClient: PessoasAquiNetworkClient = PessoasAquiNetworkClient(),
     val distanceEstimator: DistanceEstimator = DistanceEstimator()
 ) {
+    val diskCrypto = LocalDiskCryptoManager(context)
     private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.IO)
 
@@ -344,20 +347,22 @@ class PessoasAquiRepository(
     private fun loadSavedContactsFromPrefs(): List<NearbyPerson> {
         val list = mutableListOf<NearbyPerson>()
 
-        // 1. Carrega do arquivo persistente dedicado no disco permanente
+        // 1. Carrega do arquivo persistente dedicado no disco permanente com decifração AES-256
         try {
             val file = context?.filesDir?.resolve("pessoasaqui_contacts/mutual_contacts.json")
             if (file != null && file.exists()) {
-                val jsonStr = file.readText(Charsets.UTF_8)
+                val raw = file.readText(Charsets.UTF_8)
+                val jsonStr = diskCrypto.decrypt(raw)
                 parseContactsJson(jsonStr, list)
             }
         } catch (e: Exception) {
             Log.e("PessoasAqui", "Erro ao carregar contatos de arquivo dedicado", e)
         }
 
-        // 2. Carrega de SharedPreferences se houver
-        val jsonStr = prefs?.getString("saved_contacts_v2", null)
-        if (!jsonStr.isNullOrBlank()) {
+        // 2. Carrega de SharedPreferences se houver com decifração AES-256
+        val rawPref = prefs?.getString("saved_contacts_v2", null)
+        if (!rawPref.isNullOrBlank()) {
+            val jsonStr = diskCrypto.decrypt(rawPref)
             parseContactsJson(jsonStr, list)
         }
 
@@ -437,15 +442,16 @@ class PessoasAquiRepository(
             }
 
             val jsonOutput = array.toString()
-            prefs?.edit()?.putString("saved_contacts_v2", jsonOutput)?.apply()
+            val encryptedOutput = diskCrypto.encrypt(jsonOutput)
+            prefs?.edit()?.putString("saved_contacts_v2", encryptedOutput)?.apply()
 
-            // Salva também no arquivo dedicado no disco físico permanente
+            // Salva também no arquivo dedicado no disco físico permanente com criptografia AES-256
             context?.let { ctx ->
                 try {
                     val dir = ctx.filesDir.resolve("pessoasaqui_contacts")
                     if (!dir.exists()) dir.mkdirs()
                     val file = dir.resolve("mutual_contacts.json")
-                    file.writeText(jsonOutput, Charsets.UTF_8)
+                    file.writeText(encryptedOutput, Charsets.UTF_8)
                 } catch (e: Exception) {
                     Log.e("PessoasAqui", "Erro ao gravar contatos no arquivo físico de disco", e)
                 }
@@ -2179,7 +2185,70 @@ class PessoasAquiRepository(
     }
 
     fun transferIdentityToThisDevice(recoveredIdentityHash: String) {
+        val cleanHash = cleanId(recoveredIdentityHash)
+        if (cleanHash.isBlank()) return
+
+        // 1. Atualiza e persiste a identidade criptográfica neste aparelho
+        cryptoIdentityManager.setRecoveredIdentity(cleanHash)
         deviceSessionManager.resetSession()
+
+        // 2. Registra a nova identidade no backend (Render / Supabase)
+        registerIdentityOnBackend()
+
+        // 3. Reconecta o WebSocket em tempo real com a nova identidade
+        networkClient.disconnectSocket()
+        networkClient.startRealtimeSocket(
+            myIdentityHash = cleanHash,
+            myAlias = _currentAlias.value,
+            myIntent = _currentIntent.value.name,
+            onE2eeMessageReceived = { senderHash, ciphertext, ivNonce, messageId ->
+                processIncomingPayload(senderHash, "Contato", ciphertext, ivNonce, messageId)
+            },
+            onSessionRevoked = { _ ->
+                deviceSessionManager.revokeCurrentDeviceSession()
+            },
+            onPresenceSync = { remotePeers ->
+                handleRemotePresenceSync(remotePeers)
+            },
+            onPeerOnline = { peer ->
+                handlePeerOnline(peer)
+            },
+            onPeerOffline = { peerHash ->
+                handlePeerOffline(peerHash)
+            },
+            onMutualConnection = { partnerId, _ ->
+                val cleanPartner = cleanId(partnerId)
+                savedMutualPeople.add(cleanPartner)
+                savedMarkedPeople.add(cleanPartner)
+                savedMarkingMePeople.add(cleanPartner)
+                saveConnectionsToPrefs()
+                saveSavedContactsToPrefs()
+                updateUnifiedData()
+            },
+            onPeerMarkedYou = { markerId, _ ->
+                savedMarkingMePeople.add(cleanId(markerId))
+                saveConnectionsToPrefs()
+            }
+        )
+
+        // 4. Sincroniza e recarrega os contatos mútuos desta identidade no backend
+        scope.launch {
+            try {
+                val statusResult = networkClient.fetchConnectionStatus(cleanHash)
+                statusResult.getOrNull()?.let { st ->
+                    var changed = false
+                    st.mutual.forEach { if (savedMutualPeople.add(cleanId(it))) changed = true }
+                    st.markedByMe.forEach { if (savedMarkedPeople.add(cleanId(it))) changed = true }
+                    st.markingMe.forEach { if (savedMarkingMePeople.add(cleanId(it))) changed = true }
+                    if (changed) {
+                        saveConnectionsToPrefs()
+                        updateUnifiedData()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Aviso ao sincronizar conexões da identidade recuperada: ${e.message}")
+            }
+        }
     }
 
     // ================= Lembretes e Mensagens Recorrentes =================
@@ -2307,17 +2376,32 @@ class PessoasAquiRepository(
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
 
+        if (pin.isNotBlank()) {
+            pinSecurityManager.registerUserPin(pin)
+        }
+
         val privateChats = cp.loadAllPrivateChats()
         val localMural = cp.loadLocalMural()
         val myIdentity = cryptoIdentityManager.getTechnicalIdentity()
         val myAlias = _currentAlias.value
+
+        val myContacts = loadSavedContactsFromPrefs().map { p ->
+            VaultContact(
+                id = cleanId(p.technicalIdentityHash.ifBlank { p.id }),
+                alias = p.alias,
+                isMutual = p.isMutualConnection,
+                isFamily = p.isFamily,
+                familyRole = p.familyRole?.name
+            )
+        }
 
         val vault = vm.createVaultPackage(
             pin = pin,
             ownerIdentityHash = myIdentity,
             ownerAlias = myAlias,
             privateChats = privateChats,
-            localMural = localMural
+            localMural = localMural,
+            contacts = myContacts
         )
 
         val jsonStr = vm.serializeVaultToJson(vault)
@@ -2410,6 +2494,9 @@ class PessoasAquiRepository(
         cp.saveLocalMural(content.localMural)
         proximitySimulator.loadPersistedMessages()
 
+        // Restaura contatos preservados no cofre
+        restoreVaultContacts(content.contacts)
+
         val totalMsgs = content.privateChats.values.sumOf { it.size } + content.localMural.size
         return Result.success(totalMsgs)
     }
@@ -2421,17 +2508,32 @@ class PessoasAquiRepository(
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
 
+        if (pin.isNotBlank()) {
+            pinSecurityManager.registerUserPin(pin)
+        }
+
         val privateChats = cp.loadAllPrivateChats()
         val localMural = cp.loadLocalMural()
         val myIdentity = cryptoIdentityManager.getTechnicalIdentity()
         val myAlias = _currentAlias.value
+
+        val myContacts = loadSavedContactsFromPrefs().map { p ->
+            VaultContact(
+                id = cleanId(p.technicalIdentityHash.ifBlank { p.id }),
+                alias = p.alias,
+                isMutual = p.isMutualConnection,
+                isFamily = p.isFamily,
+                familyRole = p.familyRole?.name
+            )
+        }
 
         val vault = vm.createVaultPackage(
             pin = pin,
             ownerIdentityHash = myIdentity,
             ownerAlias = myAlias,
             privateChats = privateChats,
-            localMural = localMural
+            localMural = localMural,
+            contacts = myContacts
         )
 
         val jsonStr = vm.serializeVaultToJson(vault)
@@ -2453,6 +2555,10 @@ class PessoasAquiRepository(
             return Result.failure(restoreResult.exceptionOrNull() ?: Exception("PIN incorreto ou falha na descriptografia."))
         }
 
+        if (pin.isNotBlank()) {
+            pinSecurityManager.registerUserPin(pin)
+        }
+
         val content = restoreResult.getOrThrow()
         for ((peerId, msgs) in content.privateChats) {
             cp.savePrivateChat(peerId, msgs)
@@ -2460,8 +2566,78 @@ class PessoasAquiRepository(
         cp.saveLocalMural(content.localMural)
         proximitySimulator.loadPersistedMessages()
 
+        // Restaura contatos preservados no cofre
+        restoreVaultContacts(content.contacts)
+
         val totalMsgs = content.privateChats.values.sumOf { it.size } + content.localMural.size
         return Result.success(totalMsgs)
+    }
+
+    private fun restoreVaultContacts(contacts: List<VaultContact>) {
+        if (contacts.isEmpty()) return
+        val restoredPeople = mutableListOf<NearbyPerson>()
+        for (c in contacts) {
+            val cid = cleanId(c.id)
+            if (cid.isBlank()) continue
+            val fRole = c.familyRole?.let { roleName ->
+                try { FamilyRole.valueOf(roleName) } catch (_: Exception) { null }
+            }
+            savedMutualPeople.add(cid)
+            savedMarkedPeople.add(cid)
+            savedMarkingMePeople.add(cid)
+            restoredPeople.add(
+                NearbyPerson(
+                    id = cid,
+                    technicalIdentityHash = cid,
+                    alias = c.alias,
+                    estimatedDistanceMeters = 500.0,
+                    proximityLabel = if (c.isFamily) "Família • Ilimitado" else "Conexão Mútua • Ilimitada",
+                    isMarkedByMe = true,
+                    isMarkingMe = true,
+                    isMutualConnection = c.isMutual,
+                    isFamily = c.isFamily,
+                    familyRole = fRole,
+                    isPhotoVisible = true,
+                    lastSeenEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+        saveConnectionsToPrefs()
+        saveSavedContactsToPrefs()
+        val cur = _realDiscoveredPeople.value.toMutableList()
+        restoredPeople.forEach { rp ->
+            val idx = cur.indexOfFirst { cleanId(it.technicalIdentityHash) == cleanId(rp.technicalIdentityHash) }
+            if (idx != -1) cur[idx] = rp else cur.add(rp)
+        }
+        _realDiscoveredPeople.value = cur
+        updateUnifiedData()
+
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        scope.launch {
+            try {
+                networkClient.syncMutualConnections(myId, savedMutualPeople.toList())
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Executa o backup silencioso em segundo plano se o intervalo de replicação estiver vencido.
+     * Utiliza o PIN configurado pelo usuário sem interromper sua navegação.
+     */
+    fun executeSilentBackgroundBackupIfDue() {
+        val vm = p2pVaultManager ?: return
+        if (!vm.isBackupDue()) return
+        val pin = pinSecurityManager.getUserPin() ?: return
+        scope.launch {
+            try {
+                val res = executeDistributedBackup(pin)
+                if (res.isSuccess) {
+                    Log.i("PessoasAqui", "Backup silencioso em segundo plano executado com sucesso: ${res.getOrNull()} familiares replicados.")
+                }
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Aviso no backup silencioso automático: ${e.message}")
+            }
+        }
     }
 
     /**
@@ -2698,19 +2874,39 @@ class PessoasAquiRepository(
         return _contactTags.value.filter { tagIds.contains(it.id) }
     }
 
-    fun checkForAppUpdates(currentVersionCode: Long) {
+    fun checkForAppUpdates(currentVersionCode: Long, currentVersionName: String = "1.2.4") {
         scope.launch {
             try {
                 val res = networkClient.checkAppVersion()
                 if (res.isSuccess) {
                     val info = res.getOrNull()
-                    if (info != null && info.latestVersionCode > currentVersionCode) {
-                        _availableAppUpdate.value = info
+                    if (info != null) {
+                        val isCodeNewer = info.latestVersionCode > currentVersionCode
+                        val isNameNewer = isVersionNameGreater(info.latestVersionName, currentVersionName)
+                        if (isCodeNewer || isNameNewer) {
+                            _availableAppUpdate.value = info
+                        }
                     }
                 }
             } catch (e: Exception) {
                 Log.w("PessoasAquiRepository", "Falha ao verificar atualização: ${e.message}")
             }
+        }
+    }
+
+    private fun isVersionNameGreater(latest: String, current: String): Boolean {
+        return try {
+            val cleanL = latest.trim().split(".").mapNotNull { it.toIntOrNull() }
+            val cleanC = current.trim().split(".").mapNotNull { it.toIntOrNull() }
+            for (i in 0 until maxOf(cleanL.size, cleanC.size)) {
+                val l = cleanL.getOrElse(i) { 0 }
+                val c = cleanC.getOrElse(i) { 0 }
+                if (l > c) return true
+                if (l < c) return false
+            }
+            false
+        } catch (_: Exception) {
+            false
         }
     }
 

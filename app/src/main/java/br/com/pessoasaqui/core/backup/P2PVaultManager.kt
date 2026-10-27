@@ -45,12 +45,25 @@ data class EncryptedVaultPackage(
 )
 
 /**
- * Estrutura serializável para empacotamento completo de conversas.
+ * Contato salvo para inclusão no Cofre Criptografado.
+ */
+@Serializable
+data class VaultContact(
+    val id: String,
+    val alias: String,
+    val isMutual: Boolean = true,
+    val isFamily: Boolean = false,
+    val familyRole: String? = null
+)
+
+/**
+ * Estrutura serializável para empacotamento completo de conversas e contatos.
  */
 @Serializable
 data class VaultContentData(
     val privateChats: Map<String, List<ChatMessage>>,
     val localMural: List<ChatMessage>,
+    val contacts: List<VaultContact> = emptyList(),
     val exportTimestampEpochMs: Long = System.currentTimeMillis()
 )
 
@@ -238,19 +251,21 @@ class P2PVaultManager(
     }
 
     /**
-     * Cria o pacote completo do Cofre Criptografado a partir de conversas locais.
+     * Cria o pacote completo do Cofre Criptografado a partir de conversas e contatos locais.
      */
     fun createVaultPackage(
         pin: String,
         ownerIdentityHash: String,
         ownerAlias: String,
         privateChats: Map<String, List<ChatMessage>>,
-        localMural: List<ChatMessage>
+        localMural: List<ChatMessage>,
+        contacts: List<VaultContact> = emptyList()
     ): EncryptedVaultPackage {
         val totalMsgs = privateChats.values.sumOf { it.size } + localMural.size
         val content = VaultContentData(
             privateChats = privateChats,
             localMural = localMural,
+            contacts = contacts,
             exportTimestampEpochMs = System.currentTimeMillis()
         )
 
