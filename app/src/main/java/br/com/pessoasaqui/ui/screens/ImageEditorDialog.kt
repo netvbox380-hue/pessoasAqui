@@ -143,14 +143,54 @@ sealed class CanvasShape {
         override fun contains(touch: Offset): Boolean {
             val d = distanceToSegment(touch, start, end)
             val endDist = (touch - end).getDistance()
-            return d <= (strokeWidth + 30f) || endDist <= 50f
+            val startDist = (touch - start).getDistance()
+            return d <= (strokeWidth + 30f) || endDist <= 65f || startDist <= 65f
         }
         override fun moveBy(delta: Offset) {
             start = Offset(start.x + delta.x, start.y + delta.y)
             end = Offset(end.x + delta.x, end.y + delta.y)
         }
+
+        fun rotateBy(degrees: Float) {
+            val midX = (start.x + end.x) / 2f
+            val midY = (start.y + end.y) / 2f
+            val rad = Math.toRadians(degrees.toDouble())
+            val cosA = cos(rad)
+            val sinA = sin(rad)
+            fun rot(p: Offset): Offset {
+                val dx = p.x - midX
+                val dy = p.y - midY
+                return Offset(
+                    (midX + dx * cosA - dy * sinA).toFloat(),
+                    (midY + dx * sinA + dy * cosA).toFloat()
+                )
+            }
+            start = rot(start)
+            end = rot(end)
+        }
+
+        fun getAngleDegrees(): Float {
+            val rad = atan2((end.y - start.y).toDouble(), (end.x - start.x).toDouble())
+            var deg = Math.toDegrees(rad).toFloat()
+            if (deg < 0) deg += 360f
+            return deg
+        }
+
+        fun setAngleDegrees(targetDegrees: Float) {
+            val midX = (start.x + end.x) / 2f
+            val midY = (start.y + end.y) / 2f
+            val len = (end - start).getDistance().coerceAtLeast(60f)
+            val half = len / 2f
+            val rad = Math.toRadians(targetDegrees.toDouble())
+            val dx = (half * cos(rad)).toFloat()
+            val dy = (half * sin(rad)).toFloat()
+            start = Offset(midX - dx, midY - dy)
+            end = Offset(midX + dx, midY + dy)
+        }
     }
 }
+
+enum class ArrowDragPart { NONE, TIP, BASE, BODY }
 
 private fun distanceToSegment(p: Offset, a: Offset, b: Offset): Float {
     val l2 = (b - a).getDistanceSquared()
@@ -199,6 +239,7 @@ fun ImageEditorDialog(
     var shapeColor by remember { mutableStateOf(Color(0xFF00E676)) } // Padrão Verde Esmeralda vibrante
     var isShapeFilled by remember { mutableStateOf(true) } // Padrão preenchido completamente conforme solicitado!
     var shapesRevision by remember { mutableIntStateOf(0) }
+    var activeArrowDragPart by remember { mutableStateOf(ArrowDragPart.NONE) }
 
     // Dimensões da imagem desenhada
     var drawOffset by remember { mutableStateOf(Offset.Zero) }
@@ -726,7 +767,7 @@ fun ImageEditorDialog(
                                         onDragCancel = { activeCropHandle = CropDragHandle.NONE }
                                     )
                                 } else {
-                                    // Mover Formas Livremente para qualquer lugar da imagem
+                                    // Mover Formas Livremente e Girar Seta 360° com arrasto na ponta ou na base
                                     detectDragGestures(
                                         onDragStart = { touchOffset ->
                                             val touched = shapes.findLast { it.contains(touchOffset) }
@@ -735,18 +776,40 @@ fun ImageEditorDialog(
                                                 // Sincroniza cor e estilo com a forma tocada
                                                 shapeColor = touched.color
                                                 isShapeFilled = touched.isFilled
+                                                if (touched is CanvasShape.Arrow) {
+                                                    val distEnd = (touchOffset - touched.end).getDistance()
+                                                    val distStart = (touchOffset - touched.start).getDistance()
+                                                    activeArrowDragPart = when {
+                                                        distEnd <= 70f -> ArrowDragPart.TIP
+                                                        distStart <= 70f -> ArrowDragPart.BASE
+                                                        else -> ArrowDragPart.BODY
+                                                    }
+                                                } else {
+                                                    activeArrowDragPart = ArrowDragPart.NONE
+                                                }
                                             } else {
                                                 selectedShapeId = null
+                                                activeArrowDragPart = ArrowDragPart.NONE
                                             }
                                         },
                                         onDrag = { change, dragAmount ->
                                             change.consume()
                                             selectedShapeId?.let { sId ->
                                                 val s = shapes.find { it.id == sId }
-                                                s?.moveBy(dragAmount)
+                                                if (s is CanvasShape.Arrow && activeArrowDragPart != ArrowDragPart.BODY && activeArrowDragPart != ArrowDragPart.NONE) {
+                                                    if (activeArrowDragPart == ArrowDragPart.TIP) {
+                                                        s.end = Offset(s.end.x + dragAmount.x, s.end.y + dragAmount.y)
+                                                    } else if (activeArrowDragPart == ArrowDragPart.BASE) {
+                                                        s.start = Offset(s.start.x + dragAmount.x, s.start.y + dragAmount.y)
+                                                    }
+                                                } else {
+                                                    s?.moveBy(dragAmount)
+                                                }
                                                 shapesRevision++
                                             }
-                                        }
+                                        },
+                                        onDragEnd = { activeArrowDragPart = ArrowDragPart.NONE },
+                                        onDragCancel = { activeArrowDragPart = ArrowDragPart.NONE }
                                     )
                                 }
                             }
@@ -832,6 +895,28 @@ fun ImageEditorDialog(
                                         close()
                                     }
                                     drawPath(path = path, color = shape.color)
+
+                                    if (isSelected) {
+                                        // Alça de rotação 360° interativa na ponta da seta
+                                        drawCircle(
+                                            color = Color.White,
+                                            radius = 14.dp.toPx(),
+                                            center = shape.end,
+                                            style = Stroke(width = 2.dp.toPx())
+                                        )
+                                        drawCircle(
+                                            color = EmeraldGreen,
+                                            radius = 6.dp.toPx(),
+                                            center = shape.end
+                                        )
+                                        // Alça na base da seta
+                                        drawCircle(
+                                            color = Color.White.copy(alpha = 0.85f),
+                                            radius = 8.dp.toPx(),
+                                            center = shape.start,
+                                            style = Stroke(width = 2.dp.toPx())
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1014,6 +1099,73 @@ fun ImageEditorDialog(
                                                 shapesRevision++
                                             }
                                     )
+                                }
+
+                                // Controles Interativos de Rotação 360° para Seta
+                                val selectedArrow = shapes.find { it.id == selectedShapeId } as? CanvasShape.Arrow
+                                if (selectedArrow != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = EmeraldGreen.copy(alpha = 0.2f),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.5f))
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "↻ 360° (${selectedArrow.getAngleDegrees().toInt()}°)",
+                                                color = EmeraldGreen,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = Color.White.copy(alpha = 0.15f),
+                                                modifier = Modifier.size(26.dp).clickable {
+                                                    selectedArrow.rotateBy(-15f)
+                                                    shapesRevision++
+                                                }
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(Icons.Default.RotateLeft, contentDescription = "-15°", tint = Color.White, modifier = Modifier.size(16.dp))
+                                                }
+                                            }
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = Color.White.copy(alpha = 0.15f),
+                                                modifier = Modifier.size(26.dp).clickable {
+                                                    selectedArrow.rotateBy(15f)
+                                                    shapesRevision++
+                                                }
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(Icons.Default.RotateRight, contentDescription = "+15°", tint = Color.White, modifier = Modifier.size(16.dp))
+                                                }
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = Color.White.copy(alpha = 0.15f),
+                                                modifier = Modifier.clickable {
+                                                    selectedArrow.rotateBy(45f)
+                                                    shapesRevision++
+                                                }
+                                            ) {
+                                                Text("+45°", color = EmeraldGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = Color.White.copy(alpha = 0.15f),
+                                                modifier = Modifier.clickable {
+                                                    selectedArrow.rotateBy(180f)
+                                                    shapesRevision++
+                                                }
+                                            ) {
+                                                Text("180°", color = EmeraldGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
+                                            }
+                                        }
+                                    }
                                 }
 
                                 // Excluir Forma Selecionada

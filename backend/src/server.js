@@ -1,4 +1,10 @@
 require('dotenv').config();
+process.on('uncaughtException', (err) => {
+  console.error('[SERVER RESILIENCE] Uncaught Exception interceptada:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[SERVER RESILIENCE] Unhandled Rejection interceptada:', reason);
+});
 const path = require('path');
 const express = require('express');
 const http = require('http');
@@ -430,13 +436,13 @@ wss.on('connection', (ws, req) => {
             if (kPeer && kPeer !== kAuth) {
               localStore.connections.set(`${kAuth}->${kPeer}`, { fromIdentity: authenticatedIdentity, toIdentity: peerId, isMutual: true });
               localStore.connections.set(`${kPeer}->${kAuth}`, { fromIdentity: peerId, toIdentity: authenticatedIdentity, isMutual: true });
-              if (isPostgresHealthy) {
-                pgPool.query(
+              if (isPostgres()) {
+                query(
                   `INSERT INTO connections (from_identity, to_identity, is_mutual)
                    VALUES ($1, $2, TRUE), ($2, $1, TRUE)
                    ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = TRUE`,
                   [authenticatedIdentity, peerId]
-                ).catch(() => {});
+                ).catch((err) => console.warn('[DB] Erro ao sincronizar conexões mútuas:', err.message));
               }
             }
           }
@@ -506,8 +512,8 @@ app.get('/', (req, res) => {
 });
 
 let appVersionConfig = {
-  latestVersionCode: parseInt(process.env.APP_LATEST_VERSION_CODE || '21', 10),
-  latestVersionName: process.env.APP_LATEST_VERSION_NAME || '1.2.5',
+  latestVersionCode: parseInt(process.env.APP_LATEST_VERSION_CODE || '22', 10),
+  latestVersionName: process.env.APP_LATEST_VERSION_NAME || '1.2.6',
   minSupportedVersionCode: parseInt(process.env.APP_MIN_SUPPORTED_VERSION_CODE || '8', 10),
   forceUpdate: process.env.APP_FORCE_UPDATE === 'true',
   playStoreUrl: process.env.APP_PLAY_STORE_URL || 'https://play.google.com/store/apps/details?id=br.com.pessoasaqui',
@@ -834,13 +840,13 @@ app.post('/api/connections/sync', async (req, res) => {
     if (kPeer && kPeer !== kMy) {
       localStore.connections.set(`${kMy}->${kPeer}`, { fromIdentity: myIdentity, toIdentity: peerId, isMutual: true });
       localStore.connections.set(`${kPeer}->${kMy}`, { fromIdentity: peerId, toIdentity: myIdentity, isMutual: true });
-      if (isPostgresHealthy) {
-        pgPool.query(
+      if (isPostgres()) {
+        query(
           `INSERT INTO connections (from_identity, to_identity, is_mutual)
            VALUES ($1, $2, TRUE), ($2, $1, TRUE)
            ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = TRUE`,
           [myIdentity, peerId]
-        ).catch(() => {});
+        ).catch((err) => console.warn('[DB] Erro ao sincronizar conexão:', err.message));
       }
     }
   }

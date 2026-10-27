@@ -27,6 +27,7 @@ class LocalDiskCryptoManager(
         private const val TAG_LENGTH_BITS = 128
         private const val IV_LENGTH_BYTES = 12
         private const val PREFIX = "ENC_V1:"
+        private const val FALLBACK_SALT = "PESSOASAQUI_DISK_SALT_V1_STABLE_PEPPER_2026"
     }
 
     private val diskKey: SecretKeySpec by lazy {
@@ -34,13 +35,22 @@ class LocalDiskCryptoManager(
     }
 
     private fun deriveDeviceDiskKey(): SecretKeySpec {
-        val prefs = context?.getSharedPreferences("pessoasaqui_storage_key_prefs", Context.MODE_PRIVATE)
-        var salt = prefs?.getString("disk_salt_v1", null)
+        var salt: String? = null
+        try {
+            val prefs = context?.getSharedPreferences("pessoasaqui_storage_key_prefs", Context.MODE_PRIVATE)
+            salt = prefs?.getString("disk_salt_v1", null)
+            if (salt.isNullOrBlank()) {
+                val randomBytes = ByteArray(32)
+                SecureRandom().nextBytes(randomBytes)
+                salt = Base64.encodeToString(randomBytes, Base64.NO_WRAP)
+                prefs?.edit()?.putString("disk_salt_v1", salt)?.commit()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Aviso ao obter disk salt do SharedPreferences: ${e.message}")
+        }
+
         if (salt.isNullOrBlank()) {
-            val randomBytes = ByteArray(32)
-            SecureRandom().nextBytes(randomBytes)
-            salt = Base64.encodeToString(randomBytes, Base64.NO_WRAP)
-            prefs?.edit()?.putString("disk_salt_v1", salt)?.apply()
+            salt = FALLBACK_SALT
         }
 
         val pkgName = context?.packageName ?: "br.com.pessoasaqui"

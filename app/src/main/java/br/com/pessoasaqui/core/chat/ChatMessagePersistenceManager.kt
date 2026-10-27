@@ -84,12 +84,13 @@ class ChatMessagePersistenceManager(
             val serialized = json.encodeToString(ListSerializer(ChatMessage.serializer()), toSave)
             val encrypted = diskCrypto.encrypt(serialized)
 
+            targetFile.parentFile?.mkdirs()
             val tempFile = File(targetFile.parentFile, "${targetFile.name}.tmp")
             tempFile.writeText(encrypted, Charsets.UTF_8)
-            if (targetFile.exists()) {
-                targetFile.delete()
+            if (!tempFile.renameTo(targetFile)) {
+                targetFile.writeText(encrypted, Charsets.UTF_8)
+                try { tempFile.delete() } catch (_: Exception) {}
             }
-            tempFile.renameTo(targetFile)
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao salvar chat do peer $cleanKey: ${e.message}", e)
         }
@@ -136,12 +137,13 @@ class ChatMessagePersistenceManager(
             val serialized = json.encodeToString(ListSerializer(ChatMessage.serializer()), toSave)
             val encrypted = diskCrypto.encrypt(serialized)
 
+            targetFile.parentFile?.mkdirs()
             val tempFile = File(targetFile.parentFile, "${targetFile.name}.tmp")
             tempFile.writeText(encrypted, Charsets.UTF_8)
-            if (targetFile.exists()) {
-                targetFile.delete()
+            if (!tempFile.renameTo(targetFile)) {
+                targetFile.writeText(encrypted, Charsets.UTF_8)
+                try { tempFile.delete() } catch (_: Exception) {}
             }
-            tempFile.renameTo(targetFile)
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao salvar mural local: ${e.message}", e)
         }

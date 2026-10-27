@@ -679,7 +679,7 @@ fun ChatDetailScreen(
                             Icon(
                                 imageVector = Icons.Default.Call,
                                 contentDescription = "Chamada de Voz",
-                                tint = if (isMutualOrFamily) RadarCyan else TextSecondary.copy(alpha = 0.6f)
+                                tint = if (isMutualOrFamily) Color(0xFF4CAF50) else TextSecondary.copy(alpha = 0.6f)
                             )
                             if (!isMutualOrFamily) {
                                 Icon(
@@ -689,6 +689,7 @@ fun ChatDetailScreen(
                                     modifier = Modifier
                                         .size(10.dp)
                                         .align(Alignment.BottomEnd)
+                                        .background(DarkSurface, CircleShape)
                                 )
                             }
                         }
@@ -713,7 +714,7 @@ fun ChatDetailScreen(
                             Icon(
                                 imageVector = Icons.Default.Videocam,
                                 contentDescription = "Chamada de Vídeo",
-                                tint = if (isMutualOrFamily) RadarCyan else TextSecondary.copy(alpha = 0.6f)
+                                tint = if (isMutualOrFamily) Color(0xFF4CAF50) else TextSecondary.copy(alpha = 0.6f)
                             )
                             if (!isMutualOrFamily) {
                                 Icon(
@@ -723,6 +724,7 @@ fun ChatDetailScreen(
                                     modifier = Modifier
                                         .size(10.dp)
                                         .align(Alignment.BottomEnd)
+                                        .background(DarkSurface, CircleShape)
                                 )
                             }
                         }
@@ -1078,6 +1080,12 @@ fun ChatDetailScreen(
                     }
 
                     val isStickerMsg = msg.messageType == MessageType.IMAGE && (msg.text.startsWith("[STICKER:") || msg.mediaBase64?.startsWith("[STICKER:") == true)
+                    val bubbleBgColor = if (isStickerMsg) Color.Transparent else if (isMe) Color(0xFF1B5E20) else Color(0xFF5A1A1A)
+                    val bubbleBorderColor = if (isStickerMsg) Color.Transparent else if (isMe) Color(0xFF2E7D32) else Color(0xFF8B2525)
+                    val primaryTextColor = if (isMe) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+                    val subTextColor = if (isMe) Color(0xFFA5D6A7) else Color(0xFFFFCDD2)
+                    val linkTextColor = if (isMe) Color(0xFF81C784) else Color(0xFFFF8A80)
+                    val audioBarColor = if (isMe) Color(0xFF81C784) else Color(0xFFEF9A9A)
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1090,7 +1098,8 @@ fun ChatDetailScreen(
                                 bottomStart = if (isMe) 16.dp else 4.dp,
                                 bottomEnd = if (isMe) 4.dp else 16.dp
                             ),
-                            color = if (isStickerMsg) Color.Transparent else if (isMe) RadarCyan else DarkSurface,
+                            color = bubbleBgColor,
+                            border = BorderStroke(0.5.dp, bubbleBorderColor),
                             modifier = Modifier
                                 .widthIn(max = 290.dp)
                                 .pointerInput(msg.id) {
@@ -1110,7 +1119,7 @@ fun ChatDetailScreen(
                                         Icon(
                                             imageVector = Icons.Default.Block,
                                             contentDescription = null,
-                                            tint = if (isMe) DeepBlack.copy(alpha = 0.55f) else TextSecondary,
+                                            tint = subTextColor,
                                             modifier = Modifier.size(15.dp)
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
@@ -1118,7 +1127,7 @@ fun ChatDetailScreen(
                                             text = "Esta mensagem foi apagada",
                                             style = MaterialTheme.typography.bodyMedium.copy(
                                                 fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-                                                color = if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
+                                                color = subTextColor,
                                                 fontSize = 13.sp
                                             )
                                         )
@@ -1162,12 +1171,12 @@ fun ChatDetailScreen(
                                                 modifier = Modifier
                                                     .size(36.dp)
                                                     .clip(CircleShape)
-                                                    .background(if (isMe) DeepBlack.copy(alpha = 0.2f) else DarkCardElevated)
+                                                    .background(if (isMe) Color(0xFF144D29) else Color(0xFF421515))
                                             ) {
                                                 Icon(
                                                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                                     contentDescription = if (isPlaying) "Pausar" else "Reproduzir",
-                                                    tint = if (isMe) DeepBlack else RadarCyan,
+                                                    tint = audioBarColor,
                                                     modifier = Modifier.size(20.dp)
                                                 )
                                             }
@@ -1192,9 +1201,7 @@ fun ChatDetailScreen(
                                                                 .width(3.dp)
                                                                 .height(activeHeight)
                                                                 .clip(RoundedCornerShape(2.dp))
-                                                                .background(
-                                                                    if (isMe) DeepBlack.copy(alpha = 0.7f) else RadarCyan.copy(alpha = 0.8f)
-                                                                )
+                                                                .background(audioBarColor)
                                                         )
                                                     }
                                                 }
@@ -1204,7 +1211,7 @@ fun ChatDetailScreen(
                                                 Text(
                                                     text = if (isPlaying) "Reproduzindo áudio..." else "Áudio Cifrado • 0:${String.format("%02d", msg.audioDurationSeconds.coerceAtLeast(3))}",
                                                     style = MaterialTheme.typography.labelSmall.copy(
-                                                        color = if (isMe) DeepBlack.copy(alpha = 0.8f) else TextSecondary,
+                                                        color = subTextColor,
                                                         fontSize = 10.sp
                                                     )
                                                 )
@@ -1296,7 +1303,7 @@ fun ChatDetailScreen(
                                                 Text(
                                                     text = "📷 Foto Cifrada Ponta a Ponta",
                                                     style = MaterialTheme.typography.labelSmall.copy(
-                                                        color = if (isMe) DeepBlack.copy(alpha = 0.8f) else EmeraldGreen,
+                                                        color = subTextColor,
                                                         fontSize = 10.sp
                                                     )
                                                 )
@@ -1305,7 +1312,7 @@ fun ChatDetailScreen(
                                             Text(
                                                 text = "📷 [Imagem Cifrada Recebida]",
                                                 style = MaterialTheme.typography.bodyMedium.copy(
-                                                    color = if (isMe) DeepBlack else TextPrimary
+                                                    color = primaryTextColor
                                                 )
                                             )
                                         }
@@ -1325,8 +1332,8 @@ fun ChatDetailScreen(
 
                                         Surface(
                                             shape = RoundedCornerShape(12.dp),
-                                            color = if (isMe) DeepBlack.copy(alpha = 0.15f) else DarkCardElevated,
-                                            border = BorderStroke(1.dp, if (isMe) DeepBlack.copy(alpha = 0.25f) else extColor.copy(alpha = 0.4f)),
+                                            color = if (isMe) Color(0xFF144D29) else Color(0xFF421515),
+                                            border = BorderStroke(1.dp, if (isMe) Color(0xFF2E7D32) else Color(0xFF8B2525)),
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .clickable {
@@ -1341,13 +1348,13 @@ fun ChatDetailScreen(
                                                     // Badge com tipo do documento (PDF, XML, etc.)
                                                     Surface(
                                                         shape = RoundedCornerShape(6.dp),
-                                                        color = extColor.copy(alpha = 0.2f),
-                                                        border = BorderStroke(1.dp, extColor.copy(alpha = 0.5f))
+                                                        color = if (isMe) Color(0xFF2E7D32).copy(alpha = 0.35f) else Color(0xFF8B2525).copy(alpha = 0.35f),
+                                                        border = BorderStroke(1.dp, if (isMe) Color(0xFF81C784) else Color(0xFFEF9A9A))
                                                     ) {
                                                         Text(
                                                             text = fileExt.take(4),
                                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                                color = if (isMe) DeepBlack else extColor,
+                                                                color = if (isMe) Color(0xFF81C784) else Color(0xFFEF9A9A),
                                                                 fontWeight = FontWeight.ExtraBold,
                                                                 fontSize = 10.sp
                                                             ),
@@ -1362,7 +1369,7 @@ fun ChatDetailScreen(
                                                             text = fileName,
                                                             style = MaterialTheme.typography.bodyMedium.copy(
                                                                 fontWeight = FontWeight.Bold,
-                                                                color = if (isMe) DeepBlack else TextPrimary
+                                                                color = primaryTextColor
                                                             ),
                                                             maxLines = 1,
                                                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
@@ -1371,7 +1378,7 @@ fun ChatDetailScreen(
                                                         Text(
                                                             text = "$sizeLabel • E2EE Cifrado",
                                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                                color = if (isMe) DeepBlack.copy(alpha = 0.7f) else TextSecondary,
+                                                                color = subTextColor,
                                                                 fontSize = 10.sp
                                                             )
                                                         )
@@ -1389,7 +1396,7 @@ fun ChatDetailScreen(
                                                     Text(
                                                         text = "Toque para abrir documento",
                                                         style = MaterialTheme.typography.labelSmall.copy(
-                                                            color = if (isMe) DeepBlack.copy(alpha = 0.85f) else extColor,
+                                                            color = subTextColor,
                                                             fontWeight = FontWeight.SemiBold,
                                                             fontSize = 10.sp
                                                         )
@@ -1398,7 +1405,7 @@ fun ChatDetailScreen(
                                                     Icon(
                                                         imageVector = Icons.Default.OpenInNew,
                                                         contentDescription = "Abrir",
-                                                        tint = if (isMe) DeepBlack.copy(alpha = 0.85f) else extColor,
+                                                        tint = subTextColor,
                                                         modifier = Modifier.size(12.dp)
                                                     )
                                                 }
@@ -1418,7 +1425,7 @@ fun ChatDetailScreen(
                                         if (isBroadcast) {
                                             Surface(
                                                 shape = RoundedCornerShape(6.dp),
-                                                color = if (isMe) DeepBlack.copy(alpha = 0.12f) else RadarCyan.copy(alpha = 0.15f),
+                                                color = if (isMe) Color(0xFF144D29) else Color(0xFF421515),
                                                 modifier = Modifier.padding(bottom = 6.dp)
                                             ) {
                                                 Row(
@@ -1428,7 +1435,7 @@ fun ChatDetailScreen(
                                                     Icon(
                                                         imageVector = Icons.Default.Campaign,
                                                         contentDescription = null,
-                                                        tint = if (isMe) DeepBlack else RadarCyan,
+                                                        tint = subTextColor,
                                                         modifier = Modifier.size(13.dp)
                                                     )
                                                     Spacer(modifier = Modifier.width(4.dp))
@@ -1437,7 +1444,7 @@ fun ChatDetailScreen(
                                                         style = MaterialTheme.typography.labelSmall.copy(
                                                             fontWeight = FontWeight.Bold,
                                                             fontSize = 10.sp,
-                                                            color = if (isMe) DeepBlack else RadarCyan
+                                                            color = primaryTextColor
                                                         )
                                                     )
                                                 }
@@ -1446,8 +1453,8 @@ fun ChatDetailScreen(
 
                                         LinkifiedMessageText(
                                             text = cleanText,
-                                            textColor = if (isMe) DeepBlack else TextPrimary,
-                                            linkColor = if (isMe) Color(0xFF003847) else RadarCyan
+                                            textColor = primaryTextColor,
+                                            linkColor = linkTextColor
                                         )
                                     }
                                 }
@@ -1479,7 +1486,7 @@ fun ChatDetailScreen(
                                         Text(
                                             text = "(editada)",
                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                color = if (isStickerMsg) Color.White.copy(alpha = 0.7f) else if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
+                                                color = if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
                                                 fontSize = 9.sp,
                                                 fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
                                             )
@@ -1489,7 +1496,7 @@ fun ChatDetailScreen(
                                     Text(
                                         text = formatMessageTime(msg.timestampMs),
                                         style = MaterialTheme.typography.labelSmall.copy(
-                                            color = if (isStickerMsg) Color.White else if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
+                                            color = if (isStickerMsg) Color.White else subTextColor,
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.Normal
                                         )
@@ -1498,7 +1505,7 @@ fun ChatDetailScreen(
                                     Icon(
                                         imageVector = Icons.Default.Lock,
                                         contentDescription = "Cifrado Ponta a Ponta",
-                                        tint = if (isStickerMsg) Color.White.copy(alpha = 0.7f) else if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
+                                        tint = if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
                                         modifier = Modifier.size(10.dp)
                                     )
                                     if (isMe) {
@@ -1507,7 +1514,7 @@ fun ChatDetailScreen(
                                         Icon(
                                             imageVector = Icons.Default.DoneAll,
                                             contentDescription = if (isRead) "Visualizada" else "Entregue",
-                                            tint = if (isRead) Color(0xFF00E5FF) else if (isStickerMsg) Color.White.copy(alpha = 0.7f) else DeepBlack.copy(alpha = 0.65f),
+                                            tint = if (isRead) Color(0xFF69F0AE) else if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
                                             modifier = Modifier.size(12.dp)
                                         )
                                     }

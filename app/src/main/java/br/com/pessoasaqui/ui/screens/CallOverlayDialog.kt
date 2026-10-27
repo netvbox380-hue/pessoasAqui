@@ -182,6 +182,7 @@ fun CallOverlayDialog(
                 Spacer(modifier = Modifier.height(centerSpacing))
 
                 // ================= CORPO CENTRAL: AVATAR / VÍDEO / NOME / STATUS =================
+                val callRoleColor = if (callState.isIncoming) AlertRed else EmeraldGreen
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
@@ -195,10 +196,10 @@ fun CallOverlayDialog(
                             .clip(CircleShape)
                             .background(
                                 Brush.linearGradient(
-                                    colors = listOf(RadarCyan.copy(alpha = 0.35f), FamilyPurple.copy(alpha = 0.35f))
+                                    colors = listOf(callRoleColor.copy(alpha = 0.35f), FamilyPurple.copy(alpha = 0.35f))
                                 )
                             )
-                            .border(3.dp, if (callState.isConnected) EmeraldGreen else RadarCyan, CircleShape),
+                            .border(3.dp, if (callState.isConnected) EmeraldGreen else callRoleColor, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -231,7 +232,7 @@ fun CallOverlayDialog(
                             else -> "Chamando ${if (callState.isVideo) "(Vídeo)" else "(Voz)"}..."
                         },
                         style = MaterialTheme.typography.bodyLarge.copy(
-                            color = if (callState.isConnected) EmeraldGreen else TextSecondary,
+                            color = if (callState.isConnected) EmeraldGreen else callRoleColor,
                             fontWeight = FontWeight.Medium
                         ),
                         textAlign = TextAlign.Center
