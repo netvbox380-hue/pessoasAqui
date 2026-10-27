@@ -307,14 +307,13 @@ class PessoasAquiRepository(
         }
     }
 
-    private fun loadSavedContactsFromPrefs(): List<NearbyPerson> {
-        val jsonStr = prefs?.getString("saved_contacts_v2", null) ?: return emptyList()
-        return try {
+    private fun parseContactsJson(jsonStr: String, outList: MutableList<NearbyPerson>) {
+        try {
             val array = JSONArray(jsonStr)
-            val list = mutableListOf<NearbyPerson>()
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 val id = cleanId(obj.getString("id"))
+                if (id.isBlank()) continue
                 val alias = obj.optString("alias", "Contato")
                 val isMutual = obj.optBoolean("isMutual", true)
                 val isFamily = obj.optBoolean("isFamily", false)
@@ -322,7 +321,7 @@ class PessoasAquiRepository(
                 val familyRole = if (roleStr.isNotBlank()) {
                     try { FamilyRole.valueOf(roleStr) } catch (_: Exception) { null }
                 } else null
-                list.add(
+                outList.add(
                     NearbyPerson(
                         id = id,
                         technicalIdentityHash = id,
@@ -339,26 +338,118 @@ class PessoasAquiRepository(
                     )
                 )
             }
-            list
-        } catch (_: Exception) {
-            emptyList()
+        } catch (_: Exception) {}
+    }
+
+    private fun loadSavedContactsFromPrefs(): List<NearbyPerson> {
+        val list = mutableListOf<NearbyPerson>()
+
+        // 1. Carrega do arquivo persistente dedicado no disco permanente
+        try {
+            val file = context?.filesDir?.resolve("pessoasaqui_contacts/mutual_contacts.json")
+            if (file != null && file.exists()) {
+                val jsonStr = file.readText(Charsets.UTF_8)
+                parseContactsJson(jsonStr, list)
+            }
+        } catch (e: Exception) {
+            Log.e("PessoasAqui", "Erro ao carregar contatos de arquivo dedicado", e)
         }
+
+        // 2. Carrega de SharedPreferences se houver
+        val jsonStr = prefs?.getString("saved_contacts_v2", null)
+        if (!jsonStr.isNullOrBlank()) {
+            parseContactsJson(jsonStr, list)
+        }
+
+        // 3. Mescla com contatos que possuem conversas privadas salvas em disco
+        chatPersistence?.let { cp ->
+            try {
+                val chats = cp.loadAllPrivateChats()
+                chats.keys.forEach { peerId ->
+                    val cleanPeerId = cleanId(peerId)
+                    if (cleanPeerId.isNotBlank() && list.none { cleanId(it.technicalIdentityHash) == cleanPeerId || cleanId(it.id) == cleanPeerId }) {
+                        val lastMsg = chats[peerId]?.lastOrNull()
+                        val alias = if (lastMsg?.isFromMe == false) lastMsg.senderAlias else "Contato Mútuo"
+                        list.add(
+                            NearbyPerson(
+                                id = cleanPeerId,
+                                technicalIdentityHash = cleanPeerId,
+                                alias = alias,
+                                estimatedDistanceMeters = 500.0,
+                                proximityLabel = "Conexão Mútua • Ilimitada",
+                                isMarkedByMe = true,
+                                isMarkingMe = true,
+                                isMutualConnection = true,
+                                isPhotoVisible = true,
+                                lastSeenEpochMs = System.currentTimeMillis()
+                            )
+                        )
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Remove duplicatas e assegura sincronismo com savedMutualPeople
+        val distinct = list.distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
+        distinct.forEach { p ->
+            val cid = cleanId(p.technicalIdentityHash.ifBlank { p.id })
+            if (cid.isNotBlank()) {
+                savedMutualPeople.add(cid)
+                savedMarkedPeople.add(cid)
+                savedMarkingMePeople.add(cid)
+            }
+        }
+        return distinct
     }
 
     fun saveSavedContactsToPrefs() {
         try {
+            val currentList = _realDiscoveredPeople.value.filter { it.isMutualConnection || it.isFamily || isPeerMutual(it) }
+            val existingSaved = loadSavedContactsFromPrefs()
+
+            // Mescla sem perder nenhum contato salvo previamente
+            val mergedMap = LinkedHashMap<String, NearbyPerson>()
+            existingSaved.forEach { p ->
+                val k = cleanId(p.technicalIdentityHash.ifBlank { p.id })
+                if (k.isNotBlank()) mergedMap[k] = p
+            }
+            currentList.forEach { p ->
+                val k = cleanId(p.technicalIdentityHash.ifBlank { p.id })
+                if (k.isNotBlank()) mergedMap[k] = p
+            }
+
             val array = JSONArray()
-            val saved = _realDiscoveredPeople.value.filter { it.isMutualConnection || it.isFamily || isPeerMutual(it) }
-            saved.forEach { person ->
+            mergedMap.values.forEach { person ->
                 val obj = JSONObject()
-                obj.put("id", cleanId(person.technicalIdentityHash.ifBlank { person.id }))
+                val cid = cleanId(person.technicalIdentityHash.ifBlank { person.id })
+                obj.put("id", cid)
                 obj.put("alias", person.alias)
                 obj.put("isMutual", person.isMutualConnection)
                 obj.put("isFamily", person.isFamily)
                 obj.put("familyRole", person.familyRole?.name ?: "")
                 array.put(obj)
+
+                if (person.isMutualConnection || person.isFamily) {
+                    savedMutualPeople.add(cid)
+                    savedMarkedPeople.add(cid)
+                    savedMarkingMePeople.add(cid)
+                }
             }
-            prefs?.edit()?.putString("saved_contacts_v2", array.toString())?.apply()
+
+            val jsonOutput = array.toString()
+            prefs?.edit()?.putString("saved_contacts_v2", jsonOutput)?.apply()
+
+            // Salva também no arquivo dedicado no disco físico permanente
+            context?.let { ctx ->
+                try {
+                    val dir = ctx.filesDir.resolve("pessoasaqui_contacts")
+                    if (!dir.exists()) dir.mkdirs()
+                    val file = dir.resolve("mutual_contacts.json")
+                    file.writeText(jsonOutput, Charsets.UTF_8)
+                } catch (e: Exception) {
+                    Log.e("PessoasAqui", "Erro ao gravar contatos no arquivo físico de disco", e)
+                }
+            }
         } catch (e: Exception) {
             Log.e("PessoasAqui", "Erro ao salvar contatos mútuos", e)
         }
@@ -863,33 +954,15 @@ class PessoasAquiRepository(
                             if (savedMarkingMePeople.add(cid)) changed = true
                         }
 
-                        // Reconciliação / Limpeza de conexões mútuas fantasmas (isolamento de usuários):
-                        // Pessoas que não são família e não estão presentes no rádio BLE físico (< 10m)
-                        // só podem ser mantidas como mútuas se constarem em serverMutual.
-                        val locallyBleNearbyIds = _realDiscoveredPeople.value
-                            .filter { it.estimatedDistanceMeters <= br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS }
-                            .map { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
-                            .toSet()
-
-                        val staleMutual = savedMutualPeople.filter { cid ->
-                            cid.isNotBlank() && !serverMutual.contains(cid) && !locallyBleNearbyIds.contains(cid)
-                        }
-                        if (staleMutual.isNotEmpty()) {
-                            staleMutual.forEach {
-                                savedMutualPeople.remove(it)
-                            }
-                            changed = true
-                        }
-
                         if (changed) {
                             saveConnectionsToPrefs()
-                            // Remove de _realDiscoveredPeople qualquer contato remoto (> 10m) não mútuo
-                            val cur = _realDiscoveredPeople.value.filter { p ->
-                                val pCid = cleanId(p.technicalIdentityHash.ifBlank { p.id })
-                                p.isFamily || p.estimatedDistanceMeters <= 10.0 || serverMutual.contains(pCid)
-                            }.map { applyConnectionState(it) }
-                            _realDiscoveredPeople.value = cur
                             updateUnifiedData()
+                        }
+
+                        // Sincroniza ativamente com o servidor para repovoar a memória do backend (resiliente a reinício de container no Render)
+                        if (savedMutualPeople.isNotEmpty()) {
+                            networkClient.syncMutualConnections(myId, savedMutualPeople.toList())
+                            networkClient.sendMutualSyncMessage(savedMutualPeople.toList())
                         }
                     }
 
@@ -1429,13 +1502,29 @@ class PessoasAquiRepository(
     fun setMarkPerson(personId: String, mark: Boolean, explicitMutual: Boolean = false): NearbyPerson? {
         val cleanTargetId = cleanId(personId)
         val currentReal = _realDiscoveredPeople.value.toMutableList()
-        val idx = currentReal.indexOfFirst {
+        var idx = currentReal.indexOfFirst {
             val cCid = cleanId(it.technicalIdentityHash)
             val cPid = cleanId(it.id)
             val cAlias = cleanId(it.alias)
             cleanTargetId == cCid || cleanTargetId == cPid ||
             (!it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(personId, ignoreCase = true)) ||
             (cleanTargetId.isNotBlank() && !cleanTargetId.startsWith("PESSOA") && cleanTargetId == cAlias)
+        }
+
+        if (idx == -1) {
+            val fallback = _unifiedDiscoveredPeople.value.find {
+                val cCid = cleanId(it.technicalIdentityHash)
+                val cPid = cleanId(it.id)
+                cleanTargetId == cCid || cleanTargetId == cPid
+            } ?: loadSavedContactsFromPrefs().find {
+                val cCid = cleanId(it.technicalIdentityHash)
+                val cPid = cleanId(it.id)
+                cleanTargetId == cCid || cleanTargetId == cPid
+            }
+            if (fallback != null) {
+                currentReal.add(fallback)
+                idx = currentReal.size - 1
+            }
         }
 
         var updatedPeer: NearbyPerson? = null
@@ -2112,8 +2201,13 @@ class PessoasAquiRepository(
     }
 
     fun triggerDueRemindersNow() {
-        reminderManager?.checkAndTriggerDueReminders { targetId, text ->
-            sendPrivateMessage(targetId, text)
+        reminderManager?.checkAndTriggerDueReminders { targetId, text, mediaBase64, mediaType ->
+            if (!mediaBase64.isNullOrBlank()) {
+                sendImageMessage(targetId, mediaBase64)
+            }
+            if (text.isNotBlank()) {
+                sendPrivateMessage(targetId, text)
+            }
         }
     }
 
@@ -2122,6 +2216,7 @@ class PessoasAquiRepository(
     suspend fun sendBroadcastMessage(
         targetPeerIds: List<String>,
         text: String,
+        mediaBase64: String? = null,
         onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> }
     ): Result<Int> {
         val subMgr = subscriptionManager
@@ -2142,8 +2237,8 @@ class PessoasAquiRepository(
             return Result.failure(Exception("Nenhum destinatário selecionado."))
         }
 
-        if (text.isBlank()) {
-            return Result.failure(Exception("Digite o texto da mensagem a ser transmitida."))
+        if (text.isBlank() && mediaBase64.isNullOrBlank()) {
+            return Result.failure(Exception("Digite o texto ou selecione uma mídia para transmitir."))
         }
 
         var sentCount = 0
@@ -2152,11 +2247,18 @@ class PessoasAquiRepository(
         for (i in targetPeerIds.indices) {
             val peerId = targetPeerIds[i]
             try {
-                // Envia a mensagem criptografada ponta a ponta com o identificador de transmissão
-                sendPrivateMessage(peerId, "📢 [Transmissão]: ${text.trim()}")
+                // Envia mídia anexada caso presente
+                if (!mediaBase64.isNullOrBlank()) {
+                    sendImageMessage(peerId, mediaBase64)
+                    delay(40L)
+                }
+
+                // Envia o texto da mensagem caso presente
+                if (text.isNotBlank()) {
+                    sendPrivateMessage(peerId, "📢 [Transmissão]: ${text.trim()}")
+                }
                 sentCount++
                 onProgress(sentCount, total)
-                // Intervalo de 40ms entre os disparos para manter o socket saudável e evitar sobrecarga de CPU
                 delay(40L)
             } catch (e: Exception) {
                 Log.w("PessoasAqui", "Falha ao enviar transmissão para $peerId: ${e.message}")
@@ -2166,6 +2268,12 @@ class PessoasAquiRepository(
         subMgr?.recordBroadcastExecuted()
         return Result.success(sentCount)
     }
+
+    suspend fun sendBroadcastMessage(
+        targetPeerIds: List<String>,
+        text: String,
+        onProgress: (sent: Int, total: Int) -> Unit
+    ): Result<Int> = sendBroadcastMessage(targetPeerIds, text, null, onProgress)
 
     fun setSubscriptionTier(tier: SubscriptionTier) {
         subscriptionManager?.setSubscriptionTier(tier)

@@ -1,7 +1,14 @@
 package br.com.pessoasaqui.ui.screens
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -20,6 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -31,6 +40,7 @@ import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.RecurringReminder
 import br.com.pessoasaqui.domain.model.ReminderFrequency
 import br.com.pessoasaqui.ui.theme.*
+import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -83,15 +93,38 @@ fun RecurringRemindersDialog(
     var minute by remember { mutableIntStateOf(0) }
     var selectedDayOfWeek by remember { mutableIntStateOf(Calendar.MONDAY) }
 
+    val context = LocalContext.current
+    var attachedMediaBase64 by remember { mutableStateOf<String?>(null) }
+    var attachedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var autoSend by remember { mutableStateOf(true) }
     var isPersistentUntilConfirmed by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val stream = context.contentResolver.openInputStream(uri)
+                val bmp = BitmapFactory.decodeStream(stream)
+                stream?.close()
+                if (bmp != null) {
+                    attachedBitmap = bmp
+                    val baos = ByteArrayOutputStream()
+                    bmp.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+                    attachedMediaBase64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+                }
+            } catch (e: Exception) {
+                errorMessage = "Falha ao carregar imagem: ${e.message}"
+            }
+        }
+    }
 
     fun resetForm() {
         editingReminderId = null
         selectedPerson = initialRecipient ?: connectedPeople.firstOrNull()
         title = ""
         messageText = ""
+        attachedMediaBase64 = null
+        attachedBitmap = null
         frequency = ReminderFrequency.UNICO
         val c = Calendar.getInstance()
         selectedYear = c.get(Calendar.YEAR)
@@ -112,6 +145,13 @@ fun RecurringRemindersDialog(
         } ?: connectedPeople.find { it.alias.equals(reminder.targetAlias, ignoreCase = true) }
         title = reminder.title
         messageText = reminder.messageText
+        attachedMediaBase64 = reminder.mediaBase64
+        attachedBitmap = reminder.mediaBase64?.let { b64 ->
+            try {
+                val bytes = Base64.decode(b64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } catch (_: Exception) { null }
+        }
         frequency = reminder.frequency
         reminder.year?.let { selectedYear = it }
         reminder.month?.let { selectedMonth = it }
@@ -464,6 +504,23 @@ fun RecurringRemindersDialog(
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
+                                                if (!reminder.mediaBase64.isNullOrBlank() || reminder.mediaFilePath != null) {
+                                                    Surface(
+                                                        shape = RoundedCornerShape(6.dp),
+                                                        color = RadarCyan.copy(alpha = 0.15f)
+                                                    ) {
+                                                        Text(
+                                                            text = "📷 Mídia Anexada",
+                                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                                color = RadarCyan,
+                                                                fontSize = 10.sp,
+                                                                fontWeight = FontWeight.Bold
+                                                            ),
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+
                                                 if (reminder.autoSend) {
                                                     Surface(
                                                         shape = RoundedCornerShape(6.dp),
@@ -1299,6 +1356,98 @@ fun RecurringRemindersDialog(
                             )
                         )
 
+                        // 7.1 Anexo de Mídia Persistente (Garantido em disco físico para nunca falhar)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCardElevated,
+                            border = BorderStroke(1.dp, if (attachedMediaBase64 != null) RadarCyan.copy(alpha = 0.5f) else Color.Transparent),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Attachment,
+                                            contentDescription = null,
+                                            tint = if (attachedMediaBase64 != null) RadarCyan else TextSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Mídia / Foto Anexada",
+                                            style = MaterialTheme.typography.titleSmall.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = TextPrimary
+                                            )
+                                        )
+                                    }
+
+                                    if (attachedMediaBase64 == null) {
+                                        Button(
+                                            onClick = { imagePicker.launch("image/*") },
+                                            colors = ButtonDefaults.buttonColors(containerColor = RadarCyan.copy(alpha = 0.2f), contentColor = RadarCyan),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Anexar Foto", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    } else {
+                                        IconButton(
+                                            onClick = {
+                                                attachedMediaBase64 = null
+                                                attachedBitmap = null
+                                            },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.Close, contentDescription = "Remover Mídia", tint = AlertRed)
+                                        }
+                                    }
+                                }
+
+                                if (attachedBitmap != null) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(DarkSurface, RoundedCornerShape(8.dp))
+                                            .padding(8.dp)
+                                    ) {
+                                        Image(
+                                            bitmap = attachedBitmap!!.asImageBitmap(),
+                                            contentDescription = null,
+                                            modifier = Modifier
+                                                .size(52.dp)
+                                                .clip(RoundedCornerShape(6.dp))
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column {
+                                            Text(
+                                                text = "Foto protegida para o disparo",
+                                                style = MaterialTheme.typography.labelMedium.copy(color = TextPrimary, fontWeight = FontWeight.Bold)
+                                            )
+                                            Text(
+                                                text = "Persistência permanente local • Sem risco de falha",
+                                                style = MaterialTheme.typography.labelSmall.copy(color = EmeraldGreen, fontSize = 10.sp)
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    Text(
+                                        text = "Anexe uma foto para ser enviada ou notificada quando a data/hora chegar.",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp),
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+
                         // 8. Opção de Envio Automático no Chat Privado
                         Surface(
                             shape = RoundedCornerShape(12.dp),
@@ -1477,8 +1626,8 @@ fun RecurringRemindersDialog(
                                     errorMessage = "Por favor, digite um título para o agendamento."
                                     return@Button
                                 }
-                                if (messageText.isBlank()) {
-                                    errorMessage = "Por favor, digite o texto da mensagem."
+                                if (messageText.isBlank() && attachedMediaBase64 == null) {
+                                    errorMessage = "Por favor, digite o texto da mensagem ou anexe uma foto."
                                     return@Button
                                 }
                                 if (liveNextTrigger <= 0L) {
@@ -1522,6 +1671,8 @@ fun RecurringRemindersDialog(
                                         isConfirmed = false,
                                         retryCount = 0,
                                         isEnabled = true,
+                                        mediaBase64 = attachedMediaBase64,
+                                        mediaType = if (attachedMediaBase64 != null) "IMAGE" else null,
                                         nextTriggerEpochMs = liveNextTrigger
                                     )
                                 } else {
@@ -1543,6 +1694,8 @@ fun RecurringRemindersDialog(
                                         isConfirmed = false,
                                         retryCount = 0,
                                         isEnabled = true,
+                                        mediaBase64 = attachedMediaBase64,
+                                        mediaType = if (attachedMediaBase64 != null) "IMAGE" else null,
                                         nextTriggerEpochMs = liveNextTrigger
                                     )
                                 }

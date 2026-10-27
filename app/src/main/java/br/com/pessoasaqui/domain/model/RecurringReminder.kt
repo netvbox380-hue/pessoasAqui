@@ -38,6 +38,9 @@ data class RecurringReminder(
     val retryCount: Int = 0, // Contagem de repetições realizadas (0..3)
     val isConfirmed: Boolean = false, // True se o usuário confirmou/leu o lembrete
     val isEnabled: Boolean = true,
+    val mediaBase64: String? = null,
+    val mediaType: String? = null, // Ex: "IMAGE"
+    val mediaFilePath: String? = null, // Caminho local permanente no disco do aparelho
     val nextTriggerEpochMs: Long = 0L,
     val lastTriggerEpochMs: Long? = null,
     val createdAtEpochMs: Long = System.currentTimeMillis()
@@ -62,6 +65,9 @@ data class RecurringReminder(
         obj.put("retryCount", retryCount)
         obj.put("isConfirmed", isConfirmed)
         obj.put("isEnabled", isEnabled)
+        obj.put("mediaBase64", mediaBase64 ?: "")
+        obj.put("mediaType", mediaType ?: "")
+        obj.put("mediaFilePath", mediaFilePath ?: "")
         obj.put("nextTriggerEpochMs", nextTriggerEpochMs)
         obj.put("lastTriggerEpochMs", lastTriggerEpochMs ?: -1L)
         obj.put("createdAtEpochMs", createdAtEpochMs)
@@ -104,6 +110,9 @@ data class RecurringReminder(
                     retryCount = obj.optInt("retryCount", 0),
                     isConfirmed = obj.optBoolean("isConfirmed", false),
                     isEnabled = obj.optBoolean("isEnabled", true),
+                    mediaBase64 = obj.optString("mediaBase64", "").takeIf { it.isNotBlank() },
+                    mediaType = obj.optString("mediaType", "").takeIf { it.isNotBlank() },
+                    mediaFilePath = obj.optString("mediaFilePath", "").takeIf { it.isNotBlank() },
                     nextTriggerEpochMs = obj.optLong("nextTriggerEpochMs", 0L),
                     lastTriggerEpochMs = lastTrig,
                     createdAtEpochMs = obj.optLong("createdAtEpochMs", System.currentTimeMillis())

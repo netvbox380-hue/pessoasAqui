@@ -232,6 +232,7 @@ fun PessoasAquiNavHost(
     }
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
+    var currentMainTab by remember { mutableIntStateOf(0) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
     var isCreatingInvite by remember { mutableStateOf(false) }
     var showVipDialog by remember { mutableStateOf(false) }
@@ -294,8 +295,13 @@ fun PessoasAquiNavHost(
         is Screen.Main -> {
             MainScreen(
                 repository = repository,
+                selectedTab = currentMainTab,
+                onTabSelected = { currentMainTab = it },
                 onOpenEntreNaSua = { currentScreen = Screen.EntreNaSua },
-                onOpenChat = { person -> currentScreen = Screen.Chat(person) },
+                onOpenChat = { person ->
+                    currentMainTab = 1
+                    currentScreen = Screen.Chat(person)
+                },
                 onEnableBluetooth = {
                     val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                     enableBluetoothLauncher.launch(enableBtIntent)
@@ -304,7 +310,10 @@ fun PessoasAquiNavHost(
         }
 
         is Screen.Chat -> {
-            BackHandler { currentScreen = Screen.Main }
+            BackHandler {
+                currentMainTab = 1
+                currentScreen = Screen.Main
+            }
             val livePerson = repository.getLivePerson(screen.person)
 
             val cleanTargetId = repository.cleanId(livePerson.id)
@@ -322,7 +331,10 @@ fun PessoasAquiNavHost(
             ChatDetailScreen(
                 person = livePerson,
                 messages = messages,
-                onBack = { currentScreen = Screen.Main },
+                onBack = {
+                    currentMainTab = 1
+                    currentScreen = Screen.Main
+                },
                 onSendMessage = { text ->
                     repository.sendPrivateMessage(livePerson.technicalIdentityHash.ifBlank { livePerson.id }, text)
                 },
@@ -356,6 +368,7 @@ fun PessoasAquiNavHost(
                 },
                 onBlockUser = { userId ->
                     repository.moderationManager.blockUser(userId)
+                    currentMainTab = 1
                     currentScreen = Screen.Main
                 },
                 onReportUser = { userId ->
@@ -386,6 +399,16 @@ fun PessoasAquiNavHost(
                 onSendBroadcast = { targetIds, message, onProgress, onResult ->
                     scope.launch {
                         val res = repository.sendBroadcastMessage(targetIds, message, onProgress)
+                        if (res.isSuccess) {
+                            onResult(true, "")
+                        } else {
+                            onResult(false, res.exceptionOrNull()?.message ?: "Falha no envio da transmissão")
+                        }
+                    }
+                },
+                onSendBroadcastWithMedia = { targetIds, message, media, onProgress, onResult ->
+                    scope.launch {
+                        val res = repository.sendBroadcastMessage(targetIds, message, media, onProgress)
                         if (res.isSuccess) {
                             onResult(true, "")
                         } else {

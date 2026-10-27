@@ -83,4 +83,29 @@ class RecurringReminderTest {
         assertEquals(15, cal.get(Calendar.HOUR_OF_DAY))
         assertEquals(30, cal.get(Calendar.MINUTE))
     }
+
+    @Test
+    fun testSerializationWithPersistentMedia() {
+        val original = RecurringReminder(
+            id = "rem-media-001",
+            targetId = "peer-xyz",
+            targetAlias = "Mariana",
+            title = "Foto de Aniversário",
+            messageText = "Parabéns!",
+            frequency = ReminderFrequency.ANUAL,
+            hour = 8,
+            minute = 0,
+            mediaBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            mediaType = "IMAGE",
+            mediaFilePath = "/data/user/0/br.com.pessoasaqui/files/reminder_media/rem-media-001.b64"
+        )
+
+        val json = original.toJson()
+        val deserialized = RecurringReminder.fromJson(json)
+
+        assertNotNull(deserialized)
+        assertEquals(original.mediaBase64, deserialized?.mediaBase64)
+        assertEquals(original.mediaType, deserialized?.mediaType)
+        assertEquals(original.mediaFilePath, deserialized?.mediaFilePath)
+    }
 }

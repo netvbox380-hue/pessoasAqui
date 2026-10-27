@@ -83,9 +83,44 @@ class RecurringReminderManager(private val context: Context) {
         }
     }
 
+    private fun persistMediaToDisk(reminderId: String, mediaBase64: String): String? {
+        return try {
+            val dir = context.filesDir.resolve("reminder_media")
+            if (!dir.exists()) dir.mkdirs()
+            val file = dir.resolve("${reminderId}.b64")
+            file.writeText(mediaBase64, Charsets.UTF_8)
+            file.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao gravar mídia do lembrete no disco: ${e.message}")
+            null
+        }
+    }
+
+    fun readMediaForReminder(reminder: RecurringReminder): String? {
+        if (!reminder.mediaBase64.isNullOrBlank()) return reminder.mediaBase64
+        if (reminder.mediaFilePath != null) {
+            val f = java.io.File(reminder.mediaFilePath)
+            if (f.exists()) {
+                return try { f.readText(Charsets.UTF_8) } catch (_: Exception) { null }
+            }
+        }
+        val defaultFile = context.filesDir.resolve("reminder_media/${reminder.id}.b64")
+        if (defaultFile.exists()) {
+            return try { defaultFile.readText(Charsets.UTF_8) } catch (_: Exception) { null }
+        }
+        return null
+    }
+
     fun saveReminder(reminder: RecurringReminder) {
         val currentList = _reminders.value.toMutableList()
         val index = currentList.indexOfFirst { it.id == reminder.id }
+
+        // Persiste fisicamente o payload de mídia em arquivo permanente local
+        val localFilePath = if (!reminder.mediaBase64.isNullOrBlank()) {
+            persistMediaToDisk(reminder.id, reminder.mediaBase64)
+        } else {
+            reminder.mediaFilePath
+        }
 
         // Garante que o nextTriggerEpochMs esteja calculado estritamente no futuro
         val updatedReminder = if (reminder.nextTriggerEpochMs <= System.currentTimeMillis()) {
@@ -99,9 +134,9 @@ class RecurringReminderManager(private val context: Context) {
                 year = reminder.year,
                 afterEpochMs = System.currentTimeMillis()
             )
-            reminder.copy(nextTriggerEpochMs = next)
+            reminder.copy(nextTriggerEpochMs = next, mediaFilePath = localFilePath)
         } else {
-            reminder
+            reminder.copy(mediaFilePath = localFilePath)
         }
 
         if (index != -1) {
@@ -117,6 +152,10 @@ class RecurringReminderManager(private val context: Context) {
 
     fun deleteReminder(reminderId: String) {
         _reminders.value = _reminders.value.filter { it.id != reminderId }
+        try {
+            val f = context.filesDir.resolve("reminder_media/${reminderId}.b64")
+            if (f.exists()) f.delete()
+        } catch (_: Exception) {}
         saveRemindersToPrefs()
         scheduleNextAlarm()
     }
@@ -173,7 +212,7 @@ class RecurringReminderManager(private val context: Context) {
      * Verifica e dispara lembretes vencidos. Pode ser chamado periodicamente pelo serviço
      * em segundo plano ou pelo Receiver acionado pelo AlarmManager.
      */
-    fun checkAndTriggerDueReminders(onSendAutoMessage: ((targetId: String, text: String) -> Unit)? = null) {
+    fun checkAndTriggerDueReminders(onSendAutoMessage: ((targetId: String, text: String, mediaBase64: String?, mediaType: String?) -> Unit)? = null) {
         val now = System.currentTimeMillis()
         val currentList = _reminders.value.toMutableList()
         var hasChanges = false
@@ -184,10 +223,11 @@ class RecurringReminderManager(private val context: Context) {
                 // Dispara a notificação de sistema
                 showReminderNotification(reminder)
 
-                // Se envio automático de mensagem estiver ativo, envia no chat privado
-                if (reminder.autoSend && onSendAutoMessage != null && reminder.messageText.isNotBlank()) {
+                // Se envio automático de mensagem estiver ativo, envia no chat privado (com suporte a mídia persistida)
+                if (reminder.autoSend && onSendAutoMessage != null && (reminder.messageText.isNotBlank() || !reminder.mediaBase64.isNullOrBlank() || reminder.mediaFilePath != null)) {
                     try {
-                        onSendAutoMessage(reminder.targetId, reminder.messageText)
+                        val media = readMediaForReminder(reminder)
+                        onSendAutoMessage(reminder.targetId, reminder.messageText, media, reminder.mediaType)
                         Log.i(TAG, "Mensagem de lembrete enviada automaticamente para ${reminder.targetAlias}")
                     } catch (e: Exception) {
                         Log.w(TAG, "Falha ao enviar mensagem automática de lembrete: ${e.message}")
@@ -294,6 +334,9 @@ class RecurringReminderManager(private val context: Context) {
             val retryInfo = if (reminder.isPersistentUntilConfirmed && reminder.retryCount > 0) {
                 " [Tentativa ${reminder.retryCount + 1}/3]"
             } else ""
+            val hasMedia = !reminder.mediaBase64.isNullOrBlank() || reminder.mediaFilePath != null
+            val mediaInfo = if (hasMedia) " [📷 Mídia Anexada]" else ""
+            val notifContent = if (reminder.messageText.isNotBlank()) reminder.messageText else "Mídia agendada"
 
             val notifTitle = if (reminder.frequency == ReminderFrequency.UNICO) {
                 "⏰ ${retryInfo}Mensagem Agendada: ${reminder.title}"
@@ -304,10 +347,10 @@ class RecurringReminderManager(private val context: Context) {
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_popup_reminder)
                 .setContentTitle(notifTitle)
-                .setContentText("Para: ${reminder.targetAlias}$roleInfo - ${reminder.messageText}")
+                .setContentText("Para: ${reminder.targetAlias}$roleInfo - $notifContent$mediaInfo")
                 .setStyle(
                     NotificationCompat.BigTextStyle()
-                        .bigText("🔔 ${reminder.frequency.label}$autoSentInfo$retryInfo\nDestinatário: ${reminder.targetAlias}$roleInfo\n\n\"${reminder.messageText}\"")
+                        .bigText("🔔 ${reminder.frequency.label}$autoSentInfo$retryInfo$mediaInfo\nDestinatário: ${reminder.targetAlias}$roleInfo\n\n\"$notifContent\"")
                 )
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_REMINDER)

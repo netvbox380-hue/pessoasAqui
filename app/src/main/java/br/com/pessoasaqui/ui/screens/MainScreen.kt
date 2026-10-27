@@ -28,12 +28,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 @Composable
 fun MainScreen(
     repository: PessoasAquiRepository,
+    selectedTab: Int = 0,
+    onTabSelected: (Int) -> Unit = {},
     onOpenEntreNaSua: () -> Unit,
     onOpenChat: (NearbyPerson) -> Unit,
     onEnableBluetooth: () -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var selectedTabIndex by remember { mutableIntStateOf(0) }
+    var selectedTabIndex by remember(selectedTab) { mutableIntStateOf(selectedTab) }
     var showIntentSelector by remember { mutableStateOf(false) }
     var showPlayground by remember { mutableStateOf(false) }
     var showTopMenu by remember { mutableStateOf(false) }
@@ -287,7 +289,10 @@ fun MainScreen(
             ) {
                 NavigationBarItem(
                     selected = selectedTabIndex == 0,
-                    onClick = { selectedTabIndex = 0 },
+                    onClick = {
+                        selectedTabIndex = 0
+                        onTabSelected(0)
+                    },
                     icon = {
                         Icon(
                             imageVector = Icons.Default.People,
@@ -306,7 +311,10 @@ fun MainScreen(
 
                 NavigationBarItem(
                     selected = selectedTabIndex == 1,
-                    onClick = { selectedTabIndex = 1 },
+                    onClick = {
+                        selectedTabIndex = 1
+                        onTabSelected(1)
+                    },
                     icon = {
                         Icon(
                             imageVector = Icons.Default.ChatBubble,
@@ -325,7 +333,10 @@ fun MainScreen(
 
                 NavigationBarItem(
                     selected = selectedTabIndex == 2,
-                    onClick = { selectedTabIndex = 2 },
+                    onClick = {
+                        selectedTabIndex = 2
+                        onTabSelected(2)
+                    },
                     icon = {
                         Icon(
                             imageVector = Icons.Default.Campaign,
@@ -722,6 +733,16 @@ fun MainScreen(
                     onSendBroadcast = { targetIds, message, onProgress, onResult ->
                         scope.launch {
                             val res = repository.sendBroadcastMessage(targetIds, message, onProgress)
+                            if (res.isSuccess) {
+                                onResult(true, "")
+                            } else {
+                                onResult(false, res.exceptionOrNull()?.message ?: "Falha no envio da transmissão")
+                            }
+                        }
+                    },
+                    onSendBroadcastWithMedia = { targetIds, message, media, onProgress, onResult ->
+                        scope.launch {
+                            val res = repository.sendBroadcastMessage(targetIds, message, media, onProgress)
                             if (res.isSuccess) {
                                 onResult(true, "")
                             } else {

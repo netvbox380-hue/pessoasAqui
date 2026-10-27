@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -400,6 +401,21 @@ class PessoasAquiNetworkClient(
     }
 
     /**
+     * Sincroniza ativamente a lista de conexões mútuas pelo WebSocket para repovoar a memória do servidor
+     */
+    fun sendMutualSyncMessage(mutualPeers: List<String>): Boolean {
+        if (!isWsConnected) return false
+        val ws = activeWebSocket ?: return false
+        val msg = JSONObject().apply {
+            put("type", "CLIENT_MUTUAL_SYNC")
+            val arr = JSONArray()
+            mutualPeers.forEach { arr.put(it) }
+            put("mutualPeers", arr)
+        }
+        return ws.send(msg.toString())
+    }
+
+    /**
      * Envia heartbeat de presença HTTP para o backend
      */
     suspend fun sendPresenceHeartbeat(identityHash: String, alias: String, intent: String): Result<Boolean> = withContext(Dispatchers.IO) {
@@ -560,6 +576,30 @@ class PessoasAquiNetworkClient(
                 mutualArr?.let { for (i in 0 until it.length()) mutualList.add(it.getString(i)) }
 
                 Result.success(ConnectionStatusResponse(markedList, markingList, mutualList))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Sincroniza ativamente a lista de conexões mútuas via REST HTTP
+     */
+    suspend fun syncMutualConnections(myIdentity: String, mutualPeers: List<String>): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("myIdentity", myIdentity)
+                val arr = JSONArray()
+                mutualPeers.forEach { arr.put(it) }
+                put("mutualPeers", arr)
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/connections/sync")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                Result.success(response.isSuccessful)
             }
         } catch (e: Exception) {
             Result.failure(e)

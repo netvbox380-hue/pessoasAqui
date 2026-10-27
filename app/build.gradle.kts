@@ -13,8 +13,8 @@ android {
         applicationId = "br.com.pessoasaqui"
         minSdk = 24
         targetSdk = 36
-        versionCode = 17
-        versionName = "1.2.2"
+        versionCode = 20
+        versionName = "1.2.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -1,22 +1,29 @@
 package br.com.pessoasaqui.ui.screens
 
 import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.Path
+import android.graphics.Path as AndroidPath
 import android.graphics.RectF
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,93 +34,428 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import br.com.pessoasaqui.ui.theme.*
-import java.text.SimpleDateFormat
-import java.util.*
+import java.util.UUID
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 
-enum class EditorTool {
+/**
+ * Proporções predefinidas para a ferramenta de corte de imagem convencional.
+ */
+enum class CropRatio(val label: String, val ratio: Float?) {
+    FREE("Corte Livre", null),
+    SQUARE("1:1 Quadrado", 1f),
+    PORTRAIT("4:5 Retrato", 4f / 5f),
+    STATUS("9:16 Status", 9f / 16f),
+    LANDSCAPE("16:9 Paisagem", 16f / 9f)
+}
+
+/**
+ * Alças de recorte do corte de imagem.
+ */
+enum class CropDragHandle {
     NONE,
-    BRUSH,
-    RECTANGLE,
-    CIRCLE,
-    ARROW,
-    STICKER,
-    TEXT
+    TOP_LEFT,
+    TOP_RIGHT,
+    BOTTOM_LEFT,
+    BOTTOM_RIGHT,
+    TOP,
+    BOTTOM,
+    LEFT,
+    RIGHT,
+    CENTER
 }
 
-sealed class DrawingElement {
-    data class PathElement(val points: List<Offset>, val color: Color, val strokeWidth: Float) : DrawingElement()
-    data class RectElement(val start: Offset, val end: Offset, val color: Color, val strokeWidth: Float) : DrawingElement()
-    data class CircleElement(val center: Offset, val radius: Float, val color: Color, val strokeWidth: Float) : DrawingElement()
-    data class ArrowElement(val start: Offset, val end: Offset, val color: Color, val strokeWidth: Float) : DrawingElement()
-    data class StickerElement(val text: String, val position: Offset, val isContentSticker: Boolean = false) : DrawingElement()
-    data class TextElement(val text: String, val position: Offset, val color: Color, val bgColor: Color) : DrawingElement()
+/**
+ * Formas geométricas interativas que podem ser arrastadas e coloridas totalmente ou como contorno.
+ */
+sealed class CanvasShape {
+    abstract val id: String
+    abstract var color: Color
+    abstract var isFilled: Boolean
+    abstract var strokeWidth: Float
+
+    abstract fun contains(touch: Offset): Boolean
+    abstract fun moveBy(delta: Offset)
+
+    data class Circle(
+        override val id: String = UUID.randomUUID().toString(),
+        var center: Offset,
+        var radius: Float,
+        override var color: Color,
+        override var isFilled: Boolean = false,
+        override var strokeWidth: Float = 8f
+    ) : CanvasShape() {
+        override fun contains(touch: Offset): Boolean {
+            val dist = (touch - center).getDistance()
+            return if (isFilled) {
+                dist <= radius + 25f
+            } else {
+                dist in (radius - strokeWidth - 25f).coerceAtLeast(0f)..(radius + strokeWidth + 25f)
+            }
+        }
+        override fun moveBy(delta: Offset) {
+            center = Offset(center.x + delta.x, center.y + delta.y)
+        }
+    }
+
+    data class Rectangle(
+        override val id: String = UUID.randomUUID().toString(),
+        var topLeft: Offset,
+        var size: Size,
+        override var color: Color,
+        override var isFilled: Boolean = false,
+        override var strokeWidth: Float = 8f
+    ) : CanvasShape() {
+        override fun contains(touch: Offset): Boolean {
+            val r = RectF(topLeft.x, topLeft.y, topLeft.x + size.width, topLeft.y + size.height)
+            return if (isFilled) {
+                r.contains(touch.x, touch.y)
+            } else {
+                val margin = (strokeWidth + 25f).coerceAtLeast(30f)
+                val outer = RectF(r.left - margin, r.top - margin, r.right + margin, r.bottom + margin)
+                outer.contains(touch.x, touch.y)
+            }
+        }
+        override fun moveBy(delta: Offset) {
+            topLeft = Offset(topLeft.x + delta.x, topLeft.y + delta.y)
+        }
+    }
+
+    data class Arrow(
+        override val id: String = UUID.randomUUID().toString(),
+        var start: Offset,
+        var end: Offset,
+        override var color: Color,
+        override var isFilled: Boolean = false,
+        override var strokeWidth: Float = 10f
+    ) : CanvasShape() {
+        override fun contains(touch: Offset): Boolean {
+            val d = distanceToSegment(touch, start, end)
+            val endDist = (touch - end).getDistance()
+            return d <= (strokeWidth + 30f) || endDist <= 50f
+        }
+        override fun moveBy(delta: Offset) {
+            start = Offset(start.x + delta.x, start.y + delta.y)
+            end = Offset(end.x + delta.x, end.y + delta.y)
+        }
+    }
 }
 
+private fun distanceToSegment(p: Offset, a: Offset, b: Offset): Float {
+    val l2 = (b - a).getDistanceSquared()
+    if (l2 == 0f) return (p - a).getDistance()
+    val t = (((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2).coerceIn(0f, 1f)
+    val projection = Offset(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
+    return (p - projection).getDistance()
+}
+
+/**
+ * Editor de Imagens Sem Inteligência Artificial.
+ * - Formas interativas (Círculo, Quadrado, Seta) movíveis para qualquer lugar e coloridas completamente (fill) ou contorno (stroke).
+ * - Corte de imagem com proporções predefinidas e corte livre sem deformação.
+ * - Rotação e espelhamento (horizontal / vertical).
+ * - Histórico completo de Desfazer (Undo), Refazer (Redo) e Restaurar original.
+ * - Salvar na Galeria e Compartilhar via apps padrão.
+ */
 @Composable
 fun ImageEditorDialog(
     sourceBitmap: Bitmap,
     isVip: Boolean = true,
     onSendEditedImage: (Bitmap) -> Unit,
-    onUpgradeToVip: () -> Unit,
+    onUpgradeToVip: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+
+    // Imagem base atual
     var currentBitmap by remember { mutableStateOf(sourceBitmap) }
-    var currentTool by remember { mutableStateOf(EditorTool.BRUSH) }
-    var selectedColor by remember { mutableStateOf(Color(0xFF00E5FF)) } // Cyan padrão
-    var selectedStrokeWidth by remember { mutableFloatStateOf(8f) }
-    val elements = remember { mutableStateListOf<DrawingElement>() }
-    var currentPathPoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
-    var shapeStart by remember { mutableStateOf<Offset?>(null) }
-    var shapeCurrent by remember { mutableStateOf<Offset?>(null) }
-    var draggedElementIndex by remember { mutableStateOf<Int?>(null) }
-    var showCropDialog by remember { mutableStateOf(false) }
-    var currentDrawOffset by remember { mutableStateOf(Offset.Zero) }
-    var currentDrawWidth by remember { mutableFloatStateOf(1000f) }
-    var currentDrawHeight by remember { mutableFloatStateOf(1000f) }
 
-    var showStickerSheet by remember { mutableStateOf(false) }
-    var showTextInputDialog by remember { mutableStateOf(false) }
-    var customTextInput by remember { mutableStateOf("") }
-    var showVipLockedDialog by remember { mutableStateOf(false) }
+    // Pilhas de Histórico
+    val undoStack = remember { mutableStateListOf<Bitmap>() }
+    val redoStack = remember { mutableStateListOf<Bitmap>() }
 
-    val colors = listOf(
-        Color(0xFF00E5FF), // Cyan
-        Color(0xFF00E676), // Emerald
-        Color(0xFFFFD600), // Amarelo
-        Color(0xFFFF1744), // Vermelho
+    // Modo de Corte
+    var isCropping by remember { mutableStateOf(false) }
+    var selectedCropRatio by remember { mutableStateOf(CropRatio.FREE) }
+    var cropBoxRect by remember { mutableStateOf(RectF()) }
+    var activeCropHandle by remember { mutableStateOf(CropDragHandle.NONE) }
+    var dragStartTouch by remember { mutableStateOf(Offset.Zero) }
+    var initialRectAtDragStart by remember { mutableStateOf(RectF()) }
+
+    // Lista de Formas Adicionadas (Círculos, Quadrados, Setas)
+    val shapes = remember { mutableStateListOf<CanvasShape>() }
+    var selectedShapeId by remember { mutableStateOf<String?>(null) }
+    var shapeColor by remember { mutableStateOf(Color(0xFF00E676)) } // Padrão Verde Esmeralda vibrante
+    var isShapeFilled by remember { mutableStateOf(true) } // Padrão preenchido completamente conforme solicitado!
+    var shapesRevision by remember { mutableIntStateOf(0) }
+
+    // Dimensões da imagem desenhada
+    var drawOffset by remember { mutableStateOf(Offset.Zero) }
+    var drawWidth by remember { mutableFloatStateOf(1000f) }
+    var drawHeight by remember { mutableFloatStateOf(1000f) }
+
+    // Cores disponíveis para as formas
+    val availableColors = listOf(
+        Color(0xFF00E676), // Verde Esmeralda (bolinha verde sólida)
+        Color(0xFF00E5FF), // Ciano Radar
+        Color(0xFFFFD600), // Amarelo Ouro
+        Color(0xFFFF1744), // Vermelho Alerta
+        Color(0xFFBB86FC), // Roxo Família
         Color(0xFFFFFFFF), // Branco
         Color(0xFF121212)  // Preto
     )
 
-    val standardStickers = listOf("🔥", "❤️", "⭐", "👍", "🎉", "😂", "👏", "🚀", "💡", "📍", "⚡", "💯")
+    // Renderiza as formas permanentemente sobre o Bitmap
+    fun bakeShapesIntoBitmap(): Bitmap {
+        if (shapes.isEmpty()) return currentBitmap
 
-    val currentTimeStr = remember {
-        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+        val result = currentBitmap.copy(currentBitmap.config ?: Bitmap.Config.ARGB_8888, true)
+        val canvas = AndroidCanvas(result)
+
+        // Fatores de escala entre a tela e o bitmap real
+        val scaleX = result.width.toFloat() / drawWidth
+        val scaleY = result.height.toFloat() / drawHeight
+
+        shapes.forEach { shape ->
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = shape.color.toArgb()
+                style = if (shape.isFilled) Paint.Style.FILL else Paint.Style.STROKE
+                strokeWidth = shape.strokeWidth * scaleX
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+            }
+
+            when (shape) {
+                is CanvasShape.Circle -> {
+                    val realCenterX = (shape.center.x - drawOffset.x) * scaleX
+                    val realCenterY = (shape.center.y - drawOffset.y) * scaleY
+                    val realRadius = shape.radius * scaleX
+                    canvas.drawCircle(realCenterX, realCenterY, realRadius, paint)
+                }
+                is CanvasShape.Rectangle -> {
+                    val realL = (shape.topLeft.x - drawOffset.x) * scaleX
+                    val realT = (shape.topLeft.y - drawOffset.y) * scaleY
+                    val realR = realL + (shape.size.width * scaleX)
+                    val realB = realT + (shape.size.height * scaleY)
+                    canvas.drawRect(realL, realT, realR, realB, paint)
+                }
+                is CanvasShape.Arrow -> {
+                    val sX = (shape.start.x - drawOffset.x) * scaleX
+                    val sY = (shape.start.y - drawOffset.y) * scaleY
+                    val eX = (shape.end.x - drawOffset.x) * scaleX
+                    val eY = (shape.end.y - drawOffset.y) * scaleY
+
+                    // Desenha o corpo da seta
+                    canvas.drawLine(sX, sY, eX, eY, paint)
+
+                    // Ponta da seta
+                    val angle = atan2((eY - sY).toDouble(), (eX - sX).toDouble())
+                    val arrowHeadSize = (shape.strokeWidth * 3.5f * scaleX).coerceAtLeast(30f)
+                    val path = AndroidPath().apply {
+                        moveTo(eX, eY)
+                        lineTo(
+                            (eX - arrowHeadSize * cos(angle - Math.PI / 6)).toFloat(),
+                            (eY - arrowHeadSize * sin(angle - Math.PI / 6)).toFloat()
+                        )
+                        lineTo(
+                            (eX - arrowHeadSize * cos(angle + Math.PI / 6)).toFloat(),
+                            (eY - arrowHeadSize * sin(angle + Math.PI / 6)).toFloat()
+                        )
+                        close()
+                    }
+                    val headPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = shape.color.toArgb()
+                        style = Paint.Style.FILL
+                    }
+                    canvas.drawPath(path, headPaint)
+                }
+            }
+        }
+        return result
     }
-    val currentDateStr = remember {
-        SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date())
+
+    // Registra alteração de Bitmap no histórico
+    fun applyBitmapTransformation(newBitmap: Bitmap) {
+        val bakedCurrent = bakeShapesIntoBitmap()
+        undoStack.add(bakedCurrent)
+        currentBitmap = newBitmap
+        shapes.clear()
+        selectedShapeId = null
+        redoStack.clear()
     }
 
-    val contentStickers = listOf(
-        "🕒 $currentTimeStr",
-        "📍 PessoasAqui • ~10m",
-        "🔒 E2EE Protegido",
-        "📅 $currentDateStr"
-    )
+    // Gira 90 graus
+    fun rotate(degrees: Float) {
+        try {
+            val matrix = Matrix().apply { postRotate(degrees) }
+            val baked = bakeShapesIntoBitmap()
+            val rotated = Bitmap.createBitmap(baked, 0, 0, baked.width, baked.height, matrix, true)
+            applyBitmapTransformation(rotated)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Erro ao girar imagem: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
 
-    fun checkVipAccess(tool: EditorTool): Boolean = true // Recursos pré-ativados conforme diretriz do usuário
+    // Espelha Horizontalmente
+    fun flipHorizontal() {
+        try {
+            val matrix = Matrix().apply { postScale(-1f, 1f) }
+            val baked = bakeShapesIntoBitmap()
+            val flipped = Bitmap.createBitmap(baked, 0, 0, baked.width, baked.height, matrix, true)
+            applyBitmapTransformation(flipped)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Erro ao espelhar: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Espelha Verticalmente
+    fun flipVertical() {
+        try {
+            val matrix = Matrix().apply { postScale(1f, -1f) }
+            val baked = bakeShapesIntoBitmap()
+            val flipped = Bitmap.createBitmap(baked, 0, 0, baked.width, baked.height, matrix, true)
+            applyBitmapTransformation(flipped)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Erro ao espelhar: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Desfazer
+    fun undo() {
+        if (undoStack.isNotEmpty()) {
+            val prev = undoStack.removeAt(undoStack.lastIndex)
+            redoStack.add(bakeShapesIntoBitmap())
+            currentBitmap = prev
+            shapes.clear()
+            selectedShapeId = null
+        }
+    }
+
+    // Refazer
+    fun redo() {
+        if (redoStack.isNotEmpty()) {
+            val next = redoStack.removeAt(redoStack.lastIndex)
+            undoStack.add(bakeShapesIntoBitmap())
+            currentBitmap = next
+            shapes.clear()
+            selectedShapeId = null
+        }
+    }
+
+    // Restaurar Imagem Original
+    fun restoreOriginal() {
+        if (currentBitmap != sourceBitmap || undoStack.isNotEmpty() || shapes.isNotEmpty()) {
+            undoStack.add(bakeShapesIntoBitmap())
+            currentBitmap = sourceBitmap.copy(sourceBitmap.config ?: Bitmap.Config.ARGB_8888, true)
+            shapes.clear()
+            selectedShapeId = null
+            redoStack.clear()
+            isCropping = false
+            Toast.makeText(context, "Imagem original restaurada.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Inicializa a moldura de corte adaptando à proporção
+    fun resetCropBox(ratio: CropRatio) {
+        val targetRatio = ratio.ratio
+        if (targetRatio == null) {
+            val marginX = drawWidth * 0.04f
+            val marginY = drawHeight * 0.04f
+            cropBoxRect = RectF(
+                drawOffset.x + marginX,
+                drawOffset.y + marginY,
+                drawOffset.x + drawWidth - marginX,
+                drawOffset.y + drawHeight - marginY
+            )
+        } else {
+            val maxW = drawWidth * 0.92f
+            val maxH = drawHeight * 0.92f
+            val (boxW, boxH) = if (maxW / maxH > targetRatio) {
+                (maxH * targetRatio) to maxH
+            } else {
+                maxW to (maxW / targetRatio)
+            }
+            val left = drawOffset.x + (drawWidth - boxW) / 2f
+            val top = drawOffset.y + (drawHeight - boxH) / 2f
+            cropBoxRect = RectF(left, top, left + boxW, top + boxH)
+        }
+    }
+
+    // Aplica o corte de pixels tradicional
+    fun applyCrop() {
+        try {
+            val baked = bakeShapesIntoBitmap()
+            val normL = ((cropBoxRect.left - drawOffset.x) / drawWidth).coerceIn(0f, 1f)
+            val normT = ((cropBoxRect.top - drawOffset.y) / drawHeight).coerceIn(0f, 1f)
+            val normW = (cropBoxRect.width() / drawWidth).coerceIn(0.01f, 1f - normL)
+            val normH = (cropBoxRect.height() / drawHeight).coerceIn(0.01f, 1f - normT)
+
+            val pxX = (normL * baked.width).toInt().coerceIn(0, baked.width - 1)
+            val pxY = (normT * baked.height).toInt().coerceIn(0, baked.height - 1)
+            val pxW = (normW * baked.width).toInt().coerceIn(1, baked.width - pxX)
+            val pxH = (normH * baked.height).toInt().coerceIn(1, baked.height - pxY)
+
+            val cropped = Bitmap.createBitmap(baked, pxX, pxY, pxW, pxH)
+            applyBitmapTransformation(cropped)
+            isCropping = false
+            Toast.makeText(context, "Corte aplicado.", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(context, "Falha ao cortar imagem: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Adiciona Círculo no centro da imagem
+    fun addCircle() {
+        val center = Offset(drawOffset.x + drawWidth / 2f, drawOffset.y + drawHeight / 2f)
+        val shape = CanvasShape.Circle(
+            center = center,
+            radius = (drawWidth * 0.12f).coerceIn(40f, 120f),
+            color = shapeColor,
+            isFilled = isShapeFilled
+        )
+        shapes.add(shape)
+        selectedShapeId = shape.id
+    }
+
+    // Adiciona Quadrado no centro da imagem
+    fun addRectangle() {
+        val side = (drawWidth * 0.22f).coerceIn(70f, 200f)
+        val topL = Offset(drawOffset.x + (drawWidth - side) / 2f, drawOffset.y + (drawHeight - side) / 2f)
+        val shape = CanvasShape.Rectangle(
+            topLeft = topL,
+            size = Size(side, side),
+            color = shapeColor,
+            isFilled = isShapeFilled
+        )
+        shapes.add(shape)
+        selectedShapeId = shape.id
+    }
+
+    // Adiciona Seta no centro da imagem
+    fun addArrow() {
+        val midX = drawOffset.x + drawWidth / 2f
+        val midY = drawOffset.y + drawHeight / 2f
+        val len = (drawWidth * 0.22f).coerceIn(80f, 220f)
+        val shape = CanvasShape.Arrow(
+            start = Offset(midX - len / 2f, midY),
+            end = Offset(midX + len / 2f, midY),
+            color = shapeColor,
+            isFilled = isShapeFilled
+        )
+        shapes.add(shape)
+        selectedShapeId = shape.id
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -123,984 +465,755 @@ fun ImageEditorDialog(
             modifier = Modifier.fillMaxSize(),
             color = Color.Black
         ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                // Área de Desenho e Visualização
-                BoxWithConstraints(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(top = 64.dp, bottom = 120.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    val canvasWidth = constraints.maxWidth.toFloat()
-                    val canvasHeight = constraints.maxHeight.toFloat()
-
-                    // Calcula o aspect ratio da imagem para desenhar perfeitamente
-                    val imgAspect = currentBitmap.width.toFloat() / currentBitmap.height.toFloat()
-                    val canvasAspect = canvasWidth / canvasHeight
-
-                    val (drawWidth, drawHeight) = if (imgAspect > canvasAspect) {
-                        canvasWidth to (canvasWidth / imgAspect)
-                    } else {
-                        (canvasHeight * imgAspect) to canvasHeight
-                    }
-
-                    val drawOffset = Offset(
-                        (canvasWidth - drawWidth) / 2f,
-                        (canvasHeight - drawHeight) / 2f
-                    )
-                    currentDrawOffset = drawOffset
-                    currentDrawWidth = drawWidth
-                    currentDrawHeight = drawHeight
-
-                    Canvas(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .pointerInput(currentTool, selectedColor, selectedStrokeWidth, elements.size) {
-                                detectDragGestures(
-                                    onDragStart = { offset ->
-                                        // 1. Prioridade: Se tocar sobre ou próximo a um Texto ou Figurinha, seleciona para mover livremente
-                                        val touchedIdx = elements.indexOfLast { el ->
-                                            when (el) {
-                                                is DrawingElement.TextElement -> (offset - el.position).getDistance() < 130f
-                                                is DrawingElement.StickerElement -> (offset - el.position).getDistance() < 130f
-                                                else -> false
-                                            }
-                                        }
-                                        if (touchedIdx != -1) {
-                                            draggedElementIndex = touchedIdx
-                                        } else {
-                                            draggedElementIndex = null
-                                            if (currentTool == EditorTool.BRUSH) {
-                                                currentPathPoints = listOf(offset)
-                                            } else if (currentTool in listOf(EditorTool.RECTANGLE, EditorTool.CIRCLE, EditorTool.ARROW)) {
-                                                shapeStart = offset
-                                                shapeCurrent = offset
-                                            }
-                                        }
-                                    },
-                                    onDrag = { change, _ ->
-                                        change.consume()
-                                        val dragIdx = draggedElementIndex
-                                        if (dragIdx != null && dragIdx in elements.indices) {
-                                            // Atualiza a posição do texto/figurinha em tempo real conforme arrasto
-                                            val el = elements[dragIdx]
-                                            when (el) {
-                                                is DrawingElement.TextElement -> elements[dragIdx] = el.copy(position = change.position)
-                                                is DrawingElement.StickerElement -> elements[dragIdx] = el.copy(position = change.position)
-                                                else -> {}
-                                            }
-                                        } else if (currentTool == EditorTool.BRUSH) {
-                                            currentPathPoints = currentPathPoints + change.position
-                                        } else if (currentTool in listOf(EditorTool.RECTANGLE, EditorTool.CIRCLE, EditorTool.ARROW)) {
-                                            shapeCurrent = change.position
-                                        }
-                                    },
-                                    onDragEnd = {
-                                        if (draggedElementIndex != null) {
-                                            draggedElementIndex = null
-                                        } else if (currentTool == EditorTool.BRUSH && currentPathPoints.size > 1) {
-                                            elements.add(DrawingElement.PathElement(currentPathPoints, selectedColor, selectedStrokeWidth))
-                                            currentPathPoints = emptyList()
-                                        } else if (shapeStart != null && shapeCurrent != null) {
-                                            val start = shapeStart!!
-                                            val end = shapeCurrent!!
-                                            when (currentTool) {
-                                                EditorTool.RECTANGLE -> elements.add(DrawingElement.RectElement(start, end, selectedColor, selectedStrokeWidth))
-                                                EditorTool.CIRCLE -> {
-                                                    val radius = (end - start).getDistance() / 2f
-                                                    val center = Offset((start.x + end.x) / 2f, (start.y + end.y) / 2f)
-                                                    elements.add(DrawingElement.CircleElement(center, radius, selectedColor, selectedStrokeWidth))
-                                                }
-                                                EditorTool.ARROW -> elements.add(DrawingElement.ArrowElement(start, end, selectedColor, selectedStrokeWidth))
-                                                else -> {}
-                                            }
-                                            shapeStart = null
-                                            shapeCurrent = null
-                                        }
-                                    }
-                                )
-                            }
-                    ) {
-                        // 1. Desenha a Imagem Fonte Atualizada (com suporte a giro e corte)
-                        val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
-                        val dstRect = android.graphics.Rect(
-                            drawOffset.x.toInt(),
-                            drawOffset.y.toInt(),
-                            (drawOffset.x + drawWidth).toInt(),
-                            (drawOffset.y + drawHeight).toInt()
-                        )
-                        drawContext.canvas.nativeCanvas.drawBitmap(currentBitmap, null, dstRect, paint)
-
-                        // 2. Desenha Elementos Finalizados
-                        for (el in elements) {
-                            when (el) {
-                                is DrawingElement.PathElement -> {
-                                    if (el.points.size > 1) {
-                                        for (i in 0 until el.points.size - 1) {
-                                            drawLine(
-                                                color = el.color,
-                                                start = el.points[i],
-                                                end = el.points[i + 1],
-                                                strokeWidth = el.strokeWidth,
-                                                cap = androidx.compose.ui.graphics.StrokeCap.Round
-                                            )
-                                        }
-                                    }
-                                }
-                                is DrawingElement.RectElement -> {
-                                    val left = minOf(el.start.x, el.end.x)
-                                    val top = minOf(el.start.y, el.end.y)
-                                    val right = maxOf(el.start.x, el.end.x)
-                                    val bottom = maxOf(el.start.y, el.end.y)
-                                    drawRect(
-                                        color = el.color,
-                                        topLeft = Offset(left, top),
-                                        size = Size(right - left, bottom - top),
-                                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = el.strokeWidth)
-                                    )
-                                }
-                                is DrawingElement.CircleElement -> {
-                                    drawCircle(
-                                        color = el.color,
-                                        center = el.center,
-                                        radius = el.radius,
-                                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = el.strokeWidth)
-                                    )
-                                }
-                                is DrawingElement.ArrowElement -> {
-                                    drawLine(
-                                        color = el.color,
-                                        start = el.start,
-                                        end = el.end,
-                                        strokeWidth = el.strokeWidth,
-                                        cap = androidx.compose.ui.graphics.StrokeCap.Round
-                                    )
-                                    // Ponta da seta
-                                    val angle = atan2(el.end.y - el.start.y, el.end.x - el.start.x)
-                                    val headLength = (el.strokeWidth * 3f).coerceAtLeast(20f)
-                                    val arrowAngle = Math.PI / 6
-                                    val p1 = Offset(
-                                        (el.end.x - headLength * cos(angle - arrowAngle)).toFloat(),
-                                        (el.end.y - headLength * sin(angle - arrowAngle)).toFloat()
-                                    )
-                                    val p2 = Offset(
-                                        (el.end.x - headLength * cos(angle + arrowAngle)).toFloat(),
-                                        (el.end.y - headLength * sin(angle + arrowAngle)).toFloat()
-                                    )
-                                    drawLine(color = el.color, start = el.end, end = p1, strokeWidth = el.strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                                    drawLine(color = el.color, start = el.end, end = p2, strokeWidth = el.strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                                }
-                                is DrawingElement.StickerElement -> {
-                                    val nativePaint = android.graphics.Paint().apply {
-                                        textSize = if (el.isContentSticker) 34f else 48f
-                                        isAntiAlias = true
-                                    }
-                                    if (el.isContentSticker) {
-                                        // Fundo estilizado para figurinhas de conteúdo
-                                        val textBounds = android.graphics.Rect()
-                                        nativePaint.getTextBounds(el.text, 0, el.text.length, textBounds)
-                                        val bgPaint = android.graphics.Paint().apply {
-                                            color = android.graphics.Color.argb(200, 10, 25, 40)
-                                            isAntiAlias = true
-                                        }
-                                        val borderPaint = android.graphics.Paint().apply {
-                                            color = android.graphics.Color.argb(255, 0, 229, 255)
-                                            style = android.graphics.Paint.Style.STROKE
-                                            strokeWidth = 3f
-                                            isAntiAlias = true
-                                        }
-                                        val rect = RectF(
-                                            el.position.x - 16f,
-                                            el.position.y - textBounds.height() - 16f,
-                                            el.position.x + textBounds.width() + 16f,
-                                            el.position.y + 16f
-                                        )
-                                        drawContext.canvas.nativeCanvas.drawRoundRect(rect, 14f, 14f, bgPaint)
-                                        drawContext.canvas.nativeCanvas.drawRoundRect(rect, 14f, 14f, borderPaint)
-                                        nativePaint.color = android.graphics.Color.WHITE
-                                        nativePaint.isFakeBoldText = true
-                                    }
-                                    drawContext.canvas.nativeCanvas.drawText(el.text, el.position.x, el.position.y, nativePaint)
-                                }
-                                is DrawingElement.TextElement -> {
-                                    val nativePaint = android.graphics.Paint().apply {
-                                        textSize = 38f
-                                        color = el.color.toArgb()
-                                        isFakeBoldText = true
-                                        isAntiAlias = true
-                                    }
-                                    val textBounds = android.graphics.Rect()
-                                    nativePaint.getTextBounds(el.text, 0, el.text.length, textBounds)
-                                    val bgPaint = android.graphics.Paint().apply {
-                                        color = el.bgColor.toArgb()
-                                        isAntiAlias = true
-                                    }
-                                    val rect = RectF(
-                                        el.position.x - 12f,
-                                        el.position.y - textBounds.height() - 10f,
-                                        el.position.x + textBounds.width() + 12f,
-                                        el.position.y + 10f
-                                    )
-                                    drawContext.canvas.nativeCanvas.drawRoundRect(rect, 10f, 10f, bgPaint)
-                                    drawContext.canvas.nativeCanvas.drawText(el.text, el.position.x, el.position.y, nativePaint)
-                                }
-                            }
-                        }
-
-                        // 3. Desenha elemento em arrasto ativo (Preview em tempo real)
-                        if (currentTool == EditorTool.BRUSH && currentPathPoints.size > 1) {
-                            for (i in 0 until currentPathPoints.size - 1) {
-                                drawLine(
-                                    color = selectedColor,
-                                    start = currentPathPoints[i],
-                                    end = currentPathPoints[i + 1],
-                                    strokeWidth = selectedStrokeWidth,
-                                    cap = androidx.compose.ui.graphics.StrokeCap.Round
-                                )
-                            }
-                        } else if (shapeStart != null && shapeCurrent != null) {
-                            val start = shapeStart!!
-                            val end = shapeCurrent!!
-                            when (currentTool) {
-                                EditorTool.RECTANGLE -> {
-                                    val left = minOf(start.x, end.x)
-                                    val top = minOf(start.y, end.y)
-                                    val right = maxOf(start.x, end.x)
-                                    val bottom = maxOf(start.y, end.y)
-                                    drawRect(
-                                        color = selectedColor,
-                                        topLeft = Offset(left, top),
-                                        size = Size(right - left, bottom - top),
-                                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = selectedStrokeWidth)
-                                    )
-                                }
-                                EditorTool.CIRCLE -> {
-                                    val radius = (end - start).getDistance() / 2f
-                                    val center = Offset((start.x + end.x) / 2f, (start.y + end.y) / 2f)
-                                    drawCircle(
-                                        color = selectedColor,
-                                        center = center,
-                                        radius = radius,
-                                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = selectedStrokeWidth)
-                                    )
-                                }
-                                EditorTool.ARROW -> {
-                                    drawLine(color = selectedColor, start = start, end = end, strokeWidth = selectedStrokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                                    val angle = atan2(end.y - start.y, end.x - start.x)
-                                    val headLength = (selectedStrokeWidth * 3f).coerceAtLeast(20f)
-                                    val arrowAngle = Math.PI / 6
-                                    val p1 = Offset(
-                                        (end.x - headLength * cos(angle - arrowAngle)).toFloat(),
-                                        (end.y - headLength * sin(angle - arrowAngle)).toFloat()
-                                    )
-                                    val p2 = Offset(
-                                        (end.x - headLength * cos(angle + arrowAngle)).toFloat(),
-                                        (end.y - headLength * sin(angle + arrowAngle)).toFloat()
-                                    )
-                                    drawLine(color = selectedColor, start = end, end = p1, strokeWidth = selectedStrokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                                    drawLine(color = selectedColor, start = end, end = p2, strokeWidth = selectedStrokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                                }
-                                else -> {}
-                            }
-                        }
-                    }
-                }
-
-                // TopBar com Ações de Controle
+            Column(modifier = Modifier.fillMaxSize()) {
+                // ==========================================
+                // 1. BARRA SUPERIOR
+                // ==========================================
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .statusBarsPadding()
                         .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Cancelar", tint = Color.White)
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.12f))
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Cancelar", tint = Color.White)
                     }
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Girar 90° à Direita
-                        IconButton(onClick = {
-                            val matrix = android.graphics.Matrix().apply { postRotate(90f) }
-                            currentBitmap = Bitmap.createBitmap(currentBitmap, 0, 0, currentBitmap.width, currentBitmap.height, matrix, true)
-                        }) {
-                            Icon(Icons.Default.RotateRight, contentDescription = "Girar 90°", tint = Color.White)
+                    // Histórico (Desfazer, Refazer e Restaurar)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        IconButton(
+                            onClick = { undo() },
+                            enabled = undoStack.isNotEmpty(),
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(if (undoStack.isNotEmpty()) Color.White.copy(alpha = 0.15f) else Color.Transparent)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Undo,
+                                contentDescription = "Desfazer",
+                                tint = if (undoStack.isNotEmpty()) Color.White else Color.Gray.copy(alpha = 0.4f)
+                            )
                         }
 
-                        // Cortar / Redimensionar
-                        IconButton(onClick = { showCropDialog = true }) {
-                            Icon(Icons.Default.Crop, contentDescription = "Cortar Foto", tint = Color.White)
+                        IconButton(
+                            onClick = { redo() },
+                            enabled = redoStack.isNotEmpty(),
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(if (redoStack.isNotEmpty()) Color.White.copy(alpha = 0.15f) else Color.Transparent)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Redo,
+                                contentDescription = "Refazer",
+                                tint = if (redoStack.isNotEmpty()) Color.White else Color.Gray.copy(alpha = 0.4f)
+                            )
                         }
 
-                        // Desfazer
+                        TextButton(
+                            onClick = { restoreOriginal() },
+                            enabled = undoStack.isNotEmpty() || currentBitmap != sourceBitmap || shapes.isNotEmpty(),
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = if (undoStack.isNotEmpty() || currentBitmap != sourceBitmap || shapes.isNotEmpty()) RadarCyan else Color.Gray.copy(alpha = 0.4f)
+                            )
+                        ) {
+                            Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Restaurar", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    // Compartilhar e Enviar
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         IconButton(
                             onClick = {
-                                if (elements.isNotEmpty()) {
-                                    elements.removeAt(elements.size - 1)
-                                }
+                                val finalBmp = bakeShapesIntoBitmap()
+                                shareBitmap(context, finalBmp)
                             },
-                            enabled = elements.isNotEmpty()
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.12f))
                         ) {
-                            Icon(
-                                Icons.Default.Undo,
-                                contentDescription = "Desfazer",
-                                tint = if (elements.isNotEmpty()) Color.White else Color.Gray
-                            )
+                            Icon(Icons.Default.Share, contentDescription = "Compartilhar", tint = Color.White)
                         }
 
-                        // Limpar Tudo
-                        IconButton(
-                            onClick = { elements.clear() },
-                            enabled = elements.isNotEmpty()
-                        ) {
-                            Icon(
-                                Icons.Default.DeleteOutline,
-                                contentDescription = "Limpar Tudo",
-                                tint = if (elements.isNotEmpty()) Color.White else Color.Gray
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(6.dp))
-
-                        // Botão Enviar com Criptografia E2EE
                         Button(
                             onClick = {
-                                // Renderiza imagem final em alta resolução com os elementos aplicados exatamente nas posições visíveis
-                                val finalBitmap = renderFinalBitmap(currentBitmap, elements, currentDrawOffset, currentDrawWidth, currentDrawHeight)
-                                onSendEditedImage(finalBitmap)
+                                val finalBmp = bakeShapesIntoBitmap()
+                                onSendEditedImage(finalBmp)
+                                onDismiss()
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = RadarCyan),
-                            shape = RoundedCornerShape(20.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(18.dp)
                         ) {
-                            Icon(Icons.Default.Send, contentDescription = null, tint = DeepBlack, modifier = Modifier.size(16.dp))
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Enviar", color = DeepBlack, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Enviar", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     }
                 }
 
-                // Barra Inferior de Ferramentas e Seletor de Cores
-                Column(
+                // ==========================================
+                // 2. REGIÃO CENTRAL: Imagem, Formas e Corte
+                // ==========================================
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val canvasWidth = constraints.maxWidth.toFloat()
+                    val canvasHeight = constraints.maxHeight.toFloat()
+
+                    val imgAspect = currentBitmap.width.toFloat() / currentBitmap.height.toFloat().coerceAtLeast(1f)
+                    val canvasAspect = canvasWidth / canvasHeight.coerceAtLeast(1f)
+
+                    val (dw, dh) = if (imgAspect > canvasAspect) {
+                        canvasWidth to (canvasWidth / imgAspect)
+                    } else {
+                        (canvasHeight * imgAspect) to canvasHeight
+                    }
+
+                    val offX = (canvasWidth - dw) / 2f
+                    val offY = (canvasHeight - dh) / 2f
+                    drawOffset = Offset(offX, offY)
+                    drawWidth = dw
+                    drawHeight = dh
+
+                    LaunchedEffect(isCropping, drawWidth, drawHeight) {
+                        if (isCropping) {
+                            resetCropBox(selectedCropRatio)
+                        }
+                    }
+
+                    val currentImageBitmap = remember(currentBitmap) { currentBitmap.asImageBitmap() }
+
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(isCropping, shapes.size) {
+                                if (isCropping) {
+                                    // Modo Corte Interativo
+                                    detectDragGestures(
+                                        onDragStart = { startPos ->
+                                            dragStartTouch = startPos
+                                            initialRectAtDragStart = RectF(cropBoxRect)
+                                            val touchRadius = 85f
+                                            val cL = cropBoxRect.left
+                                            val cT = cropBoxRect.top
+                                            val cR = cropBoxRect.right
+                                            val cB = cropBoxRect.bottom
+
+                                            activeCropHandle = when {
+                                                (startPos - Offset(cL, cT)).getDistance() < touchRadius -> CropDragHandle.TOP_LEFT
+                                                (startPos - Offset(cR, cT)).getDistance() < touchRadius -> CropDragHandle.TOP_RIGHT
+                                                (startPos - Offset(cL, cB)).getDistance() < touchRadius -> CropDragHandle.BOTTOM_LEFT
+                                                (startPos - Offset(cR, cB)).getDistance() < touchRadius -> CropDragHandle.BOTTOM_RIGHT
+                                                Math.abs(startPos.x - cL) < touchRadius && startPos.y in (cT - 10f)..(cB + 10f) -> CropDragHandle.LEFT
+                                                Math.abs(startPos.x - cR) < touchRadius && startPos.y in (cT - 10f)..(cB + 10f) -> CropDragHandle.RIGHT
+                                                Math.abs(startPos.y - cT) < touchRadius && startPos.x in (cL - 10f)..(cR + 10f) -> CropDragHandle.TOP
+                                                Math.abs(startPos.y - cB) < touchRadius && startPos.x in (cL - 10f)..(cR + 10f) -> CropDragHandle.BOTTOM
+                                                cropBoxRect.contains(startPos.x, startPos.y) -> CropDragHandle.CENTER
+                                                else -> CropDragHandle.NONE
+                                            }
+                                        },
+                                        onDrag = { change, _ ->
+                                            change.consume()
+                                            val dx = change.position.x - dragStartTouch.x
+                                            val dy = change.position.y - dragStartTouch.y
+                                            val minSize = 90f
+                                            val imgL = drawOffset.x
+                                            val imgT = drawOffset.y
+                                            val imgR = drawOffset.x + drawWidth
+                                            val imgB = drawOffset.y + drawHeight
+
+                                            val init = initialRectAtDragStart
+                                            var newL = init.left
+                                            var newT = init.top
+                                            var newR = init.right
+                                            var newB = init.bottom
+
+                                            val fixedRatio = selectedCropRatio.ratio
+
+                                            if (activeCropHandle == CropDragHandle.CENTER) {
+                                                val boxW = init.width()
+                                                val boxH = init.height()
+                                                newL = (init.left + dx).coerceIn(imgL, (imgR - boxW).coerceAtLeast(imgL))
+                                                newT = (init.top + dy).coerceIn(imgT, (imgB - boxH).coerceAtLeast(imgT))
+                                                newR = newL + boxW
+                                                newB = newT + boxH
+                                            } else if (fixedRatio == null) {
+                                                when (activeCropHandle) {
+                                                    CropDragHandle.TOP_LEFT -> {
+                                                        newL = (init.left + dx).coerceIn(imgL, init.right - minSize)
+                                                        newT = (init.top + dy).coerceIn(imgT, init.bottom - minSize)
+                                                    }
+                                                    CropDragHandle.TOP_RIGHT -> {
+                                                        newR = (init.right + dx).coerceIn(init.left + minSize, imgR)
+                                                        newT = (init.top + dy).coerceIn(imgT, init.bottom - minSize)
+                                                    }
+                                                    CropDragHandle.BOTTOM_LEFT -> {
+                                                        newL = (init.left + dx).coerceIn(imgL, init.right - minSize)
+                                                        newB = (init.bottom + dy).coerceIn(init.top + minSize, imgB)
+                                                    }
+                                                    CropDragHandle.BOTTOM_RIGHT -> {
+                                                        newR = (init.right + dx).coerceIn(init.left + minSize, imgR)
+                                                        newB = (init.bottom + dy).coerceIn(init.top + minSize, imgB)
+                                                    }
+                                                    CropDragHandle.LEFT -> newL = (init.left + dx).coerceIn(imgL, init.right - minSize)
+                                                    CropDragHandle.RIGHT -> newR = (init.right + dx).coerceIn(init.left + minSize, imgR)
+                                                    CropDragHandle.TOP -> newT = (init.top + dy).coerceIn(imgT, init.bottom - minSize)
+                                                    CropDragHandle.BOTTOM -> newB = (init.bottom + dy).coerceIn(init.top + minSize, imgB)
+                                                    else -> {}
+                                                }
+                                            } else {
+                                                when (activeCropHandle) {
+                                                    CropDragHandle.BOTTOM_RIGHT, CropDragHandle.RIGHT, CropDragHandle.BOTTOM -> {
+                                                        val desiredW = (init.width() + dx).coerceIn(minSize, imgR - init.left)
+                                                        val desiredH = desiredW / fixedRatio
+                                                        if (init.top + desiredH <= imgB) {
+                                                            newR = init.left + desiredW
+                                                            newB = init.top + desiredH
+                                                        }
+                                                    }
+                                                    CropDragHandle.TOP_LEFT, CropDragHandle.LEFT, CropDragHandle.TOP -> {
+                                                        val desiredW = (init.width() - dx).coerceIn(minSize, init.right - imgL)
+                                                        val desiredH = desiredW / fixedRatio
+                                                        if (init.bottom - desiredH >= imgT) {
+                                                            newL = init.right - desiredW
+                                                            newT = init.bottom - desiredH
+                                                        }
+                                                    }
+                                                    CropDragHandle.TOP_RIGHT -> {
+                                                        val desiredW = (init.width() + dx).coerceIn(minSize, imgR - init.left)
+                                                        val desiredH = desiredW / fixedRatio
+                                                        if (init.bottom - desiredH >= imgT) {
+                                                            newR = init.left + desiredW
+                                                            newT = init.bottom - desiredH
+                                                        }
+                                                    }
+                                                    CropDragHandle.BOTTOM_LEFT -> {
+                                                        val desiredW = (init.width() - dx).coerceIn(minSize, init.right - imgL)
+                                                        val desiredH = desiredW / fixedRatio
+                                                        if (init.top + desiredH <= imgB) {
+                                                            newL = init.right - desiredW
+                                                            newB = init.top + desiredH
+                                                        }
+                                                    }
+                                                    else -> {}
+                                                }
+                                            }
+                                            cropBoxRect = RectF(newL, newT, newR, newB)
+                                        },
+                                        onDragEnd = { activeCropHandle = CropDragHandle.NONE },
+                                        onDragCancel = { activeCropHandle = CropDragHandle.NONE }
+                                    )
+                                } else {
+                                    // Mover Formas Livremente para qualquer lugar da imagem
+                                    detectDragGestures(
+                                        onDragStart = { touchOffset ->
+                                            val touched = shapes.findLast { it.contains(touchOffset) }
+                                            if (touched != null) {
+                                                selectedShapeId = touched.id
+                                                // Sincroniza cor e estilo com a forma tocada
+                                                shapeColor = touched.color
+                                                isShapeFilled = touched.isFilled
+                                            } else {
+                                                selectedShapeId = null
+                                            }
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            selectedShapeId?.let { sId ->
+                                                val s = shapes.find { it.id == sId }
+                                                s?.moveBy(dragAmount)
+                                                shapesRevision++
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                    ) {
+                        // Força recomposição reativa do Canvas a 60fps durante arrasto ou mudança de estilo das formas
+                        val _rev = shapesRevision
+
+                        // Desenha a imagem base
+                        drawImage(
+                            image = currentImageBitmap,
+                            dstOffset = androidx.compose.ui.unit.IntOffset(drawOffset.x.toInt(), drawOffset.y.toInt()),
+                            dstSize = androidx.compose.ui.unit.IntSize(drawWidth.toInt(), drawHeight.toInt())
+                        )
+
+                        // Desenha todas as formas (círculos, retângulos, setas)
+                        shapes.forEach { shape ->
+                            val isSelected = shape.id == selectedShapeId
+
+                            when (shape) {
+                                is CanvasShape.Circle -> {
+                                    if (shape.isFilled) {
+                                        drawCircle(color = shape.color, radius = shape.radius, center = shape.center)
+                                    } else {
+                                        drawCircle(
+                                            color = shape.color,
+                                            radius = shape.radius,
+                                            center = shape.center,
+                                            style = Stroke(width = shape.strokeWidth)
+                                        )
+                                    }
+                                    if (isSelected) {
+                                        drawCircle(
+                                            color = Color.White.copy(alpha = 0.8f),
+                                            radius = shape.radius + 6.dp.toPx(),
+                                            center = shape.center,
+                                            style = Stroke(width = 2.dp.toPx())
+                                        )
+                                    }
+                                }
+                                is CanvasShape.Rectangle -> {
+                                    if (shape.isFilled) {
+                                        drawRect(color = shape.color, topLeft = shape.topLeft, size = shape.size)
+                                    } else {
+                                        drawRect(
+                                            color = shape.color,
+                                            topLeft = shape.topLeft,
+                                            size = shape.size,
+                                            style = Stroke(width = shape.strokeWidth)
+                                        )
+                                    }
+                                    if (isSelected) {
+                                        drawRect(
+                                            color = Color.White.copy(alpha = 0.8f),
+                                            topLeft = Offset(shape.topLeft.x - 6.dp.toPx(), shape.topLeft.y - 6.dp.toPx()),
+                                            size = Size(shape.size.width + 12.dp.toPx(), shape.size.height + 12.dp.toPx()),
+                                            style = Stroke(width = 2.dp.toPx())
+                                        )
+                                    }
+                                }
+                                is CanvasShape.Arrow -> {
+                                    // Linha da seta
+                                    drawLine(
+                                        color = shape.color,
+                                        start = shape.start,
+                                        end = shape.end,
+                                        strokeWidth = shape.strokeWidth
+                                    )
+                                    // Ponta da seta
+                                    val angle = atan2((shape.end.y - shape.start.y).toDouble(), (shape.end.x - shape.start.x).toDouble())
+                                    val headLen = (shape.strokeWidth * 3f).coerceAtLeast(24f)
+                                    val p1 = Offset(
+                                        (shape.end.x - headLen * cos(angle - Math.PI / 6)).toFloat(),
+                                        (shape.end.y - headLen * sin(angle - Math.PI / 6)).toFloat()
+                                    )
+                                    val p2 = Offset(
+                                        (shape.end.x - headLen * cos(angle + Math.PI / 6)).toFloat(),
+                                        (shape.end.y - headLen * sin(angle + Math.PI / 6)).toFloat()
+                                    )
+                                    val path = androidx.compose.ui.graphics.Path().apply {
+                                        moveTo(shape.end.x, shape.end.y)
+                                        lineTo(p1.x, p1.y)
+                                        lineTo(p2.x, p2.y)
+                                        close()
+                                    }
+                                    drawPath(path = path, color = shape.color)
+                                }
+                            }
+                        }
+
+                        // Modo Corte Ativo (Moldura, Grade e Alças)
+                        if (isCropping) {
+                            val cL = cropBoxRect.left
+                            val cT = cropBoxRect.top
+                            val cR = cropBoxRect.right
+                            val cB = cropBoxRect.bottom
+                            val dimColor = Color.Black.copy(alpha = 0.65f)
+
+                            drawRect(dimColor, Offset(0f, 0f), Size(canvasWidth, cT))
+                            drawRect(dimColor, Offset(0f, cB), Size(canvasWidth, canvasHeight - cB))
+                            drawRect(dimColor, Offset(0f, cT), Size(cL, cB - cT))
+                            drawRect(dimColor, Offset(cR, cT), Size(canvasWidth - cR, cB - cT))
+
+                            drawRect(
+                                color = Color.White,
+                                topLeft = Offset(cL, cT),
+                                size = Size(cR - cL, cB - cT),
+                                style = Stroke(width = 2.dp.toPx())
+                            )
+
+                            val w = cR - cL
+                            val h = cB - cT
+                            val gridColor = Color.White.copy(alpha = 0.4f)
+                            val gridStroke = Stroke(width = 1.dp.toPx())
+
+                            drawLine(gridColor, Offset(cL + w / 3f, cT), Offset(cL + w / 3f, cB), strokeWidth = gridStroke.width)
+                            drawLine(gridColor, Offset(cL + 2f * w / 3f, cT), Offset(cL + 2f * w / 3f, cB), strokeWidth = gridStroke.width)
+                            drawLine(gridColor, Offset(cL, cT + h / 3f), Offset(cR, cT + h / 3f), strokeWidth = gridStroke.width)
+                            drawLine(gridColor, Offset(cL, cT + 2f * h / 3f), Offset(cR, cT + 2f * h / 3f), strokeWidth = gridStroke.width)
+
+                            val cornerLength = 22.dp.toPx()
+                            val cornerStroke = 4.dp.toPx()
+                            val cornerColor = RadarCyan
+
+                            drawLine(cornerColor, Offset(cL, cT), Offset(cL + cornerLength, cT), strokeWidth = cornerStroke)
+                            drawLine(cornerColor, Offset(cL, cT), Offset(cL, cT + cornerLength), strokeWidth = cornerStroke)
+                            drawLine(cornerColor, Offset(cR, cT), Offset(cR - cornerLength, cT), strokeWidth = cornerStroke)
+                            drawLine(cornerColor, Offset(cR, cT), Offset(cR, cT - cornerLength), strokeWidth = cornerStroke)
+                            drawLine(cornerColor, Offset(cL, cB), Offset(cL + cornerLength, cB), strokeWidth = cornerStroke)
+                            drawLine(cornerColor, Offset(cL, cB), Offset(cL, cB - cornerLength), strokeWidth = cornerStroke)
+                            drawLine(cornerColor, Offset(cR, cB), Offset(cR - cornerLength, cB), strokeWidth = cornerStroke)
+                            drawLine(cornerColor, Offset(cR, cB), Offset(cR, cB - cornerLength), strokeWidth = cornerStroke)
+                        }
+                    }
+                }
+
+                // ==========================================
+                // 3. PARTE INFERIOR: Ferramentas e Formas
+                // ==========================================
+                Surface(
+                    color = Color.Black.copy(alpha = 0.94f),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .align(Alignment.BottomCenter)
-                        .background(Color.Black.copy(alpha = 0.85f))
-                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                        .navigationBarsPadding()
                 ) {
-                    // Paleta de Cores
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 10.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        colors.forEach { color ->
-                            val isSelected = selectedColor == color
-                            Box(
+                    if (isCropping) {
+                        // Painel de Corte
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp, horizontal = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
                                 modifier = Modifier
-                                    .padding(horizontal = 6.dp)
-                                    .size(if (isSelected) 30.dp else 22.dp)
-                                    .clip(CircleShape)
-                                    .background(color)
-                                    .border(
-                                        width = if (isSelected) 2.5.dp else 1.dp,
-                                        color = if (isSelected) Color.White else Color.DarkGray,
-                                        shape = CircleShape
-                                    )
-                                    .clickable { selectedColor = color }
-                            )
-                        }
-                    }
-
-                    // Seletor de Ferramentas
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // 1. Pincel Livre
-                        ToolButton(
-                            icon = Icons.Default.Brush,
-                            label = "Pincel",
-                            isSelected = currentTool == EditorTool.BRUSH,
-                            onClick = { currentTool = EditorTool.BRUSH }
-                        )
-
-                        // 2. Retângulo (VIP)
-                        ToolButton(
-                            icon = Icons.Default.CropSquare,
-                            label = "Retângulo",
-                            isSelected = currentTool == EditorTool.RECTANGLE,
-                            isVipBadge = false,
-                            onClick = { currentTool = EditorTool.RECTANGLE }
-                        )
-
-                        // 3. Círculo
-                        ToolButton(
-                            icon = Icons.Default.RadioButtonUnchecked,
-                            label = "Círculo",
-                            isSelected = currentTool == EditorTool.CIRCLE,
-                            isVipBadge = false,
-                            onClick = { currentTool = EditorTool.CIRCLE }
-                        )
-
-                        // 4. Seta
-                        ToolButton(
-                            icon = Icons.Default.ArrowOutward,
-                            label = "Seta",
-                            isSelected = currentTool == EditorTool.ARROW,
-                            isVipBadge = false,
-                            onClick = { currentTool = EditorTool.ARROW }
-                        )
-
-                        // 5. Figurinhas & Carimbos
-                        ToolButton(
-                            icon = Icons.Default.EmojiEmotions,
-                            label = "Figurinhas",
-                            isSelected = showStickerSheet,
-                            onClick = { showStickerSheet = true }
-                        )
-
-                        // 6. Texto / Legenda
-                        ToolButton(
-                            icon = Icons.Default.Title,
-                            label = "Texto",
-                            isSelected = currentTool == EditorTool.TEXT,
-                            onClick = { showTextInputDialog = true }
-                        )
-                    }
-                }
-
-                // Modal de Figurinhas e Figurinhas de Conteúdo
-                if (showStickerSheet) {
-                    AlertDialog(
-                        onDismissRequest = { showStickerSheet = false },
-                        containerColor = DarkSurface,
-                        title = {
-                            Text("Figurinhas & Carimbos de Conteúdo", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                        },
-                        text = {
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                Text("Carimbos de Conteúdo (Estilo Stories)", color = RadarCyan, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                                Spacer(modifier = Modifier.height(6.dp))
-                                contentStickers.forEach { stickerText ->
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CropRatio.values().forEach { ratio ->
+                                    val isSelected = selectedCropRatio == ratio
                                     Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 4.dp)
-                                            .clickable {
-                                                elements.add(
-                                                    DrawingElement.StickerElement(
-                                                        text = stickerText,
-                                                        position = Offset(100f, 250f + elements.size * 50f),
-                                                        isContentSticker = true
-                                                    )
-                                                )
-                                                showStickerSheet = false
-                                            },
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = DarkCard,
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, RadarCyan.copy(alpha = 0.5f))
+                                        shape = RoundedCornerShape(16.dp),
+                                        color = if (isSelected) RadarCyan else Color.White.copy(alpha = 0.12f),
+                                        modifier = Modifier.clickable {
+                                            selectedCropRatio = ratio
+                                            resetCropBox(ratio)
+                                        }
                                     ) {
                                         Text(
-                                            text = stickerText,
-                                            color = TextPrimary,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp,
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(14.dp))
-                                Text("Figurinhas Rápidas", color = EmeraldGreen, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    standardStickers.take(6).forEach { emoji ->
-                                        Text(
-                                            text = emoji,
-                                            fontSize = 28.sp,
-                                            modifier = Modifier.clickable {
-                                                elements.add(
-                                                    DrawingElement.StickerElement(
-                                                        text = emoji,
-                                                        position = Offset(150f, 300f + elements.size * 30f),
-                                                        isContentSticker = false
-                                                    )
-                                                )
-                                                showStickerSheet = false
-                                            }
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    standardStickers.drop(6).take(6).forEach { emoji ->
-                                        Text(
-                                            text = emoji,
-                                            fontSize = 28.sp,
-                                            modifier = Modifier.clickable {
-                                                elements.add(
-                                                    DrawingElement.StickerElement(
-                                                        text = emoji,
-                                                        position = Offset(150f, 300f + elements.size * 30f),
-                                                        isContentSticker = false
-                                                    )
-                                                )
-                                                showStickerSheet = false
-                                            }
+                                            text = ratio.label,
+                                            color = if (isSelected) DeepBlack else Color.White,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
                                         )
                                     }
                                 }
                             }
-                        },
-                        confirmButton = {
-                            TextButton(onClick = { showStickerSheet = false }) {
-                                Text("Fechar", color = RadarCyan)
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(onClick = { isCropping = false }) {
+                                    Icon(Icons.Default.Close, contentDescription = null, tint = AlertRed, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Cancelar Corte", color = AlertRed, fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = { applyCrop() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen),
+                                    shape = RoundedCornerShape(18.dp)
+                                ) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Aplicar Corte", color = TextPrimary, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
-                    )
-                }
+                    } else {
+                        // Painel Geral: Formas + Ferramentas
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 10.dp, horizontal = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            // Sub-barra superior de Formas e Cores (quando há forma ou para novas formas)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                // Alternador: Preenchido (Bolinha sólida) vs Contorno
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = if (isShapeFilled) EmeraldGreen else Color.White.copy(alpha = 0.15f),
+                                    modifier = Modifier.clickable {
+                                        isShapeFilled = !isShapeFilled
+                                        selectedShapeId?.let { id ->
+                                            shapes.find { it.id == id }?.isFilled = isShapeFilled
+                                        }
+                                        shapesRevision++
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isShapeFilled) Icons.Default.Circle else Icons.Default.PanoramaFishEye,
+                                            contentDescription = null,
+                                            tint = if (isShapeFilled) DeepBlack else Color.White,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (isShapeFilled) "Preenchido (Sólido)" else "Contorno",
+                                            color = if (isShapeFilled) DeepBlack else Color.White,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
 
-                // Diálogo para Adicionar Texto / Legenda
-                if (showTextInputDialog) {
-                    AlertDialog(
-                        onDismissRequest = { showTextInputDialog = false },
-                        containerColor = DarkSurface,
-                        title = { Text("Inserir Texto na Imagem", color = TextPrimary) },
-                        text = {
-                            OutlinedTextField(
-                                value = customTextInput,
-                                onValueChange = { customTextInput = it },
-                                placeholder = { Text("Digite sua legenda...") },
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = RadarCyan,
-                                    unfocusedBorderColor = TextSecondary,
-                                    focusedTextColor = TextPrimary,
-                                    unfocusedTextColor = TextPrimary
-                                ),
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        },
-                        confirmButton = {
-                            Button(
-                                onClick = {
-                                    if (customTextInput.isNotBlank()) {
-                                        elements.add(
-                                            DrawingElement.TextElement(
-                                                text = customTextInput.trim(),
-                                                position = Offset(120f, 250f + elements.size * 40f),
-                                                color = Color.White,
-                                                bgColor = Color.Black.copy(alpha = 0.75f)
+                                // Seletor de Cores da Forma
+                                availableColors.forEach { c ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clip(CircleShape)
+                                            .background(c)
+                                            .then(
+                                                if (shapeColor == c) Modifier.border(2.dp, Color.White, CircleShape) else Modifier
                                             )
-                                        )
-                                        customTextInput = ""
-                                        showTextInputDialog = false
+                                            .clickable {
+                                                shapeColor = c
+                                                selectedShapeId?.let { id ->
+                                                    shapes.find { it.id == id }?.color = c
+                                                }
+                                                shapesRevision++
+                                            }
+                                    )
+                                }
+
+                                // Excluir Forma Selecionada
+                                if (selectedShapeId != null) {
+                                    TextButton(
+                                        onClick = {
+                                            shapes.removeAll { it.id == selectedShapeId }
+                                            selectedShapeId = null
+                                            shapesRevision++
+                                        }
+                                    ) {
+                                        Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = AlertRed, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Excluir Forma", color = AlertRed, fontSize = 11.sp)
                                     }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = RadarCyan)
+                                }
+                            }
+
+                            // Barra Principal de Ações
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Adicionar", color = DeepBlack, fontWeight = FontWeight.Bold)
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showTextInputDialog = false }) {
-                                Text("Cancelar", color = TextSecondary)
+                                // 1. Cortar Imagem
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable {
+                                        isCropping = true
+                                        resetCropBox(selectedCropRatio)
+                                    }
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = RadarCyan.copy(alpha = 0.25f),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, RadarCyan),
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.Crop, contentDescription = "Cortar", tint = RadarCyan, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Cortar", color = RadarCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                // 2. Adicionar Círculo (Preenchido ou Contorno, Mover Livremente)
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable { addCircle() }
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.White.copy(alpha = 0.12f),
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.Circle, contentDescription = "Círculo", tint = EmeraldGreen, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Círculo", color = Color.White, fontSize = 10.sp)
+                                }
+
+                                // 3. Adicionar Quadrado (Preenchido ou Contorno, Mover Livremente)
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable { addRectangle() }
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.White.copy(alpha = 0.12f),
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.Square, contentDescription = "Quadrado", tint = RadarCyan, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Quadrado", color = Color.White, fontSize = 10.sp)
+                                }
+
+                                // 4. Adicionar Seta (Mover Livremente)
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable { addArrow() }
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.White.copy(alpha = 0.12f),
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.TrendingFlat, contentDescription = "Seta", tint = WarningAmber, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Seta", color = Color.White, fontSize = 10.sp)
+                                }
+
+                                // 5. Girar 90° Esq.
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable { rotate(-90f) }
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.White.copy(alpha = 0.12f),
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.RotateLeft, contentDescription = "Girar Esq.", tint = Color.White, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Girar Esq.", color = Color.White, fontSize = 10.sp)
+                                }
+
+                                // 6. Girar 90° Dir.
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable { rotate(90f) }
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.White.copy(alpha = 0.12f),
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.RotateRight, contentDescription = "Girar Dir.", tint = Color.White, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Girar Dir.", color = Color.White, fontSize = 10.sp)
+                                }
+
+                                // 7. Espelhar Horizontal
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable { flipHorizontal() }
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.White.copy(alpha = 0.12f),
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.SwapHoriz, contentDescription = "Espelhar H.", tint = Color.White, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Espelhar H.", color = Color.White, fontSize = 10.sp)
+                                }
+
+                                // 8. Espelhar Vertical
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable { flipVertical() }
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.White.copy(alpha = 0.12f),
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.SwapVert, contentDescription = "Espelhar V.", tint = Color.White, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Espelhar V.", color = Color.White, fontSize = 10.sp)
+                                }
+
+                                // 9. Salvar na Galeria
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable {
+                                        val finalBmp = bakeShapesIntoBitmap()
+                                        val ok = saveBitmapToGallery(context, finalBmp)
+                                        Toast.makeText(context, if (ok) "✅ Imagem salva na Galeria com sucesso!" else "Falha ao salvar imagem", Toast.LENGTH_SHORT).show()
+                                    }
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.White.copy(alpha = 0.12f),
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.Download, contentDescription = "Salvar", tint = Color.White, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Salvar", color = Color.White, fontSize = 10.sp)
+                                }
                             }
                         }
-                    )
-                }
-
-                // Diálogo de Corte, Redimensionamento e Ajuste de Proporção
-                if (showCropDialog) {
-                    AlertDialog(
-                        onDismissRequest = { showCropDialog = false },
-                        containerColor = DarkSurface,
-                        title = {
-                            Text("Cortar ou Ajustar Foto", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                        },
-                        text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                // 1. Quadrado (1:1)
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = DarkCard,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            val dim = minOf(currentBitmap.width, currentBitmap.height)
-                                            val x = (currentBitmap.width - dim) / 2
-                                            val y = (currentBitmap.height - dim) / 2
-                                            currentBitmap = Bitmap.createBitmap(currentBitmap, x, y, dim, dim)
-                                            elements.clear()
-                                            showCropDialog = false
-                                        }
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
-                                        Icon(Icons.Default.CropSquare, contentDescription = null, tint = RadarCyan, modifier = Modifier.size(20.dp))
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Column {
-                                            Text("Quadrado (1:1)", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                            Text("Corta para proporção quadrada centralizada", color = TextSecondary, fontSize = 11.sp)
-                                        }
-                                    }
-                                }
-
-                                // 2. Vertical (9:16 - Stories)
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = DarkCard,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            val targetW = minOf(currentBitmap.width, (currentBitmap.height * 9f / 16f).toInt())
-                                            val targetH = (targetW * 16f / 9f).toInt().coerceAtMost(currentBitmap.height)
-                                            val x = (currentBitmap.width - targetW) / 2
-                                            val y = (currentBitmap.height - targetH) / 2
-                                            currentBitmap = Bitmap.createBitmap(currentBitmap, x, y, targetW, targetH)
-                                            elements.clear()
-                                            showCropDialog = false
-                                        }
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
-                                        Icon(Icons.Default.CropPortrait, contentDescription = null, tint = EmeraldGreen, modifier = Modifier.size(20.dp))
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Column {
-                                            Text("Vertical (9:16 - Stories)", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                            Text("Ajusta para tela inteira vertical", color = TextSecondary, fontSize = 11.sp)
-                                        }
-                                    }
-                                }
-
-                                // 3. Horizontal (16:9 - Paisagem)
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = DarkCard,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            val targetH = minOf(currentBitmap.height, (currentBitmap.width * 9f / 16f).toInt())
-                                            val targetW = (targetH * 16f / 9f).toInt().coerceAtMost(currentBitmap.width)
-                                            val x = (currentBitmap.width - targetW) / 2
-                                            val y = (currentBitmap.height - targetH) / 2
-                                            currentBitmap = Bitmap.createBitmap(currentBitmap, x, y, targetW, targetH)
-                                            elements.clear()
-                                            showCropDialog = false
-                                        }
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
-                                        Icon(Icons.Default.CropLandscape, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(20.dp))
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Column {
-                                            Text("Horizontal (16:9 - Paisagem)", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                            Text("Corta para proporção horizontal widescreen", color = TextSecondary, fontSize = 11.sp)
-                                        }
-                                    }
-                                }
-
-                                // 4. Diminuir / Redimensionar (Escala 75%)
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = DarkCard,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            val newW = (currentBitmap.width * 0.75f).toInt().coerceAtLeast(100)
-                                            val newH = (currentBitmap.height * 0.75f).toInt().coerceAtLeast(100)
-                                            currentBitmap = Bitmap.createScaledBitmap(currentBitmap, newW, newH, true)
-                                            elements.clear()
-                                            showCropDialog = false
-                                        }
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
-                                        Icon(Icons.Default.PhotoSizeSelectSmall, contentDescription = null, tint = FamilyPurple, modifier = Modifier.size(20.dp))
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Column {
-                                            Text("Diminuir Imagem (Reduzir 25%)", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                            Text("Reduz as dimensões para envio mais leve", color = TextSecondary, fontSize = 11.sp)
-                                        }
-                                    }
-                                }
-
-                                // 5. Girar 90° à Direita
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = DarkCard,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            val matrix = android.graphics.Matrix().apply { postRotate(90f) }
-                                            currentBitmap = Bitmap.createBitmap(currentBitmap, 0, 0, currentBitmap.width, currentBitmap.height, matrix, true)
-                                            elements.clear()
-                                            showCropDialog = false
-                                        }
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
-                                        Icon(Icons.Default.RotateRight, contentDescription = null, tint = RadarCyan, modifier = Modifier.size(20.dp))
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Column {
-                                            Text("Girar 90°", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                            Text("Rotaciona para corrigir a orientação", color = TextSecondary, fontSize = 11.sp)
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        confirmButton = {},
-                        dismissButton = {
-                            TextButton(onClick = { showCropDialog = false }) {
-                                Text("Fechar", color = TextSecondary)
-                            }
-                        }
-                    )
-                }
-
-                // Diálogo VIP Lock (Cobrança de Recursos Extras)
-                if (showVipLockedDialog) {
-                    AlertDialog(
-                        onDismissRequest = { showVipLockedDialog = false },
-                        containerColor = DarkSurface,
-                        icon = {
-                            Icon(Icons.Default.WorkspacePremium, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(36.dp))
-                        },
-                        title = {
-                            Text("Recurso Extra VIP ⭐", color = WarningAmber, fontWeight = FontWeight.Bold)
-                        },
-                        text = {
-                            Text(
-                                "Formas geométricas (retângulos, círculos e setas direcionais) e carimbos de alta resolução são recursos exclusivos do Plano VIP PessoasAqui.",
-                                color = TextPrimary,
-                                fontSize = 13.sp
-                            )
-                        },
-                        confirmButton = {
-                            Button(
-                                onClick = {
-                                    showVipLockedDialog = false
-                                    onUpgradeToVip()
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = WarningAmber)
-                            ) {
-                                Text("Desbloquear no VIP", color = DeepBlack, fontWeight = FontWeight.Bold)
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showVipLockedDialog = false }) {
-                                Text("Fechar", color = TextSecondary)
-                            }
-                        }
-                    )
+                    }
                 }
             }
         }
     }
-}
-
-@Composable
-private fun ToolButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    isSelected: Boolean,
-    isVipBadge: Boolean = false,
-    onClick: () -> Unit
-) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .clickable { onClick() }
-            .padding(horizontal = 6.dp, vertical = 4.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(38.dp)
-                .clip(CircleShape)
-                .background(if (isSelected) RadarCyan.copy(alpha = 0.25f) else Color.Transparent)
-                .border(
-                    width = if (isSelected) 1.5.dp else 0.dp,
-                    color = if (isSelected) RadarCyan else Color.Transparent,
-                    shape = CircleShape
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (isSelected) RadarCyan else Color.White,
-                modifier = Modifier.size(20.dp)
-            )
-            if (isVipBadge) {
-                Surface(
-                    shape = CircleShape,
-                    color = WarningAmber,
-                    modifier = Modifier
-                        .size(10.dp)
-                        .align(Alignment.TopEnd)
-                ) {}
-            }
-        }
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = label,
-            fontSize = 10.sp,
-            color = if (isSelected) RadarCyan else Color.LightGray,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-        )
-    }
-}
-
-/**
- * Renderiza todos os traços, formas e stickers sobre o Bitmap original
- * em escala real sem perder qualidade.
- */
-private fun renderFinalBitmap(
-    source: Bitmap,
-    elements: List<DrawingElement>,
-    drawOffset: Offset,
-    drawWidth: Float,
-    drawHeight: Float
-): Bitmap {
-    val result = source.copy(Bitmap.Config.ARGB_8888, true)
-    val canvas = android.graphics.Canvas(result)
-    val scaleX = result.width.toFloat() / drawWidth.coerceAtLeast(1f)
-    val scaleY = result.height.toFloat() / drawHeight.coerceAtLeast(1f)
-
-    fun toBmpX(screenX: Float): Float = ((screenX - drawOffset.x) * scaleX).coerceIn(0f, result.width.toFloat())
-    fun toBmpY(screenY: Float): Float = ((screenY - drawOffset.y) * scaleY).coerceIn(0f, result.height.toFloat())
-
-    for (el in elements) {
-        when (el) {
-            is DrawingElement.PathElement -> {
-                if (el.points.size > 1) {
-                    val paint = Paint().apply {
-                        color = el.color.toArgb()
-                        strokeWidth = el.strokeWidth * scaleX.coerceAtLeast(1f)
-                        style = Paint.Style.STROKE
-                        strokeCap = Paint.Cap.ROUND
-                        strokeJoin = Paint.Join.ROUND
-                        isAntiAlias = true
-                    }
-                    val path = Path()
-                    path.moveTo(toBmpX(el.points[0].x), toBmpY(el.points[0].y))
-                    for (i in 1 until el.points.size) {
-                        path.lineTo(toBmpX(el.points[i].x), toBmpY(el.points[i].y))
-                    }
-                    canvas.drawPath(path, paint)
-                }
-            }
-            is DrawingElement.RectElement -> {
-                val paint = Paint().apply {
-                    color = el.color.toArgb()
-                    strokeWidth = el.strokeWidth * scaleX.coerceAtLeast(1f)
-                    style = Paint.Style.STROKE
-                    isAntiAlias = true
-                }
-                val left = minOf(toBmpX(el.start.x), toBmpX(el.end.x))
-                val top = minOf(toBmpY(el.start.y), toBmpY(el.end.y))
-                val right = maxOf(toBmpX(el.start.x), toBmpX(el.end.x))
-                val bottom = maxOf(toBmpY(el.start.y), toBmpY(el.end.y))
-                canvas.drawRect(left, top, right, bottom, paint)
-            }
-            is DrawingElement.CircleElement -> {
-                val paint = Paint().apply {
-                    color = el.color.toArgb()
-                    strokeWidth = el.strokeWidth * scaleX.coerceAtLeast(1f)
-                    style = Paint.Style.STROKE
-                    isAntiAlias = true
-                }
-                canvas.drawCircle(toBmpX(el.center.x), toBmpY(el.center.y), el.radius * scaleX, paint)
-            }
-            is DrawingElement.ArrowElement -> {
-                val paint = Paint().apply {
-                    color = el.color.toArgb()
-                    strokeWidth = el.strokeWidth * scaleX.coerceAtLeast(1f)
-                    style = Paint.Style.STROKE
-                    strokeCap = Paint.Cap.ROUND
-                    isAntiAlias = true
-                }
-                val startX = toBmpX(el.start.x)
-                val startY = toBmpY(el.start.y)
-                val endX = toBmpX(el.end.x)
-                val endY = toBmpY(el.end.y)
-                canvas.drawLine(startX, startY, endX, endY, paint)
-
-                val angle = atan2(endY - startY, endX - startX)
-                val headLength = (el.strokeWidth * 3f * scaleX).coerceAtLeast(25f)
-                val arrowAngle = Math.PI / 6
-                val p1X = (endX - headLength * cos(angle - arrowAngle)).toFloat()
-                val p1Y = (endY - headLength * sin(angle - arrowAngle)).toFloat()
-                val p2X = (endX - headLength * cos(angle + arrowAngle)).toFloat()
-                val p2Y = (endY - headLength * sin(angle + arrowAngle)).toFloat()
-                canvas.drawLine(endX, endY, p1X, p1Y, paint)
-                canvas.drawLine(endX, endY, p2X, p2Y, paint)
-            }
-            is DrawingElement.StickerElement -> {
-                val paint = Paint().apply {
-                    textSize = (if (el.isContentSticker) 36f else 54f) * scaleX.coerceAtLeast(1f)
-                    isAntiAlias = true
-                }
-                val posX = toBmpX(el.position.x)
-                val posY = toBmpY(el.position.y)
-                if (el.isContentSticker) {
-                    val textBounds = android.graphics.Rect()
-                    paint.getTextBounds(el.text, 0, el.text.length, textBounds)
-                    val bgPaint = Paint().apply {
-                        color = android.graphics.Color.argb(220, 10, 25, 40)
-                        isAntiAlias = true
-                    }
-                    val borderPaint = Paint().apply {
-                        color = android.graphics.Color.argb(255, 0, 229, 255)
-                        style = Paint.Style.STROKE
-                        strokeWidth = 3f * scaleX.coerceAtLeast(1f)
-                        isAntiAlias = true
-                    }
-                    val rect = RectF(
-                        posX - 18f,
-                        posY - textBounds.height() - 18f,
-                        posX + textBounds.width() + 18f,
-                        posY + 18f
-                    )
-                    canvas.drawRoundRect(rect, 16f, 16f, bgPaint)
-                    canvas.drawRoundRect(rect, 16f, 16f, borderPaint)
-                    paint.color = android.graphics.Color.WHITE
-                    paint.isFakeBoldText = true
-                }
-                canvas.drawText(el.text, posX, posY, paint)
-            }
-            is DrawingElement.TextElement -> {
-                val paint = Paint().apply {
-                    textSize = 42f * scaleX.coerceAtLeast(1f)
-                    color = el.color.toArgb()
-                    isFakeBoldText = true
-                    isAntiAlias = true
-                }
-                val posX = toBmpX(el.position.x)
-                val posY = toBmpY(el.position.y)
-                val textBounds = android.graphics.Rect()
-                paint.getTextBounds(el.text, 0, el.text.length, textBounds)
-                val bgPaint = Paint().apply {
-                    color = el.bgColor.toArgb()
-                    isAntiAlias = true
-                }
-                val rect = RectF(
-                    posX - 16f,
-                    posY - textBounds.height() - 14f,
-                    posX + textBounds.width() + 16f,
-                    posY + 14f
-                )
-                canvas.drawRoundRect(rect, 12f, 12f, bgPaint)
-                canvas.drawText(el.text, posX, posY, paint)
-            }
-        }
-    }
-    return result
 }

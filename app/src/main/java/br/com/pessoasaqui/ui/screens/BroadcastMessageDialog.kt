@@ -1,7 +1,14 @@
 package br.com.pessoasaqui.ui.screens
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,6 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -28,10 +37,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import br.com.pessoasaqui.domain.model.ContactTag
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.ui.theme.*
 import kotlinx.coroutines.delay
+import java.io.ByteArrayOutputStream
+import java.io.File
 
 /**
  * Diálogo Altamente Responsivo de Mensagens de Transmissão (Broadcast) do PessoasAqui.
@@ -52,20 +64,61 @@ fun BroadcastMessageDialog(
     remainingCooldownMs: Long = 0L,
     contactTags: List<ContactTag> = emptyList(),
     contactTagAssignments: Map<String, Set<String>> = emptyMap(),
-    onSendBroadcast: (targetIds: List<String>, message: String, onProgress: (Int, Int) -> Unit, onResult: (Boolean, String) -> Unit) -> Unit,
+    onSendBroadcast: (targetIds: List<String>, message: String, onProgress: (Int, Int) -> Unit, onResult: (Boolean, String) -> Unit) -> Unit = { _, _, _, _ -> },
+    onSendBroadcastWithMedia: ((targetIds: List<String>, message: String, mediaBase64: String?, onProgress: (Int, Int) -> Unit, onResult: (Boolean, String) -> Unit) -> Unit)? = null,
     onUpgradeToVip: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var messageText by remember { mutableStateOf("") }
     val selectedIds = remember { mutableStateListOf<String>() }
     var searchQuery by remember { mutableStateOf("") }
     var selectedTagFilterId by remember { mutableStateOf<String?>(null) }
 
+    var attachedImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var attachedImageBase64 by remember { mutableStateOf<String?>(null) }
+    var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
     var isSending by remember { mutableStateOf(false) }
     var progressSent by remember { mutableIntStateOf(0) }
     var progressTotal by remember { mutableIntStateOf(0) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
     var successNotice by remember { mutableStateOf<String?>(null) }
+
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val stream = context.contentResolver.openInputStream(uri)
+                val bmp = BitmapFactory.decodeStream(stream)
+                stream?.close()
+                if (bmp != null) {
+                    attachedImageBitmap = bmp
+                    val baos = ByteArrayOutputStream()
+                    bmp.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+                    attachedImageBase64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+                }
+            } catch (e: Exception) {
+                errorMessage = "Erro ao carregar imagem: ${e.message}"
+            }
+        }
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success: Boolean ->
+        if (success && tempCameraUri != null) {
+            try {
+                val stream = context.contentResolver.openInputStream(tempCameraUri!!)
+                val bmp = BitmapFactory.decodeStream(stream)
+                stream?.close()
+                if (bmp != null) {
+                    attachedImageBitmap = bmp
+                    val baos = ByteArrayOutputStream()
+                    bmp.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+                    attachedImageBase64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+                }
+            } catch (e: Exception) {
+                errorMessage = "Erro ao carregar foto da câmera: ${e.message}"
+            }
+        }
+    }
 
     // Temporizador regressivo ativo anti-spam (atualiza a cada 1 segundo)
     var currentCooldownMs by remember(remainingCooldownMs) { mutableLongStateOf(remainingCooldownMs) }
@@ -704,6 +757,121 @@ fun BroadcastMessageDialog(
                         )
                     )
 
+                    // Anexo de Foto / Mídia na Transmissão
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = DarkCardElevated,
+                        border = BorderStroke(1.dp, if (attachedImageBase64 != null) RadarCyan.copy(alpha = 0.5f) else Color.Transparent),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Attachment,
+                                        contentDescription = null,
+                                        tint = if (attachedImageBase64 != null) RadarCyan else TextSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Mídia da Transmissão",
+                                        style = MaterialTheme.typography.titleSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = TextPrimary
+                                        )
+                                    )
+                                }
+
+                                if (attachedImageBase64 == null) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Button(
+                                            onClick = {
+                                                try {
+                                                    val imagesDir = File(context.cacheDir, "camera_broadcast").apply { mkdirs() }
+                                                    val file = File(imagesDir, "broadcast_cam_${System.currentTimeMillis()}.jpg")
+                                                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                                    tempCameraUri = uri
+                                                    cameraLauncher.launch(uri)
+                                                } catch (e: Exception) {
+                                                    errorMessage = "Erro ao iniciar câmera: ${e.message}"
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = RadarCyan.copy(alpha = 0.2f), contentColor = RadarCyan),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(15.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Câmera", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+
+                                        Button(
+                                            onClick = { galleryLauncher.launch("image/*") },
+                                            colors = ButtonDefaults.buttonColors(containerColor = RadarCyan.copy(alpha = 0.2f), contentColor = RadarCyan),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(15.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Galeria", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                } else {
+                                    IconButton(
+                                        onClick = {
+                                            attachedImageBase64 = null
+                                            attachedImageBitmap = null
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Remover Foto", tint = AlertRed)
+                                    }
+                                }
+                            }
+
+                            if (attachedImageBitmap != null) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(DarkSurface, RoundedCornerShape(8.dp))
+                                        .padding(8.dp)
+                                ) {
+                                    Image(
+                                        bitmap = attachedImageBitmap!!.asImageBitmap(),
+                                        contentDescription = null,
+                                        modifier = Modifier
+                                            .size(54.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = "Foto anexada (${attachedImageBitmap!!.width}x${attachedImageBitmap!!.height})",
+                                            style = MaterialTheme.typography.labelMedium.copy(color = TextPrimary, fontWeight = FontWeight.Bold)
+                                        )
+                                        Text(
+                                            text = "Será transmitida via E2EE para todos os contatos selecionados",
+                                            style = MaterialTheme.typography.labelSmall.copy(color = EmeraldGreen, fontSize = 10.sp)
+                                        )
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    text = "Você pode transmitir fotos e imagens em alta qualidade junto com a mensagem.",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp),
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
                     // Alertas de Sucesso ou Erro
                     AnimatedVisibility(visible = errorMessage != null) {
                         Surface(
@@ -786,8 +954,8 @@ fun BroadcastMessageDialog(
                             return@Button
                         }
 
-                        if (messageText.isBlank()) {
-                            errorMessage = "Digite o texto da mensagem a ser transmitida."
+                        if (messageText.isBlank() && attachedImageBase64 == null) {
+                            errorMessage = "Digite o texto da mensagem ou selecione uma foto para transmitir."
                             return@Button
                         }
 
@@ -797,25 +965,42 @@ fun BroadcastMessageDialog(
                         progressSent = 0
                         progressTotal = selectedIds.size
 
-                        onSendBroadcast(
-                            selectedIds.toList(),
-                            messageText.trim(),
-                            { sent, total ->
-                                progressSent = sent
-                                progressTotal = total
-                            },
-                            { success, msg ->
-                                isSending = false
-                                if (success) {
-                                    successNotice = "✅ Transmissão enviada com sucesso para $progressSent contato(s)!"
-                                    messageText = ""
-                                } else {
-                                    errorMessage = msg
-                                }
+                        val onSentCallback: (Boolean, String) -> Unit = { success, msg ->
+                            isSending = false
+                            if (success) {
+                                successNotice = "✅ Transmissão enviada com sucesso para $progressSent contato(s)!"
+                                messageText = ""
+                                attachedImageBase64 = null
+                                attachedImageBitmap = null
+                            } else {
+                                errorMessage = msg
                             }
-                        )
+                        }
+
+                        if (onSendBroadcastWithMedia != null) {
+                            onSendBroadcastWithMedia(
+                                selectedIds.toList(),
+                                messageText.trim(),
+                                attachedImageBase64,
+                                { sent, total ->
+                                    progressSent = sent
+                                    progressTotal = total
+                                },
+                                onSentCallback
+                            )
+                        } else {
+                            onSendBroadcast(
+                                selectedIds.toList(),
+                                messageText.trim(),
+                                { sent, total ->
+                                    progressSent = sent
+                                    progressTotal = total
+                                },
+                                onSentCallback
+                            )
+                        }
                     },
-                    enabled = !isSending && selectedIds.isNotEmpty() && messageText.isNotBlank() && currentCooldownMs <= 0L,
+                    enabled = !isSending && selectedIds.isNotEmpty() && (messageText.isNotBlank() || attachedImageBase64 != null) && currentCooldownMs <= 0L,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp),

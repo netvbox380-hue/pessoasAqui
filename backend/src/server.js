@@ -421,6 +421,29 @@ wss.on('connection', (ws, req) => {
         }
       }
 
+      // Sincronização de contatos mútuos pelo cliente autenticado (Blindagem contra reinício de container)
+      if (msg.type === 'CLIENT_MUTUAL_SYNC' && authenticatedIdentity) {
+        const kAuth = keyId(authenticatedIdentity);
+        if (Array.isArray(msg.mutualPeers)) {
+          for (const peerId of msg.mutualPeers) {
+            const kPeer = keyId(peerId);
+            if (kPeer && kPeer !== kAuth) {
+              localStore.connections.set(`${kAuth}->${kPeer}`, { fromIdentity: authenticatedIdentity, toIdentity: peerId, isMutual: true });
+              localStore.connections.set(`${kPeer}->${kAuth}`, { fromIdentity: peerId, toIdentity: authenticatedIdentity, isMutual: true });
+              if (isPostgresHealthy) {
+                pgPool.query(
+                  `INSERT INTO connections (from_identity, to_identity, is_mutual)
+                   VALUES ($1, $2, TRUE), ($2, $1, TRUE)
+                   ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = TRUE`,
+                  [authenticatedIdentity, peerId]
+                ).catch(() => {});
+              }
+            }
+          }
+          console.log(`[WS] CLIENT_MUTUAL_SYNC recebido de ${authenticatedIdentity}: ${msg.mutualPeers.length} contatos sincronizados.`);
+        }
+      }
+
       // Heartbeat periódico pelo WebSocket
       if (msg.type === 'HEARTBEAT' && authenticatedIdentity) {
         const kAuth = keyId(authenticatedIdentity);
@@ -755,6 +778,33 @@ app.get('/api/connections/status', async (req, res) => {
   }
 
   res.json({ success: true, markedByMe, markingMe, mutual });
+});
+
+/**
+ * Sincronização em Massa de Conexões Mútuas pelo Cliente (Blindagem de Conexões)
+ */
+app.post('/api/connections/sync', async (req, res) => {
+  const { myIdentity, mutualPeers } = req.body;
+  if (!myIdentity || !Array.isArray(mutualPeers)) {
+    return res.status(400).json({ error: 'myIdentity e array mutualPeers são obrigatórios.' });
+  }
+  const kMy = keyId(myIdentity);
+  for (const peerId of mutualPeers) {
+    const kPeer = keyId(peerId);
+    if (kPeer && kPeer !== kMy) {
+      localStore.connections.set(`${kMy}->${kPeer}`, { fromIdentity: myIdentity, toIdentity: peerId, isMutual: true });
+      localStore.connections.set(`${kPeer}->${kMy}`, { fromIdentity: peerId, toIdentity: myIdentity, isMutual: true });
+      if (isPostgresHealthy) {
+        pgPool.query(
+          `INSERT INTO connections (from_identity, to_identity, is_mutual)
+           VALUES ($1, $2, TRUE), ($2, $1, TRUE)
+           ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = TRUE`,
+          [myIdentity, peerId]
+        ).catch(() => {});
+      }
+    }
+  }
+  res.json({ success: true, count: mutualPeers.length });
 });
 
 /**

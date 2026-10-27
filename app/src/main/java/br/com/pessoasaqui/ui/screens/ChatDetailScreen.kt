@@ -12,6 +12,8 @@ import androidx.core.content.ContextCompat
 import android.widget.Toast
 import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.media.DocumentViewerHelper
+import br.com.pessoasaqui.core.media.ImageSearchHelper
+import br.com.pessoasaqui.core.chat.StickerPersistenceManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -22,6 +24,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -47,6 +50,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -342,6 +346,7 @@ fun ChatDetailScreen(
     maxAllowedBroadcastRecipients: Int = 3,
     remainingBroadcastCooldownMs: Long = 0L,
     onSendBroadcast: ((List<String>, String, (Int, Int) -> Unit, (Boolean, String) -> Unit) -> Unit)? = null,
+    onSendBroadcastWithMedia: ((List<String>, String, String?, (Int, Int) -> Unit, (Boolean, String) -> Unit) -> Unit)? = null,
     isCreatingInvite: Boolean = false,
     onCreateInviteLink: () -> Unit = {},
     onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null,
@@ -419,6 +424,18 @@ fun ChatDetailScreen(
     }
 
     var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
+    var stickerBitmapToCreate by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+
+    val createStickerPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val bmp = uriToBitmap(context, uri)
+            if (bmp != null) {
+                stickerBitmapToCreate = bmp
+            }
+        }
+    }
 
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
@@ -1060,6 +1077,8 @@ fun ChatDetailScreen(
                         }
                     }
 
+                    val isStickerMsg = msg.messageType == MessageType.IMAGE && (msg.text.startsWith("[STICKER:") || msg.mediaBase64?.startsWith("[STICKER:") == true)
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start
@@ -1071,7 +1090,7 @@ fun ChatDetailScreen(
                                 bottomStart = if (isMe) 16.dp else 4.dp,
                                 bottomEnd = if (isMe) 4.dp else 16.dp
                             ),
-                            color = if (isMe) RadarCyan else DarkSurface,
+                            color = if (isStickerMsg) Color.Transparent else if (isMe) RadarCyan else DarkSurface,
                             modifier = Modifier
                                 .widthIn(max = 290.dp)
                                 .pointerInput(msg.id) {
@@ -1082,7 +1101,7 @@ fun ChatDetailScreen(
                                     )
                                 }
                         ) {
-                            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            Column(modifier = Modifier.padding(horizontal = if (isStickerMsg) 2.dp else 12.dp, vertical = if (isStickerMsg) 2.dp else 8.dp)) {
                                 if (msg.isDeleted) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
@@ -1194,70 +1213,94 @@ fun ChatDetailScreen(
                                     }
 
                                     MessageType.IMAGE -> {
-                                        // Foto / Imagem Cifrada
-                                        val bitmap = remember(msg.mediaBase64) {
+                                        val isSticker = msg.text.startsWith("[STICKER:") || msg.mediaBase64?.startsWith("[STICKER:") == true
+                                        val stickerRaw = if (msg.text.startsWith("[STICKER:")) msg.text else msg.mediaBase64 ?: ""
+                                        val stickerB64 = if (isSticker) stickerRaw.removePrefix("[STICKER:").removeSuffix("]").trim() else null
+
+                                        val bitmap = remember(msg.mediaBase64, msg.text) {
                                             try {
-                                                if (!msg.mediaBase64.isNullOrBlank()) {
-                                                    val decoded = Base64.decode(msg.mediaBase64, Base64.DEFAULT)
+                                                val b64 = if (isSticker) stickerB64 else msg.mediaBase64
+                                                if (!b64.isNullOrBlank()) {
+                                                    val decoded = Base64.decode(b64, Base64.DEFAULT)
                                                     BitmapFactory.decodeByteArray(decoded, 0, decoded.size)?.asImageBitmap()
                                                 } else null
                                             } catch (_: Exception) { null }
                                         }
 
                                         if (bitmap != null) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clip(RoundedCornerShape(12.dp))
-                                                    .clickable {
-                                                        fullscreenImageBitmap = bitmap
-                                                        fullscreenImageSender = msg.senderAlias
-                                                    }
-                                            ) {
-                                                Image(
-                                                    bitmap = bitmap,
-                                                    contentDescription = "Foto Cifrada (Toque para ampliar)",
+                                            if (isSticker) {
+                                                // Figurinha Autêntica Estilo WhatsApp: Flutuante, Transparente e Sem Balão
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(144.dp)
+                                                        .clickable {
+                                                            fullscreenImageBitmap = bitmap
+                                                            fullscreenImageSender = msg.senderAlias
+                                                        },
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Image(
+                                                        bitmap = bitmap,
+                                                        contentDescription = "Figurinha",
+                                                        modifier = Modifier.fillMaxSize(),
+                                                        contentScale = ContentScale.Fit
+                                                    )
+                                                }
+                                            } else {
+                                                Box(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .heightIn(max = 240.dp),
-                                                    contentScale = ContentScale.Crop
-                                                )
-
-                                                // Badge discreto indicando que a imagem abre em tela cheia com zoom
-                                                Surface(
-                                                    color = DeepBlack.copy(alpha = 0.7f),
-                                                    shape = RoundedCornerShape(topStart = 8.dp),
-                                                    modifier = Modifier.align(Alignment.BottomEnd)
+                                                        .clip(RoundedCornerShape(12.dp))
+                                                        .clickable {
+                                                            fullscreenImageBitmap = bitmap
+                                                            fullscreenImageSender = msg.senderAlias
+                                                        }
                                                 ) {
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                                    Image(
+                                                        bitmap = bitmap,
+                                                        contentDescription = "Foto Cifrada (Toque para ampliar)",
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .heightIn(max = 240.dp),
+                                                        contentScale = ContentScale.Crop
+                                                    )
+
+                                                    // Badge discreto indicando que a imagem abre em tela cheia com zoom
+                                                    Surface(
+                                                        color = DeepBlack.copy(alpha = 0.7f),
+                                                        shape = RoundedCornerShape(topStart = 8.dp),
+                                                        modifier = Modifier.align(Alignment.BottomEnd)
                                                     ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.ZoomIn,
-                                                            contentDescription = "Ampliar",
-                                                            tint = RadarCyan,
-                                                            modifier = Modifier.size(13.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(3.dp))
-                                                        Text(
-                                                            text = "Toque para ampliar",
-                                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                                color = TextPrimary,
-                                                                fontSize = 9.sp
+                                                        Row(
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.ZoomIn,
+                                                                contentDescription = "Ampliar",
+                                                                tint = RadarCyan,
+                                                                modifier = Modifier.size(13.dp)
                                                             )
-                                                        )
+                                                            Spacer(modifier = Modifier.width(3.dp))
+                                                            Text(
+                                                                text = "Toque para ampliar",
+                                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                                    color = TextPrimary,
+                                                                    fontSize = 9.sp
+                                                                )
+                                                            )
+                                                        }
                                                     }
                                                 }
-                                            }
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Text(
-                                                text = "📷 Foto Cifrada Ponta a Ponta",
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    color = if (isMe) DeepBlack.copy(alpha = 0.8f) else EmeraldGreen,
-                                                    fontSize = 10.sp
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text(
+                                                    text = "📷 Foto Cifrada Ponta a Ponta",
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        color = if (isMe) DeepBlack.copy(alpha = 0.8f) else EmeraldGreen,
+                                                        fontSize = 10.sp
+                                                    )
                                                 )
-                                            )
+                                            }
                                         } else {
                                             Text(
                                                 text = "📷 [Imagem Cifrada Recebida]",
@@ -1412,7 +1455,15 @@ fun ChatDetailScreen(
 
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Row(
-                                    modifier = Modifier.align(Alignment.End),
+                                    modifier = Modifier
+                                        .align(Alignment.End)
+                                        .then(
+                                            if (isStickerMsg) {
+                                                Modifier
+                                                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            } else Modifier
+                                        ),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     if (msg.isImportant && !msg.isDeleted) {
@@ -1428,7 +1479,7 @@ fun ChatDetailScreen(
                                         Text(
                                             text = "(editada)",
                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                color = if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
+                                                color = if (isStickerMsg) Color.White.copy(alpha = 0.7f) else if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
                                                 fontSize = 9.sp,
                                                 fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
                                             )
@@ -1438,7 +1489,7 @@ fun ChatDetailScreen(
                                     Text(
                                         text = formatMessageTime(msg.timestampMs),
                                         style = MaterialTheme.typography.labelSmall.copy(
-                                            color = if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
+                                            color = if (isStickerMsg) Color.White else if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.Normal
                                         )
@@ -1447,7 +1498,7 @@ fun ChatDetailScreen(
                                     Icon(
                                         imageVector = Icons.Default.Lock,
                                         contentDescription = "Cifrado Ponta a Ponta",
-                                        tint = if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
+                                        tint = if (isStickerMsg) Color.White.copy(alpha = 0.7f) else if (isMe) DeepBlack.copy(alpha = 0.65f) else TextSecondary,
                                         modifier = Modifier.size(10.dp)
                                     )
                                     if (isMe) {
@@ -1456,7 +1507,7 @@ fun ChatDetailScreen(
                                         Icon(
                                             imageVector = Icons.Default.DoneAll,
                                             contentDescription = if (isRead) "Visualizada" else "Entregue",
-                                            tint = if (isRead) Color(0xFF00E5FF) else DeepBlack.copy(alpha = 0.65f),
+                                            tint = if (isRead) Color(0xFF00E5FF) else if (isStickerMsg) Color.White.copy(alpha = 0.7f) else DeepBlack.copy(alpha = 0.65f),
                                             modifier = Modifier.size(12.dp)
                                         )
                                     }
@@ -1814,6 +1865,13 @@ fun ChatDetailScreen(
                     EmojiPickerPanel(
                         onEmojiSelected = { emoji ->
                             inputText += emoji
+                        },
+                        onStickerSelected = { stickerPayload ->
+                            onSendImageMessage(person, stickerPayload)
+                            showEmojiPicker = false
+                        },
+                        onCreateStickerRequested = {
+                            createStickerPickerLauncher.launch("image/*")
                         },
                         onBackspace = {
                             if (inputText.isNotEmpty()) {
@@ -2403,7 +2461,27 @@ fun ChatDetailScreen(
             FullscreenImageViewerDialog(
                 bitmap = fullscreenImageBitmap!!,
                 senderName = fullscreenImageSender,
+                onEditImage = { bmp ->
+                    imageToEdit = bmp
+                    fullscreenImageBitmap = null
+                },
+                onCreateSticker = { bmp ->
+                    fullscreenImageBitmap = null
+                    stickerBitmapToCreate = bmp
+                },
                 onDismiss = { fullscreenImageBitmap = null }
+            )
+        }
+
+        if (stickerBitmapToCreate != null) {
+            StickerCreatorDialog(
+                sourceBitmap = stickerBitmapToCreate!!,
+                onStickerCreated = { stickerBmp, payload ->
+                    stickerBitmapToCreate = null
+                    onSendImageMessage(person, payload)
+                    Toast.makeText(context, "⭐ Figurinha enviada com sucesso!", Toast.LENGTH_SHORT).show()
+                },
+                onDismiss = { stickerBitmapToCreate = null }
             )
         }
 
@@ -2447,6 +2525,7 @@ fun ChatDetailScreen(
                         onResult(false, "Serviço de transmissão indisponível")
                     }
                 },
+                onSendBroadcastWithMedia = onSendBroadcastWithMedia,
                 onUpgradeToVip = onUpgradeToVip,
                 onDismiss = { showBroadcastDialog = false }
             )
@@ -2951,15 +3030,104 @@ fun ChatDetailScreen(
     }
 }
 
+fun saveBitmapToGallery(context: android.content.Context, bitmap: android.graphics.Bitmap): Boolean {
+    return try {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val contentValues = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "PessoasAqui_${System.currentTimeMillis()}.jpg")
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/PessoasAqui")
+            }
+            val uri = context.contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+            if (uri != null) {
+                context.contentResolver.openOutputStream(uri)?.use { stream ->
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, stream)
+                }
+                true
+            } else false
+        } else {
+            val file = java.io.File(
+                android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES),
+                "PessoasAqui_${System.currentTimeMillis()}.jpg"
+            )
+            file.parentFile?.mkdirs()
+            java.io.FileOutputStream(file).use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+            }
+            android.media.MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), arrayOf("image/jpeg"), null)
+            true
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("PessoasAqui", "Erro ao salvar foto na galeria", e)
+        false
+    }
+}
+
+fun shareBitmap(context: android.content.Context, bitmap: android.graphics.Bitmap) {
+    try {
+        val cachePath = java.io.File(context.cacheDir, "shared_images").apply { mkdirs() }
+        val file = java.io.File(cachePath, "share_${System.currentTimeMillis()}.jpg")
+        java.io.FileOutputStream(file).use { stream ->
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, stream)
+        }
+        val contentUri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "image/jpeg"
+            putExtra(android.content.Intent.EXTRA_STREAM, contentUri)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(android.content.Intent.createChooser(shareIntent, "Compartilhar Imagem"))
+    } catch (e: Exception) {
+        android.widget.Toast.makeText(context, "Erro ao compartilhar: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+    }
+}
+
+fun searchImageOnWeb(context: android.content.Context, bitmap: android.graphics.Bitmap) {
+    try {
+        val cachePath = java.io.File(context.cacheDir, "shared_images").apply { mkdirs() }
+        val file = java.io.File(cachePath, "lens_${System.currentTimeMillis()}.jpg")
+        java.io.FileOutputStream(file).use { stream ->
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, stream)
+        }
+        val contentUri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+
+        val lensIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "image/jpeg"
+            putExtra(android.content.Intent.EXTRA_STREAM, contentUri)
+            setPackage("com.google.android.googlequicksearchbox")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (lensIntent.resolveActivity(context.packageManager) != null) {
+            context.startActivity(lensIntent)
+        } else {
+            val browserIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://lens.google.com"))
+            context.startActivity(browserIntent)
+        }
+    } catch (_: Exception) {
+        val browserIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://images.google.com"))
+        context.startActivity(browserIntent)
+    }
+}
+
 @Composable
 fun FullscreenImageViewerDialog(
     bitmap: ImageBitmap,
     senderName: String,
+    onEditImage: (android.graphics.Bitmap) -> Unit = {},
+    onCreateSticker: (android.graphics.Bitmap) -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val androidBmp = remember(bitmap) { bitmap.asAndroidBitmap() }
+    val coroutineScope = rememberCoroutineScope()
     var scale by remember { mutableStateOf(1f) }
     var offsetX by remember { mutableStateOf(0f) }
     var offsetY by remember { mutableStateOf(0f) }
+
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var showSearchConfirmationDialog by remember { mutableStateOf(false) }
+    var isSearchingImage by remember { mutableStateOf(false) }
+    var searchStatusMessage by remember { mutableStateOf("Enviando imagem para pesquisa visual...") }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -3019,7 +3187,7 @@ fun FullscreenImageViewerDialog(
                 )
             }
 
-            // Barra superior com controles
+            // Barra superior com controles, atalhos rápidos e menu de opções (3 pontinhos)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3058,50 +3226,340 @@ fun FullscreenImageViewerDialog(
                     )
                 }
 
-                if (scale > 1.05f) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Lápis de edição com cor destacada na barra superior
                     IconButton(
                         onClick = {
-                            scale = 1f
-                            offsetX = 0f
-                            offsetY = 0f
+                            onEditImage(androidBmp)
+                            onDismiss()
                         },
                         modifier = Modifier
                             .size(44.dp)
                             .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.6f))
+                            .background(RadarCyan.copy(alpha = 0.35f))
+                            .border(1.dp, RadarCyan, CircleShape)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.ZoomOutMap,
-                            contentDescription = "Redefinir Zoom",
-                            tint = Color.White
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Editar Foto",
+                            tint = RadarCyan
                         )
                     }
-                } else {
-                    Spacer(modifier = Modifier.size(44.dp))
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // Menu de 3 Pontinhos com todas as opções
+                    Box {
+                        IconButton(
+                            onClick = { showMoreMenu = true },
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.6f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "Mais opções",
+                                tint = Color.White
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showMoreMenu,
+                            onDismissRequest = { showMoreMenu = false },
+                            modifier = Modifier.background(DarkSurface)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Pesquisar imagem", color = TextPrimary) },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = RadarCyan) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    showSearchConfirmationDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Editar foto", color = TextPrimary) },
+                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = RadarCyan) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onEditImage(androidBmp)
+                                    onDismiss()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Compartilhar", color = TextPrimary) },
+                                leadingIcon = { Icon(Icons.Default.Share, contentDescription = null, tint = TextPrimary) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    shareBitmap(context, androidBmp)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Salvar na Galeria", color = TextPrimary) },
+                                leadingIcon = { Icon(Icons.Default.Download, contentDescription = null, tint = TextPrimary) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    val ok = saveBitmapToGallery(context, androidBmp)
+                                    Toast.makeText(context, if (ok) "✅ Foto salva na Galeria com sucesso!" else "Falha ao salvar foto", Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Criar Figurinha", color = WarningAmber) },
+                                leadingIcon = { Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = WarningAmber) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onCreateSticker(androidBmp)
+                                    onDismiss()
+                                }
+                            )
+                        }
+                    }
                 }
             }
+
+            // Barra Inferior com Ações Rápidas:
+            // 1. Pesquisar Imagem (Lupa)
+            // 2. Editar (Lápis)
+            // 3. Compartilhar
+            // 4. Salvar em
+            // 5. Figurinha
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = Color.Black.copy(alpha = 0.88f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 18.dp, start = 12.dp, end = 12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 1. Pesquisar Imagem (Ícone de Lupa com aviso prévio)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable {
+                            showSearchConfirmationDialog = true
+                        }
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = RadarCyan.copy(alpha = 0.25f),
+                            border = BorderStroke(1.5.dp, RadarCyan),
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Search, contentDescription = "Pesquisar Imagem", tint = RadarCyan, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Pesquisar", color = RadarCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    // 2. Editar Foto
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable {
+                            onEditImage(androidBmp)
+                            onDismiss()
+                        }
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.12f),
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Edit, contentDescription = "Editar", tint = Color.White, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Editar", color = Color.White, fontSize = 10.sp)
+                    }
+
+                    // 3. Compartilhar
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable { shareBitmap(context, androidBmp) }
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.12f),
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Share, contentDescription = "Compartilhar", tint = Color.White, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Compartilhar", color = Color.White, fontSize = 10.sp)
+                    }
+
+                    // 4. Salvar em (Galeria)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable {
+                            val ok = saveBitmapToGallery(context, androidBmp)
+                            Toast.makeText(context, if (ok) "✅ Foto salva na Galeria com sucesso!" else "Falha ao salvar foto na galeria", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.12f),
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Download, contentDescription = "Salvar em", tint = Color.White, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Salvar em", color = Color.White, fontSize = 10.sp)
+                    }
+
+                    // 5. Criar Figurinha
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable {
+                            onCreateSticker(androidBmp)
+                            onDismiss()
+                        }
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color(0xFFFFD600).copy(alpha = 0.2f),
+                            border = BorderStroke(1.dp, Color(0xFFFFD600).copy(alpha = 0.6f)),
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = "Criar Figurinha", tint = Color(0xFFFFD600), modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Figurinha", color = Color(0xFFFFD600), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            // Indicador de Carregamento durante a Pesquisa Visual
+            if (isSearchingImage) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.8f),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = RadarCyan, strokeWidth = 3.dp)
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text(
+                                text = searchStatusMessage,
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Diálogo de Confirmação e Aviso Prévio de Envio para Pesquisa Visual Externa
+        if (showSearchConfirmationDialog) {
+            AlertDialog(
+                onDismissRequest = { showSearchConfirmationDialog = false },
+                containerColor = DarkSurface,
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        tint = RadarCyan,
+                        modifier = Modifier.size(36.dp)
+                    )
+                },
+                title = {
+                    Text(
+                        text = "Pesquisar imagem na internet?",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "A imagem será enviada para o serviço de pesquisa visual do Google (Google Lens / Imagens) para localizar resultados correspondentes e verificar a autenticidade.",
+                            style = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary)
+                        )
+                        Text(
+                            text = "🔒 O PessoasAqui não armazena fotos do usuário para realizar pesquisas e não utiliza servidores próprios.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showSearchConfirmationDialog = false
+                            isSearchingImage = true
+                            coroutineScope.launch {
+                                val result = ImageSearchHelper.performReverseImageSearch(
+                                    context = context,
+                                    bitmap = androidBmp,
+                                    onProgressUpdate = { msg -> searchStatusMessage = msg }
+                                )
+                                isSearchingImage = false
+                                result.onFailure { err ->
+                                    Toast.makeText(context, "Não foi possível conectar ao serviço de pesquisa visual. Verifique sua conexão.", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = RadarCyan)
+                    ) {
+                        Text("Pesquisar no Google", color = DeepBlack, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showSearchConfirmationDialog = false }) {
+                        Text("Cancelar", color = TextSecondary)
+                    }
+                }
+            )
         }
     }
 }
 
 /**
- * Painel Interativo de Emojis Rápidos com Categorias e os Mais Usados.
+ * Painel Interativo de Emojis e Figurinhas (Stickers) com Categorias, Acervo e Criador.
  */
 @Composable
 fun EmojiPickerPanel(
     onEmojiSelected: (String) -> Unit,
+    onStickerSelected: (String) -> Unit = {},
+    onCreateStickerRequested: () -> Unit = {},
     onBackspace: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var selectedCategory by remember { mutableIntStateOf(0) }
+    var stickersRefreshKey by remember { mutableIntStateOf(0) }
+
+    val userStickers = remember(selectedCategory, stickersRefreshKey) {
+        if (selectedCategory == 5) {
+            StickerPersistenceManager(context).loadAllStickers()
+        } else {
+            emptyList()
+        }
+    }
 
     val categories = listOf(
         "⭐" to "Mais Usados",
         "😀" to "Carinhas",
         "👍" to "Gestos",
         "❤️" to "Corações",
-        "🔥" to "Símbolos"
+        "🔥" to "Símbolos",
+        "🖼️" to "Figurinhas"
     )
 
     val emojis = remember(selectedCategory) {
@@ -3134,12 +3592,13 @@ fun EmojiPickerPanel(
                 "❤️‍🔥", "❤️‍🩹", "❣️", "💕", "💞", "💓", "💗", "💖", "💘", "💝",
                 "💟", "💌", "💋", "💐", "🌹", "🥀", "🌺", "🌷", "🌸", "💮"
             )
-            else -> listOf(
+            4 -> listOf(
                 "🔥", "💯", "✨", "⭐", "🌟", "💥", "🎉", "🎊", "🎈", "🎁",
                 "🏆", "🥇", "🚀", "🛸", "💡", "⏰", "⏳", "🔒", "🔑", "🛡️",
                 "📡", "📍", "🎯", "💬", "☕", "🍻", "🍕", "🍔", "⚡", "☀️",
                 "🌙", "☁️", "🌈", "🎵", "🎶", "🔔", "⚠️", "⛔", "✅", "❌"
             )
+            else -> emptyList()
         }
     }
 
@@ -3149,7 +3608,7 @@ fun EmojiPickerPanel(
         border = BorderStroke(1.dp, DarkCardElevated),
         modifier = modifier
             .fillMaxWidth()
-            .height(250.dp)
+            .height(260.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Barra superior de categorias e controles
@@ -3184,17 +3643,19 @@ fun EmojiPickerPanel(
                     }
                 }
 
-                // Botão Backspace
-                IconButton(
-                    onClick = onBackspace,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Backspace,
-                        contentDescription = "Apagar",
-                        tint = TextSecondary,
-                        modifier = Modifier.size(18.dp)
-                    )
+                // Botão Backspace (apenas visível nas abas de emoji texto)
+                if (selectedCategory != 5) {
+                    IconButton(
+                        onClick = onBackspace,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Backspace,
+                            contentDescription = "Apagar",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
 
                 // Botão Fechar
@@ -3211,28 +3672,97 @@ fun EmojiPickerPanel(
                 }
             }
 
-            // Grade de Emojis
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 42.dp),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(emojis) { emoji ->
-                    Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { onEmojiSelected(emoji) },
-                        contentAlignment = Alignment.Center
+            if (selectedCategory == 5) {
+                // Aba de Figurinhas (Stickers)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 72.dp),
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(
-                            text = emoji,
-                            fontSize = 24.sp,
-                            textAlign = TextAlign.Center
-                        )
+                        // Card de Criação de Nova Figurinha
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.6f)),
+                                color = DarkCardElevated,
+                                modifier = Modifier
+                                    .size(72.dp)
+                                    .clickable { onCreateStickerRequested() }
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxSize().padding(4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "Criar Figurinha",
+                                        tint = RadarCyan,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "+ Nova",
+                                        fontSize = 11.sp,
+                                        color = RadarCyan,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        // Acervo de figurinhas do usuário
+                        items(userStickers) { (id, bmp) ->
+                            Box(
+                                modifier = Modifier
+                                    .size(72.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        val payload = StickerPersistenceManager(context).bitmapToStickerPayload(bmp)
+                                        onStickerSelected(payload)
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Image(
+                                    bitmap = bmp.asImageBitmap(),
+                                    contentDescription = "Figurinha",
+                                    modifier = Modifier.size(64.dp),
+                                    contentScale = ContentScale.Fit
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Grade de Emojis Tradicionais
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 42.dp),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(emojis) { emoji ->
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onEmojiSelected(emoji) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = emoji,
+                                fontSize = 24.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
                 }
             }
