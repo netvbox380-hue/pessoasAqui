@@ -22,7 +22,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.RotateLeft
+import androidx.compose.material.icons.automirrored.filled.RotateRight
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.TrendingFlat
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -38,11 +41,14 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
 import br.com.pessoasaqui.ui.theme.*
 import java.util.UUID
 import kotlin.math.atan2
@@ -500,8 +506,16 @@ fun ImageEditorDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
+        val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+        SideEffect {
+            dialogWindow?.let { WindowCompat.setDecorFitsSystemWindows(it, false) }
+        }
+
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = Color.Black
@@ -521,7 +535,7 @@ fun ImageEditorDialog(
                     IconButton(
                         onClick = onDismiss,
                         modifier = Modifier
-                            .size(40.dp)
+                            .size(38.dp)
                             .clip(CircleShape)
                             .background(Color.White.copy(alpha = 0.12f))
                     ) {
@@ -563,16 +577,25 @@ fun ImageEditorDialog(
                             )
                         }
 
-                        TextButton(
+                        IconButton(
                             onClick = { restoreOriginal() },
                             enabled = undoStack.isNotEmpty() || currentBitmap != sourceBitmap || shapes.isNotEmpty(),
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = if (undoStack.isNotEmpty() || currentBitmap != sourceBitmap || shapes.isNotEmpty()) RadarCyan else Color.Gray.copy(alpha = 0.4f)
-                            )
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (undoStack.isNotEmpty() || currentBitmap != sourceBitmap || shapes.isNotEmpty())
+                                        Color.White.copy(alpha = 0.15f)
+                                    else Color.Transparent
+                                )
                         ) {
-                            Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Restaurar", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Icon(
+                                Icons.Default.RestartAlt,
+                                contentDescription = "Restaurar",
+                                tint = if (undoStack.isNotEmpty() || currentBitmap != sourceBitmap || shapes.isNotEmpty())
+                                    RadarCyan
+                                else Color.Gray.copy(alpha = 0.4f)
+                            )
                         }
                     }
 
@@ -605,8 +628,15 @@ fun ImageEditorDialog(
                             shape = RoundedCornerShape(18.dp)
                         ) {
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Enviar", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Enviar",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
                         }
                     }
                 }
@@ -975,6 +1005,7 @@ fun ImageEditorDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
+                        .padding(bottom = 12.dp)
                 ) {
                     if (isCropping) {
                         // Painel de Corte
@@ -1129,7 +1160,7 @@ fun ImageEditorDialog(
                                                 }
                                             ) {
                                                 Box(contentAlignment = Alignment.Center) {
-                                                    Icon(Icons.Default.RotateLeft, contentDescription = "-15°", tint = Color.White, modifier = Modifier.size(16.dp))
+                                                    Icon(Icons.AutoMirrored.Filled.RotateLeft, contentDescription = "-15°", tint = Color.White, modifier = Modifier.size(16.dp))
                                                 }
                                             }
                                             Surface(
@@ -1141,7 +1172,7 @@ fun ImageEditorDialog(
                                                 }
                                             ) {
                                                 Box(contentAlignment = Alignment.Center) {
-                                                    Icon(Icons.Default.RotateRight, contentDescription = "+15°", tint = Color.White, modifier = Modifier.size(16.dp))
+                                                    Icon(Icons.AutoMirrored.Filled.RotateRight, contentDescription = "+15°", tint = Color.White, modifier = Modifier.size(16.dp))
                                                 }
                                             }
                                             Surface(
@@ -1261,7 +1292,7 @@ fun ImageEditorDialog(
                                         modifier = Modifier.size(44.dp)
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
-                                            Icon(Icons.Default.TrendingFlat, contentDescription = "Seta", tint = WarningAmber, modifier = Modifier.size(20.dp))
+                                            Icon(Icons.AutoMirrored.Filled.TrendingFlat, contentDescription = "Seta", tint = WarningAmber, modifier = Modifier.size(20.dp))
                                         }
                                     }
                                     Spacer(modifier = Modifier.height(2.dp))
@@ -1279,7 +1310,7 @@ fun ImageEditorDialog(
                                         modifier = Modifier.size(44.dp)
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
-                                            Icon(Icons.Default.RotateLeft, contentDescription = "Girar Esq.", tint = Color.White, modifier = Modifier.size(20.dp))
+                                            Icon(Icons.AutoMirrored.Filled.RotateLeft, contentDescription = "Girar Esq.", tint = Color.White, modifier = Modifier.size(20.dp))
                                         }
                                     }
                                     Spacer(modifier = Modifier.height(2.dp))
@@ -1297,7 +1328,7 @@ fun ImageEditorDialog(
                                         modifier = Modifier.size(44.dp)
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
-                                            Icon(Icons.Default.RotateRight, contentDescription = "Girar Dir.", tint = Color.White, modifier = Modifier.size(20.dp))
+                                            Icon(Icons.AutoMirrored.Filled.RotateRight, contentDescription = "Girar Dir.", tint = Color.White, modifier = Modifier.size(20.dp))
                                         }
                                     }
                                     Spacer(modifier = Modifier.height(2.dp))
