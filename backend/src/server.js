@@ -550,8 +550,8 @@ app.get('/', (req, res) => {
 });
 
 let appVersionConfig = {
-  latestVersionCode: parseInt(process.env.APP_LATEST_VERSION_CODE || '22', 10),
-  latestVersionName: process.env.APP_LATEST_VERSION_NAME || '1.2.6',
+  latestVersionCode: parseInt(process.env.APP_LATEST_VERSION_CODE || '25', 10),
+  latestVersionName: process.env.APP_LATEST_VERSION_NAME || '1.2.9',
   minSupportedVersionCode: parseInt(process.env.APP_MIN_SUPPORTED_VERSION_CODE || '8', 10),
   forceUpdate: process.env.APP_FORCE_UPDATE === 'true',
   playStoreUrl: process.env.APP_PLAY_STORE_URL || 'https://play.google.com/store/apps/details?id=br.com.pessoasaqui',
@@ -1132,7 +1132,7 @@ app.post('/api/invites/create', async (req, res) => {
     }
   }
 
-  const baseUrl = process.env.BASE_URL || 'https://pessoasaqui.onrender.com';
+  const baseUrl = process.env.BASE_URL || (req.get('host') ? `${req.protocol}://${req.get('host')}` : 'https://pessoasaqui-rj8b.onrender.com');
   const queryParams = `id=${encodeURIComponent(inviteId)}&token=${encodeURIComponent(token)}&sender=${encodeURIComponent(sender)}&alias=${encodeURIComponent(alias)}&sig=${encodeURIComponent(signature)}&exp=${expiresAt}`;
   const inviteUrl = `${baseUrl}/invite?${queryParams}`;
 
@@ -1314,7 +1314,8 @@ app.get('/invite', (req, res) => {
   const safeAlias = (alias || 'Alguém').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const queryParams = `id=${encodeURIComponent(id || '')}&token=${encodeURIComponent(token || '')}&sender=${encodeURIComponent(sender || '')}&alias=${encodeURIComponent(alias || '')}&sig=${encodeURIComponent(sig || '')}&exp=${encodeURIComponent(exp || '')}`;
   const appDeepLink = `pessoasaqui://invite?${queryParams}`;
-  const fallbackUrl = `https://pessoasaqui.onrender.com/invite?${queryParams}&fallback=true`;
+  const currentHost = req.get('host') || 'pessoasaqui-rj8b.onrender.com';
+  const fallbackUrl = `${req.protocol}://${currentHost}/invite?${queryParams}&fallback=true`;
   const chromeIntentLink = `intent://invite?${queryParams}#Intent;scheme=pessoasaqui;package=br.com.pessoasaqui;S.browser_fallback_url=${encodeURIComponent(fallbackUrl)};end`;
 
   res.send(`<!DOCTYPE html>

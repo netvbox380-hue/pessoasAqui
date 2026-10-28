@@ -103,6 +103,14 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:scheme="https"
+                    android:host="pessoasaqui-rj8b.onrender.com"
+                    android:pathPrefix="/invite" />
+                <data
+                    android:scheme="http"
+                    android:host="pessoasaqui-rj8b.onrender.com"
+                    android:pathPrefix="/invite" />
+                <data
+                    android:scheme="https"
                     android:host="pessoasaqui.onrender.com"
                     android:pathPrefix="/invite" />
                 <data
