@@ -75,12 +75,12 @@ fun MainScreen(
     }
 
     // Pessoas estritamente dentro do Radar de Proximidade BLE (10m)
-    // Se o Bluetooth estiver desligado (e fora de modo demo), nenhuma pessoa é descoberta no radar
-    val radarPeople = remember(people, isBluetoothEnabled, isDemoMode) {
-        if (!isBluetoothEnabled && !isDemoMode) {
+    // Se o Bluetooth estiver desligado, nenhuma pessoa é descoberta no radar
+    val radarPeople = remember(people, isBluetoothEnabled) {
+        if (!isBluetoothEnabled) {
             emptyList()
         } else {
-            people.filter { it.estimatedDistanceMeters <= BleConstants.MAX_DISCOVERY_DISTANCE_METERS }
+            people.filter { it.estimatedDistanceMeters <= BleConstants.MAX_DISCOVERY_DISTANCE_METERS && !it.id.startsWith("sim-", ignoreCase = true) }
         }
     }
 
@@ -437,6 +437,9 @@ fun MainScreen(
                         onOpenChat = onOpenChat,
                         onToggleMarkPerson = { personId ->
                             repository.toggleMarkPerson(personId)
+                        },
+                        onDeleteConversations = { list ->
+                            repository.deleteMultipleConversations(list)
                         },
                         isCreatingInvite = isCreatingInvite,
                         onCreateInviteLink = {

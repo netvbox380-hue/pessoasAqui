@@ -148,6 +148,37 @@ class PessoasAquiNetworkClient(
     }
 
     /**
+     * Desfaz a marcação de uma pessoa e cancela vínculo mútuo no backend
+     */
+    suspend fun unmarkConnection(
+        fromIdentity: String,
+        toIdentity: String
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("fromIdentity", fromIdentity)
+                put("toIdentity", toIdentity)
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/connections/unmark")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string() ?: "{}"
+                val resObj = JSONObject(bodyStr)
+                if (response.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    Result.failure(IOException(resObj.optString("error", "Erro ao desmarcar")))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Emite autorização de recuperação de identidade por um familiar
      */
     suspend fun issueFamilyRecovery(

@@ -97,6 +97,22 @@ class ChatMessagePersistenceManager(
     }
 
     /**
+     * Remove o histórico de conversa com um contato específico em disco.
+     */
+    fun deletePrivateChat(peerId: String) {
+        val cleanKey = cleanKey(peerId)
+        if (cleanKey.isBlank()) return
+        try {
+            val file = getFileForPeer(cleanKey)
+            if (file != null && file.exists()) {
+                file.delete()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Falha ao apagar arquivo de chat do peer $cleanKey: ${e.message}")
+        }
+    }
+
+    /**
      * Carrega todas as conversas privadas salvas em disco.
      */
     fun loadAllPrivateChats(): Map<String, List<ChatMessage>> {

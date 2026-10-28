@@ -708,4 +708,16 @@ class ProximitySimulator(
         persistenceManager?.savePrivateChat(cleanId, updatedList)
         return true
     }
+
+    /**
+     * Limpa completamente o chat privado de um contato especÃ­fico da memÃ³ria e do disco.
+     */
+    fun clearPrivateChat(peerId: String) {
+        val cleanId = peerId.removePrefix("peer-")
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap.remove(cleanId)
+        updatedMap.remove("peer-$cleanId")
+        _privateChats.value = updatedMap
+        persistenceManager?.deletePrivateChat(cleanId)
+    }
 }

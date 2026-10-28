@@ -1020,6 +1020,73 @@ app.post('/api/connections/mark', async (req, res) => {
 });
 
 /**
+ * Desfaz Marcação e Conexão Mútua
+ */
+app.post('/api/connections/unmark', async (req, res) => {
+  const { fromIdentity, toIdentity, senderAlias } = req.body;
+  const from = cleanId(fromIdentity);
+  const to = cleanId(toIdentity);
+
+  if (!from || !to) {
+    return res.status(400).json({ error: 'Identidades de origem e destino obrigatórias.' });
+  }
+
+  const kFrom = keyId(from);
+  const kTo = keyId(to);
+
+  // Remove a marcação da origem
+  localStore.connections.delete(`${kFrom}->${kTo}`);
+  // Se havia conexão reversa, quebra a reciprocidade mútua
+  const reverseKey = `${kTo}->${kFrom}`;
+  if (localStore.connections.has(reverseKey)) {
+    localStore.connections.get(reverseKey).isMutual = false;
+  }
+
+  if (isPostgres()) {
+    try {
+      await query(
+        `DELETE FROM connections WHERE LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2)`,
+        [from, to]
+      );
+      await query(
+        `UPDATE connections SET is_mutual = FALSE
+         WHERE LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2)`,
+        [to, from]
+      );
+    } catch (e) {
+      console.error('[DB] Erro ao remover marcação no PostgreSQL:', e.message);
+    }
+  }
+
+  const myAlias = senderAlias || activePresence.get(kFrom)?.alias || 'Alguém';
+  const targetWs = activeSockets.get(kTo);
+  const msgForTo = {
+    type: 'MUTUAL_CONNECTION_BROKEN',
+    partnerIdentity: from,
+    partnerAlias: myAlias,
+    timestamp: Date.now()
+  };
+  if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+    targetWs.send(JSON.stringify(msgForTo));
+  } else {
+    if (!pendingMessages.has(kTo)) pendingMessages.set(kTo, []);
+    pendingMessages.get(kTo).push({
+      type: 'E2EE_MESSAGE_RECEIVED',
+      senderHash: from,
+      senderAlias: myAlias,
+      ciphertextPayload: `[MARK_OFF:${myAlias}]`,
+      ivNonce: '',
+      messageId: `unmark_${Date.now()}`
+    });
+  }
+
+  res.json({
+    success: true,
+    message: 'Marcação removida com sucesso.'
+  });
+});
+
+/**
  * Geração de Convite Criptografado de Uso Único para Conexão Mútua à Distância
  */
 app.post('/api/invites/create', async (req, res) => {

@@ -3,6 +3,7 @@ package br.com.pessoasaqui.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -39,6 +41,7 @@ fun ConversationsTab(
     nearbyPeople: List<NearbyPerson> = emptyList(),
     onOpenChat: (NearbyPerson) -> Unit,
     onToggleMarkPerson: (String) -> Unit = {},
+    onDeleteConversations: (List<String>) -> Unit = {},
     isCreatingInvite: Boolean = false,
     onCreateInviteLink: () -> Unit = {},
     onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null,
@@ -47,6 +50,12 @@ fun ConversationsTab(
 ) {
     var showPasteInviteDialog by remember { mutableStateOf(false) }
     var showConversationsDrawer by remember { mutableStateOf(false) }
+    var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+
+    val realConnectedPeople = remember(connectedPeople) {
+        connectedPeople.filter { !it.id.startsWith("sim-", ignoreCase = true) }
+    }
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
@@ -78,6 +87,99 @@ fun ConversationsTab(
             .background(DeepBlack)
             .padding(horizontal = 16.dp)
     ) {
+        // Barra Superior de Seleção Múltipla para Excluir Conversas
+        if (selectedContactIds.isNotEmpty()) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = DarkCardElevated,
+                border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.6f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp, bottom = 4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = { selectedContactIds = emptySet() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancelar", tint = TextPrimary)
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "${selectedContactIds.size} selecionado(s)",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                        )
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = {
+                                selectedContactIds = if (selectedContactIds.size == realConnectedPeople.size) {
+                                    emptySet()
+                                } else {
+                                    realConnectedPeople.map { it.id }.toSet()
+                                }
+                            }
+                        ) {
+                            Text(
+                                text = if (selectedContactIds.size == realConnectedPeople.size) "Desmarcar" else "Todos",
+                                color = RadarCyan,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        IconButton(
+                            onClick = { showDeleteConfirmDialog = true },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = "Excluir", tint = AlertRed)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (showDeleteConfirmDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirmDialog = false },
+                title = { Text("Excluir conversas?", color = TextPrimary, fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        "Deseja excluir as ${selectedContactIds.size} conversa(s) selecionada(s)? Isso apagará todo o histórico de mensagens e desfará os vínculos no seu aparelho.",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val toDelete = selectedContactIds.toList()
+                            selectedContactIds = emptySet()
+                            showDeleteConfirmDialog = false
+                            onDeleteConversations(toDelete)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AlertRed)
+                    ) {
+                        Text("Excluir", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteConfirmDialog = false }) {
+                        Text("Cancelar", color = TextSecondary)
+                    }
+                },
+                containerColor = DarkSurface
+            )
+        }
+
         // Card Informativo Superior com Gavetinha de Convites
         Card(
             shape = RoundedCornerShape(16.dp),
@@ -353,7 +455,7 @@ fun ConversationsTab(
                         ?: emptyList()
                 }
 
-                if (connectedPeople.isEmpty() && supportHistory.isEmpty()) {
+                if (realConnectedPeople.isEmpty() && supportHistory.isEmpty()) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -541,24 +643,39 @@ fun ConversationsTab(
                             }
                         }
 
-                        items(connectedPeople, key = { it.id }) { contact ->
+                        items(realConnectedPeople, key = { it.id }) { contact ->
                             // Busca histórico privado dessa pessoa para exibir prévia da última mensagem
                             val history = privateChats[contact.id]
                                 ?: privateChats[contact.technicalIdentityHash]
                                 ?: emptyList()
                             val lastMsg = history.lastOrNull()
 
+                            val isSelected = contact.id in selectedContactIds
+
                             Card(
                                 shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = DarkSurface),
-                                border = if (contact.isFamily) {
-                                    BorderStroke(1.dp, FamilyPurple.copy(alpha = 0.5f))
-                                } else {
-                                    BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.3f))
+                                colors = CardDefaults.cardColors(containerColor = if (isSelected) DarkCardElevated else DarkSurface),
+                                border = when {
+                                    isSelected -> BorderStroke(2.dp, RadarCyan)
+                                    contact.isFamily -> BorderStroke(1.dp, FamilyPurple.copy(alpha = 0.5f))
+                                    else -> BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.3f))
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { onOpenChat(contact) }
+                                    .pointerInput(contact.id, selectedContactIds.isNotEmpty()) {
+                                        detectTapGestures(
+                                            onLongPress = {
+                                                selectedContactIds = if (isSelected) selectedContactIds - contact.id else selectedContactIds + contact.id
+                                            },
+                                            onTap = {
+                                                if (selectedContactIds.isNotEmpty()) {
+                                                    selectedContactIds = if (isSelected) selectedContactIds - contact.id else selectedContactIds + contact.id
+                                                } else {
+                                                    onOpenChat(contact)
+                                                }
+                                            }
+                                        )
+                                    }
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -566,6 +683,16 @@ fun ConversationsTab(
                                         .padding(14.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    if (selectedContactIds.isNotEmpty()) {
+                                        Icon(
+                                            imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                            contentDescription = null,
+                                            tint = if (isSelected) RadarCyan else TextSecondary,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                    }
+
                                     // Avatar
                                     Box(
                                         modifier = Modifier

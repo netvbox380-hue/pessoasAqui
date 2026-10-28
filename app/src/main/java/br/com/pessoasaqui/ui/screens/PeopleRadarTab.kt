@@ -58,13 +58,13 @@ fun PeopleRadarTab(
     var showClearConfirmDialog by remember { mutableStateOf(false) }
 
     // Isolamento estrito do Radar de Proximidade Física BLE (10m):
-    // 1. Bluetooth deve estar ativo (ou aparelho em modo demonstração)
+    // 1. Bluetooth deve estar ativo
     // 2. Apenas pessoas com distância física estimada de até 10 metros
-    val visibleRadarPeople = remember(people, isBluetoothEnabled, isDemoMode) {
-        if (!isBluetoothEnabled && !isDemoMode) {
+    val visibleRadarPeople = remember(people, isBluetoothEnabled) {
+        if (!isBluetoothEnabled) {
             emptyList()
         } else {
-            people.filter { it.estimatedDistanceMeters <= 10.0 }
+            people.filter { it.estimatedDistanceMeters <= 10.0 && !it.id.startsWith("sim-", ignoreCase = true) }
         }
     }
 
@@ -232,48 +232,6 @@ fun PeopleRadarTab(
                         Text(
                             text = "Ativar",
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-                    }
-                }
-            }
-        }
-
-        if (isDemoMode) {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = WarningAmber.copy(alpha = 0.15f),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(text = "🧪", fontSize = 16.sp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Modo Demonstração (Contatos Simulados)",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                color = WarningAmber,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
-                    TextButton(
-                        onClick = onToggleDemoMode,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                    ) {
-                        Text(
-                            text = "Modo Real",
-                            color = WarningAmber,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
@@ -477,20 +435,6 @@ fun PeopleRadarTab(
                             lineHeight = 18.sp
                         )
                     )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    OutlinedButton(
-                        onClick = onToggleDemoMode,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = RadarCyan)
-                    ) {
-                        Text(
-                            text = if (isDemoMode) "Desativar Modo Demonstração" else "🧪 Testar com Contatos de Exemplo",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
                 }
             }
         } else {

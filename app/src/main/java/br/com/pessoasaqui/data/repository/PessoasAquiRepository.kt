@@ -130,8 +130,8 @@ class PessoasAquiRepository(
     private val _hasGrantedPermissions = MutableStateFlow(prefs?.getBoolean("has_granted_permissions", false) ?: false)
     val hasGrantedPermissions: StateFlow<Boolean> = _hasGrantedPermissions.asStateFlow()
 
-    // Modo Demonstração (desativado por padrão em PRODUÇÃO para exibir apenas dados reais)
-    private val _isDemoMode = MutableStateFlow(prefs?.getBoolean("is_demo_mode", false) ?: false)
+    // Modo Demonstração permanentemente desativado (100% Produção Real)
+    private val _isDemoMode = MutableStateFlow(false)
     val isDemoMode: StateFlow<Boolean> = _isDemoMode.asStateFlow()
 
     private val _currentAlias = MutableStateFlow(prefs?.getString("user_alias", "Eu") ?: "Eu")
@@ -316,8 +316,9 @@ class PessoasAquiRepository(
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 val id = cleanId(obj.getString("id"))
-                if (id.isBlank()) continue
+                if (id.isBlank() || id.startsWith("sim-", ignoreCase = true) || id.startsWith("sim_", ignoreCase = true)) continue
                 val alias = obj.optString("alias", "Contato")
+                if (alias.equals("Maria", ignoreCase = true) || alias.equals("Marcos Mecânico", ignoreCase = true) || alias.equals("Mariana", ignoreCase = true) || alias.equals("Carlos", ignoreCase = true)) continue
                 val isMutual = obj.optBoolean("isMutual", true)
                 val isFamily = obj.optBoolean("isFamily", false)
                 val roleStr = obj.optString("familyRole", "")
@@ -394,11 +395,13 @@ class PessoasAquiRepository(
             } catch (_: Exception) {}
         }
 
-        // Remove duplicatas e assegura sincronismo com savedMutualPeople
-        val distinct = list.distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
+        // Remove duplicatas e contatos simulados e assegura sincronismo com savedMutualPeople
+        val distinct = list
+            .filter { !it.id.startsWith("sim-", ignoreCase = true) && !it.technicalIdentityHash.startsWith("sim-", ignoreCase = true) }
+            .distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
         distinct.forEach { p ->
             val cid = cleanId(p.technicalIdentityHash.ifBlank { p.id })
-            if (cid.isNotBlank()) {
+            if (cid.isNotBlank() && (p.isMutualConnection || p.isFamily)) {
                 savedMutualPeople.add(cid)
                 savedMarkedPeople.add(cid)
                 savedMarkingMePeople.add(cid)
@@ -409,24 +412,37 @@ class PessoasAquiRepository(
 
     fun saveSavedContactsToPrefs() {
         try {
-            val currentList = _realDiscoveredPeople.value.filter { it.isMutualConnection || it.isFamily || isPeerMutual(it) }
-            val existingSaved = loadSavedContactsFromPrefs()
+            val currentList = _realDiscoveredPeople.value.filter {
+                (it.isMutualConnection || it.isFamily || isPeerMutual(it)) && !it.id.startsWith("sim-", ignoreCase = true)
+            }
+            val existingSaved = loadSavedContactsFromPrefs().filter {
+                !it.id.startsWith("sim-", ignoreCase = true)
+            }
 
-            // Mescla sem perder nenhum contato salvo previamente
+            // Mescla apenas contatos que ainda permanecem ativos em savedMutualPeople ou família
             val mergedMap = LinkedHashMap<String, NearbyPerson>()
             existingSaved.forEach { p ->
                 val k = cleanId(p.technicalIdentityHash.ifBlank { p.id })
-                if (k.isNotBlank()) mergedMap[k] = p
+                if (k.isNotBlank() && (k in savedMutualPeople || p.isFamily)) {
+                    mergedMap[k] = p
+                }
             }
             currentList.forEach { p ->
                 val k = cleanId(p.technicalIdentityHash.ifBlank { p.id })
-                if (k.isNotBlank()) mergedMap[k] = p
+                if (k.isNotBlank()) {
+                    if (p.isMutualConnection || p.isFamily || k in savedMutualPeople) {
+                        mergedMap[k] = p
+                    } else {
+                        mergedMap.remove(k)
+                    }
+                }
             }
 
             val array = JSONArray()
             mergedMap.values.forEach { person ->
-                val obj = JSONObject()
                 val cid = cleanId(person.technicalIdentityHash.ifBlank { person.id })
+                if (cid.isBlank() || cid.startsWith("sim-", ignoreCase = true)) return@forEach
+                val obj = JSONObject()
                 obj.put("id", cid)
                 obj.put("alias", person.alias)
                 obj.put("isMutual", person.isMutualConnection)
@@ -1182,36 +1198,18 @@ class PessoasAquiRepository(
     }
 
     private fun updateUnifiedData() {
-        val savedContacts = loadSavedContactsFromPrefs()
-        if (_isDemoMode.value) {
-            // Em modo demonstração, mescla pessoas reais com as pessoas simuladas e contatos mútuos salvos
-            val simulated = proximitySimulator.discoveredPeople.value
-            val combined = (_realDiscoveredPeople.value + simulated + savedContacts)
-                .distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
-                .map { applyConnectionState(it) }
-            _unifiedDiscoveredPeople.value = sortWithHysteresis(combined)
-            _unifiedOffers.value = _realOffers.value + proximitySimulator.localOffers.value
+        val savedContacts = loadSavedContactsFromPrefs().filter { !it.id.startsWith("sim-", ignoreCase = true) }
+        // PRODUÇÃO PURA: Somente pessoas e ofertas reais no radar e contatos mútuos/familiares legítimos
+        val applied = (_realDiscoveredPeople.value + savedContacts)
+            .filter { !it.id.startsWith("sim-", ignoreCase = true) }
+            .distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
+            .map { applyConnectionState(it) }
+        _unifiedDiscoveredPeople.value = sortWithHysteresis(applied)
+        _unifiedOffers.value = _realOffers.value
 
-            _unifiedLocalChatMessages.value = (proximitySimulator.localChatMessages.value + proximitySimulator.simulatedMuralMessages).distinctBy { it.id }
-            val mergedChats = proximitySimulator.privateChats.value.toMutableMap()
-            for ((k, v) in proximitySimulator.simulatedPrivateChats) {
-                if (!mergedChats.containsKey(k)) {
-                    mergedChats[k] = v
-                }
-            }
-            _unifiedPrivateChats.value = mergedChats
-        } else {
-            // PRODUÇÃO PURA: Somente pessoas e ofertas reais no radar e contatos mútuos/familiares salvos
-            val applied = (_realDiscoveredPeople.value + savedContacts)
-                .distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
-                .map { applyConnectionState(it) }
-            _unifiedDiscoveredPeople.value = sortWithHysteresis(applied)
-            _unifiedOffers.value = _realOffers.value
-
-            // Em produção pura, apenas mensagens reais enviadas ou persistidas (isolamento absoluto para novos usuários)
-            _unifiedLocalChatMessages.value = proximitySimulator.localChatMessages.value
-            _unifiedPrivateChats.value = proximitySimulator.privateChats.value
-        }
+        // Apenas mensagens reais trocadas ou persistidas (isolamento absoluto)
+        _unifiedLocalChatMessages.value = proximitySimulator.localChatMessages.value
+        _unifiedPrivateChats.value = proximitySimulator.privateChats.value
     }
 
     private fun handleRemotePresenceSync(remotePeers: List<RemotePeer>) {
@@ -1389,13 +1387,13 @@ class PessoasAquiRepository(
     }
 
     fun setDemoMode(enabled: Boolean) {
-        _isDemoMode.value = enabled
-        prefs?.edit()?.putBoolean("is_demo_mode", enabled)?.apply()
+        _isDemoMode.value = false
+        prefs?.edit()?.remove("is_demo_mode")?.apply()
         updateUnifiedData()
     }
 
     fun toggleDemoMode() {
-        setDemoMode(!_isDemoMode.value)
+        setDemoMode(false)
     }
 
     private fun registerIdentityOnBackend() {
@@ -1606,29 +1604,44 @@ class PessoasAquiRepository(
             // 2. Registra no backend Supabase / Render
             scope.launch {
                 try {
-                    val markResp = networkClient.markConnection(
-                        fromIdentity = myId,
-                        toIdentity = updated.technicalIdentityHash
-                    )
-                    markResp.getOrNull()?.let { backendIsMutual ->
-                        if (backendIsMutual || isNowMutual) {
-                            keys.forEach {
-                                savedMutualPeople.add(it)
-                                savedMarkedPeople.add(it)
-                                savedMarkingMePeople.add(it)
-                            }
-                            saveConnectionsToPrefs()
-                            val cur = _realDiscoveredPeople.value.toMutableList()
-                            val i = cur.indexOfFirst {
-                                cleanId(it.id) in keys || cleanId(it.technicalIdentityHash) in keys
-                            }
-                            if (i != -1) {
-                                cur[i] = cur[i].copy(isMarkedByMe = true, isMarkingMe = true, isMutualConnection = true, isPhotoVisible = true)
-                                _realDiscoveredPeople.value = cur
-                                updateUnifiedData()
-                                saveSavedContactsToPrefs()
+                    if (newMarkedByMe) {
+                        val markResp = networkClient.markConnection(
+                            fromIdentity = myId,
+                            toIdentity = updated.technicalIdentityHash
+                        )
+                        markResp.getOrNull()?.let { backendIsMutual ->
+                            if (backendIsMutual || isNowMutual) {
+                                keys.forEach {
+                                    savedMutualPeople.add(it)
+                                    savedMarkedPeople.add(it)
+                                    savedMarkingMePeople.add(it)
+                                }
+                                saveConnectionsToPrefs()
+                                val cur = _realDiscoveredPeople.value.toMutableList()
+                                val i = cur.indexOfFirst {
+                                    cleanId(it.id) in keys || cleanId(it.technicalIdentityHash) in keys
+                                }
+                                if (i != -1) {
+                                    cur[i] = cur[i].copy(isMarkedByMe = true, isMarkingMe = true, isMutualConnection = true, isPhotoVisible = true)
+                                    _realDiscoveredPeople.value = cur
+                                    updateUnifiedData()
+                                    saveSavedContactsToPrefs()
+                                }
                             }
                         }
+                    } else {
+                        // DESFAZER MARCAÇÃO: Remove marcação no servidor e assegura limpeza local
+                        networkClient.unmarkConnection(
+                            fromIdentity = myId,
+                            toIdentity = updated.technicalIdentityHash
+                        )
+                        keys.forEach {
+                            savedMutualPeople.remove(it)
+                            savedMarkedPeople.remove(it)
+                            savedMarkingMePeople.remove(it)
+                        }
+                        saveConnectionsToPrefs()
+                        saveSavedContactsToPrefs()
                     }
                 } catch (e: Exception) {
                     Log.w("PessoasAqui", "Erro ao sincronizar marcação no backend: ${e.message}")
@@ -2002,6 +2015,58 @@ class PessoasAquiRepository(
             sendPrivateMessage(cleanRecipient, "[MSG_DELETE:$messageId]")
         }
         return success
+    }
+
+    /**
+     * Exclui permanentemente um contato e todo o histórico de mensagens dele do aparelho,
+     * desfazendo qualquer marcação ou vínculo mútuo no servidor.
+     */
+    fun deleteConversationAndContact(peerId: String) {
+        val cleanPeerId = cleanId(peerId)
+        if (cleanPeerId.isBlank()) return
+        val keys = listOf(cleanPeerId, "peer-$cleanPeerId", peerId).distinct()
+
+        // 1. Remove do disco físico de histórico de mensagens e da memória
+        chatPersistence?.deletePrivateChat(cleanPeerId)
+        proximitySimulator.clearPrivateChat(cleanPeerId)
+
+        val curChats = _unifiedPrivateChats.value.toMutableMap()
+        keys.forEach { curChats.remove(it) }
+        _unifiedPrivateChats.value = curChats
+
+        // 2. Remove marcações e conexões mútuas em memória
+        keys.forEach {
+            savedMutualPeople.remove(it)
+            savedMarkedPeople.remove(it)
+            savedMarkingMePeople.remove(it)
+        }
+
+        val curReal = _realDiscoveredPeople.value.toMutableList()
+        val idx = curReal.indexOfFirst { cleanId(it.technicalIdentityHash) in keys || cleanId(it.id) in keys }
+        if (idx != -1) {
+            curReal[idx] = curReal[idx].copy(isMarkedByMe = false, isMutualConnection = false, isMarkingMe = false)
+        }
+        _realDiscoveredPeople.value = curReal
+
+        saveConnectionsToPrefs()
+        saveSavedContactsToPrefs()
+        updateUnifiedData()
+
+        // 3. Notifica backend Supabase / Render para desmarcar conexão mútua
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        val myAlias = _currentAlias.value
+        scope.launch {
+            try {
+                networkClient.unmarkConnection(myId, cleanPeerId)
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Erro ao desmarcar no backend: ${e.message}")
+            }
+        }
+        sendPrivateMessage(cleanPeerId, "[MARK_OFF:$myAlias]")
+    }
+
+    fun deleteMultipleConversations(peerIds: List<String>) {
+        peerIds.forEach { deleteConversationAndContact(it) }
     }
 
     fun toggleImportantMessage(peerId: String, messageId: String): Boolean {

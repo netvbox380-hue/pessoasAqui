@@ -378,6 +378,8 @@ fun ChatDetailScreen(
     var restrictedFeatureDialog by remember { mutableStateOf<String?>(null) }
     var showImportantMessagesDialog by remember { mutableStateOf(false) }
     var selectedMessageForActions by remember { mutableStateOf<ChatMessage?>(null) }
+    var selectedMessageIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showDeleteMessagesDialog by remember { mutableStateOf(false) }
     var messageToDelete by remember { mutableStateOf<ChatMessage?>(null) }
     var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var imageToEdit by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
@@ -565,7 +567,61 @@ fun ChatDetailScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            if (selectedMessageIds.isNotEmpty()) {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = { selectedMessageIds = emptySet() }) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancelar SeleÃ§Ã£o", tint = TextPrimary)
+                        }
+                    },
+                    title = {
+                        Text(
+                            text = "${selectedMessageIds.size} selecionada(s)",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                        )
+                    },
+                    actions = {
+                        IconButton(onClick = {
+                            val textToCopy = messages
+                                .filter { it.id in selectedMessageIds && it.text.isNotBlank() && !it.isDeleted }
+                                .joinToString("\n\n") { it.text }
+                            if (textToCopy.isNotBlank()) {
+                                val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("Mensagens", textToCopy))
+                                Toast.makeText(context, "${selectedMessageIds.size} mensagem(ns) copiada(s)!", Toast.LENGTH_SHORT).show()
+                            }
+                            selectedMessageIds = emptySet()
+                        }) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copiar", tint = TextPrimary)
+                        }
+
+                        IconButton(onClick = {
+                            val textToShare = messages
+                                .filter { it.id in selectedMessageIds && it.text.isNotBlank() && !it.isDeleted }
+                                .joinToString("\n\n") { it.text }
+                            if (textToShare.isNotBlank()) {
+                                val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    putExtra(android.content.Intent.EXTRA_TEXT, textToShare)
+                                    type = "text/plain"
+                                }
+                                context.startActivity(android.content.Intent.createChooser(sendIntent, "Compartilhar mensagens"))
+                            }
+                            selectedMessageIds = emptySet()
+                        }) {
+                            Icon(Icons.Default.Share, contentDescription = "Compartilhar", tint = TextPrimary)
+                        }
+
+                        IconButton(onClick = { showDeleteMessagesDialog = true }) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = "Excluir", tint = AlertRed)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkCardElevated)
+                )
+            } else {
+                TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
@@ -920,6 +976,7 @@ fun ChatDetailScreen(
                     containerColor = DarkSurface
                 )
             )
+            }
         },
         containerColor = DeepBlack,
         contentWindowInsets = WindowInsets(0, 0, 0, 0)
@@ -1087,9 +1144,12 @@ fun ChatDetailScreen(
                     val linkTextColor = if (isMe) Color(0xFF81C784) else Color(0xFFFF8A80)
                     val audioBarColor = if (isMe) Color(0xFF81C784) else Color(0xFFEF9A9A)
 
+                    val isMsgSelected = msg.id in selectedMessageIds
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start
+                        horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Surface(
                             shape = RoundedCornerShape(
@@ -1098,19 +1158,45 @@ fun ChatDetailScreen(
                                 bottomStart = if (isMe) 16.dp else 4.dp,
                                 bottomEnd = if (isMe) 4.dp else 16.dp
                             ),
-                            color = bubbleBgColor,
-                            border = BorderStroke(0.5.dp, bubbleBorderColor),
+                            color = if (isMsgSelected) DarkCardElevated else bubbleBgColor,
+                            border = if (isMsgSelected) BorderStroke(2.dp, RadarCyan) else BorderStroke(0.5.dp, bubbleBorderColor),
                             modifier = Modifier
                                 .widthIn(max = 290.dp)
-                                .pointerInput(msg.id) {
+                                .pointerInput(msg.id, selectedMessageIds.isNotEmpty()) {
                                     detectTapGestures(
                                         onLongPress = {
-                                            selectedMessageForActions = msg
+                                            selectedMessageIds = if (isMsgSelected) {
+                                                selectedMessageIds - msg.id
+                                            } else {
+                                                selectedMessageIds + msg.id
+                                            }
+                                        },
+                                        onTap = {
+                                            if (selectedMessageIds.isNotEmpty()) {
+                                                selectedMessageIds = if (isMsgSelected) {
+                                                    selectedMessageIds - msg.id
+                                                } else {
+                                                    selectedMessageIds + msg.id
+                                                }
+                                            }
                                         }
                                     )
                                 }
                         ) {
                             Column(modifier = Modifier.padding(horizontal = if (isStickerMsg) 2.dp else 12.dp, vertical = if (isStickerMsg) 2.dp else 8.dp)) {
+                                if (isMsgSelected) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                                        horizontalArrangement = Arrangement.End
+                                    ) {
+                                        Icon(
+                                            Icons.Default.CheckCircle,
+                                            contentDescription = "Selecionada",
+                                            tint = RadarCyan,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
                                 if (msg.isDeleted) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
@@ -2999,6 +3085,77 @@ fun ChatDetailScreen(
         }
 
         // Diálogo de Cobrança / Upsell para Recursos Extras VIP
+        // DiÃ¡logo de ExclusÃ£o MÃºltipla de Mensagens
+        if (showDeleteMessagesDialog) {
+            val targetPeerId = person.technicalIdentityHash.ifBlank { person.id }
+            val selectedList = messages.filter { it.id in selectedMessageIds }
+            val canDeleteAllForEveryone = selectedList.isNotEmpty() && selectedList.all {
+                it.isFromMe && !it.isDeleted && (System.currentTimeMillis() - it.timestampMs <= 30 * 60 * 1000L)
+            }
+
+            AlertDialog(
+                onDismissRequest = { showDeleteMessagesDialog = false },
+                title = {
+                    Text(
+                        text = "Apagar ${selectedMessageIds.size} mensagem(ns)?",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        text = if (canDeleteAllForEveryone)
+                            "VocÃª pode apagar estas mensagens apenas para vocÃª ou para todos os participantes da conversa."
+                        else
+                            "As mensagens selecionadas serÃ£o apagadas do seu aparelho.",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+                },
+                confirmButton = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (canDeleteAllForEveryone) {
+                            Button(
+                                onClick = {
+                                    val toDelete = selectedMessageIds.toList()
+                                    selectedMessageIds = emptySet()
+                                    showDeleteMessagesDialog = false
+                                    toDelete.forEach { msgId ->
+                                        onDeleteMessageForEveryone?.invoke(targetPeerId, msgId)
+                                    }
+                                    Toast.makeText(context, "${toDelete.size} mensagem(ns) apagada(s) para todos.", Toast.LENGTH_SHORT).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AlertRed)
+                            ) {
+                                Text("Para todos", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                        Button(
+                            onClick = {
+                                val toDelete = selectedMessageIds.toList()
+                                selectedMessageIds = emptySet()
+                                showDeleteMessagesDialog = false
+                                toDelete.forEach { msgId ->
+                                    onDeleteMessageForMe?.invoke(targetPeerId, msgId)
+                                }
+                                Toast.makeText(context, "${toDelete.size} mensagem(ns) apagada(s).", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = DarkCardElevated),
+                            border = BorderStroke(1.dp, AlertRed)
+                        ) {
+                            Text("Para mim", color = AlertRed, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteMessagesDialog = false }) {
+                        Text("Cancelar", color = TextSecondary)
+                    }
+                },
+                containerColor = DarkSurface
+            )
+        }
+
         showVipUpsellForFeature?.let { featureName ->
             AlertDialog(
                 onDismissRequest = { showVipUpsellForFeature = null },
