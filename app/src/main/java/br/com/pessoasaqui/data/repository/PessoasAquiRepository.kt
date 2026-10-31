@@ -1796,7 +1796,7 @@ class PessoasAquiRepository(
                     val token = UUID.randomUUID().toString()
                     val myId = getMyIdentity()
                     val alias = getMyAlias()
-                    val url = "https://pessoasaqui.onrender.com/invite?id=$invId&token=$token&sender=$myId&alias=${java.net.URLEncoder.encode(alias, "UTF-8")}"
+                    val url = "https://pessoasaqui3.onrender.com/invite?id=$invId&token=$token&sender=$myId&alias=${java.net.URLEncoder.encode(alias, "UTF-8")}"
                     onResult(url)
                 }
             } catch (_: Exception) {
@@ -1804,7 +1804,7 @@ class PessoasAquiRepository(
                 val token = UUID.randomUUID().toString()
                 val myId = getMyIdentity()
                 val alias = getMyAlias()
-                val url = "https://pessoasaqui.onrender.com/invite?id=$invId&token=$token&sender=$myId&alias=${java.net.URLEncoder.encode(alias, "UTF-8")}"
+                val url = "https://pessoasaqui3.onrender.com/invite?id=$invId&token=$token&sender=$myId&alias=${java.net.URLEncoder.encode(alias, "UTF-8")}"
                 onResult(url)
             }
         }

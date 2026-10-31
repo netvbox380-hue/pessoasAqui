@@ -359,7 +359,7 @@ fun ConversationsTab(
                                         pasteError = null
                                     },
                                     placeholder = {
-                                        Text("https://pessoasaqui.onrender.com/invite?id=...", color = TextSecondary.copy(alpha = 0.5f))
+                                        Text("https://pessoasaqui3.onrender.com/invite?id=...", color = TextSecondary.copy(alpha = 0.5f))
                                     },
                                     singleLine = false,
                                     maxLines = 3,
