@@ -771,7 +771,7 @@ fun ConversationsTab(
 
                                         // Prévia da última mensagem ou status de conexão
                                         val previewText = when {
-                                            lastMsg == null -> if (contact.isFamily) "Família • Vínculo permanente" else "Conexão Mútua • Conversa liberada"
+                                            lastMsg == null -> if (contact.isFamily) "Família • Vínculo permanente" else if (contact.isMutualConnection) "Conexão Mútua • Conversa liberada" else "Histórico salvo • Desconectado"
                                             lastMsg.messageType == MessageType.IMAGE -> "📷 Foto enviada"
                                             lastMsg.messageType == MessageType.AUDIO -> "🎤 Áudio (${lastMsg.audioDurationSeconds}s)"
                                             lastMsg.messageType == MessageType.DOCUMENT -> "📄 ${lastMsg.fileName ?: "Documento"}"
@@ -781,7 +781,7 @@ fun ConversationsTab(
                                         Text(
                                             text = previewText,
                                             style = MaterialTheme.typography.bodySmall.copy(
-                                                color = if (lastMsg != null) TextSecondary else EmeraldGreen
+                                                color = if (lastMsg != null) TextSecondary else if (contact.isMutualConnection || contact.isFamily) EmeraldGreen else TextSecondary
                                             ),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -793,7 +793,7 @@ fun ConversationsTab(
                                     Icon(
                                         imageVector = Icons.Default.Chat,
                                         contentDescription = "Abrir conversa",
-                                        tint = if (contact.isFamily) FamilyPurple else EmeraldGreen,
+                                        tint = if (contact.isFamily) FamilyPurple else if (contact.isMutualConnection) EmeraldGreen else TextSecondary,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }

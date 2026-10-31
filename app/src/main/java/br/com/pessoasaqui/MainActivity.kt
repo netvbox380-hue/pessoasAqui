@@ -212,8 +212,12 @@ fun PessoasAquiNavHost(
     val contactTags by repository.contactTags.collectAsState()
     val contactTagAssignments by repository.contactTagAssignments.collectAsState()
     val scope = rememberCoroutineScope()
-    val connectedPeople = remember(discoveredPeople) {
-        discoveredPeople.filter { it.isMutualConnection || it.isFamily }
+    val connectedPeople = remember(discoveredPeople, privateChats) {
+        val activeOrWithChats = discoveredPeople.filter { person ->
+            val cid = person.technicalIdentityHash.ifBlank { person.id }
+            person.isMutualConnection || person.isFamily || privateChats.containsKey(cid) || privateChats.containsKey(person.id)
+        }
+        activeOrWithChats
             .distinctBy { it.technicalIdentityHash.ifBlank { it.id } }
     }
     val context = LocalContext.current

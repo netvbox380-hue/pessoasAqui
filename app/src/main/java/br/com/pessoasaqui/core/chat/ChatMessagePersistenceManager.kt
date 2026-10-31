@@ -135,6 +135,8 @@ class ChatMessagePersistenceManager(
                 if (sanitizedList.isNotEmpty()) {
                     resultMap[cleanPeerId] = sanitizedList
                     resultMap["peer-$cleanPeerId"] = sanitizedList
+                    resultMap[cleanPeerId.uppercase()] = sanitizedList
+                    resultMap["peer-${cleanPeerId.uppercase()}"] = sanitizedList
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Falha ao ler arquivo de chat ${file.name}: ${e.message}")

@@ -62,7 +62,8 @@ class PessoasAquiRepository(
     val moderationManager: ContentModerationManager = ContentModerationManager(),
     val bleManager: BleManager? = null,
     val networkClient: PessoasAquiNetworkClient = PessoasAquiNetworkClient(),
-    val distanceEstimator: DistanceEstimator = DistanceEstimator()
+    val distanceEstimator: DistanceEstimator = DistanceEstimator(),
+    injectedChatPersistence: br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager? = null
 ) {
     val diskCrypto = LocalDiskCryptoManager(context)
     private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
@@ -106,7 +107,7 @@ class PessoasAquiRepository(
         PlayBillingManager(context, subscriptionManager)
     } else null
 
-    val chatPersistence: ChatMessagePersistenceManager? = context?.let { ctx ->
+    val chatPersistence: br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager? = injectedChatPersistence ?: context?.let { ctx ->
         ChatMessagePersistenceManager(ctx)
     }
 
@@ -191,7 +192,6 @@ class PessoasAquiRepository(
 
     fun isPeerMutual(person: NearbyPerson): Boolean {
         if (person.isFamily) return true
-        if (person.isMutualConnection) return true
         val cid = cleanId(person.technicalIdentityHash)
         val pid = cleanId(person.id)
         if ((cid.isNotBlank() && savedMutualPeople.contains(cid)) ||
@@ -208,12 +208,6 @@ class PessoasAquiRepository(
         val marked = isPeerMarkedByMe(person)
         val marking = isPeerMarkingMe(person)
         val mutual = isPeerMutual(person) || (marked && marking)
-
-        if (mutual && cid.isNotBlank()) {
-            savedMutualPeople.add(cid)
-            savedMarkedPeople.add(cid)
-            savedMarkingMePeople.add(cid)
-        }
 
         return person.copy(
             id = cid,
@@ -320,8 +314,8 @@ class PessoasAquiRepository(
                 if (id.isBlank() || id.startsWith("sim-", ignoreCase = true) || id.startsWith("sim_", ignoreCase = true)) continue
                 val alias = obj.optString("alias", "Contato")
                 if (alias.equals("Maria", ignoreCase = true) || alias.equals("Marcos Mecânico", ignoreCase = true) || alias.equals("Mariana", ignoreCase = true) || alias.equals("Carlos", ignoreCase = true)) continue
-                val isMutual = obj.optBoolean("isMutual", true)
                 val isFamily = obj.optBoolean("isFamily", false)
+                val isMutual = (cleanId(id) in savedMutualPeople) || isFamily
                 val roleStr = obj.optString("familyRole", "")
                 val familyRole = if (roleStr.isNotBlank()) {
                     try { FamilyRole.valueOf(roleStr) } catch (_: Exception) { null }
@@ -332,9 +326,9 @@ class PessoasAquiRepository(
                         technicalIdentityHash = id,
                         alias = alias,
                         estimatedDistanceMeters = 500.0,
-                        proximityLabel = if (isFamily) "Família • Ilimitado" else "Conexão Mútua • Ilimitada",
-                        isMarkedByMe = true,
-                        isMarkingMe = true,
+                        proximityLabel = if (isFamily) "Família • Ilimitado" else if (isMutual) "Conexão Mútua • Ilimitada" else "Histórico de conversa salvo",
+                        isMarkedByMe = isMutual,
+                        isMarkingMe = isMutual,
                         isMutualConnection = isMutual,
                         isFamily = isFamily,
                         familyRole = familyRole,
@@ -346,7 +340,7 @@ class PessoasAquiRepository(
         } catch (_: Exception) {}
     }
 
-    private fun loadSavedContactsFromPrefs(): List<NearbyPerson> {
+    internal fun loadSavedContactsFromPrefs(): List<NearbyPerson> {
         val list = mutableListOf<NearbyPerson>()
 
         // 1. Carrega do arquivo persistente dedicado no disco permanente com decifração AES-256
@@ -376,18 +370,19 @@ class PessoasAquiRepository(
                     val cleanPeerId = cleanId(peerId)
                     if (cleanPeerId.isNotBlank() && list.none { cleanId(it.technicalIdentityHash) == cleanPeerId || cleanId(it.id) == cleanPeerId }) {
                         val lastMsg = chats[peerId]?.lastOrNull()
-                        val alias = if (lastMsg?.isFromMe == false) lastMsg.senderAlias else "Contato Mútuo"
+                        val isMut = cleanPeerId in savedMutualPeople
+                        val alias = if (lastMsg?.isFromMe == false) lastMsg.senderAlias else if (isMut) "Contato Mútuo" else "Contato Salvo"
                         list.add(
                             NearbyPerson(
                                 id = cleanPeerId,
                                 technicalIdentityHash = cleanPeerId,
                                 alias = alias,
                                 estimatedDistanceMeters = 500.0,
-                                proximityLabel = "Conexão Mútua • Ilimitada",
-                                isMarkedByMe = true,
-                                isMarkingMe = true,
-                                isMutualConnection = true,
-                                isPhotoVisible = true,
+                                proximityLabel = if (isMut) "Conexão Mútua • Ilimitada" else "Histórico de conversa salvo",
+                                isMarkedByMe = isMut,
+                                isMarkingMe = isMut,
+                                isMutualConnection = isMut,
+                                isPhotoVisible = isMut,
                                 lastSeenEpochMs = System.currentTimeMillis()
                             )
                         )
@@ -400,14 +395,6 @@ class PessoasAquiRepository(
         val distinct = list
             .filter { !it.id.startsWith("sim-", ignoreCase = true) && !it.technicalIdentityHash.startsWith("sim-", ignoreCase = true) }
             .distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
-        distinct.forEach { p ->
-            val cid = cleanId(p.technicalIdentityHash.ifBlank { p.id })
-            if (cid.isNotBlank() && (p.isMutualConnection || p.isFamily)) {
-                savedMutualPeople.add(cid)
-                savedMarkedPeople.add(cid)
-                savedMarkingMePeople.add(cid)
-            }
-        }
         return distinct
     }
 
@@ -451,11 +438,6 @@ class PessoasAquiRepository(
                 obj.put("familyRole", person.familyRole?.name ?: "")
                 array.put(obj)
 
-                if (person.isMutualConnection || person.isFamily) {
-                    savedMutualPeople.add(cid)
-                    savedMarkedPeople.add(cid)
-                    savedMarkingMePeople.add(cid)
-                }
             }
 
             val jsonOutput = array.toString()

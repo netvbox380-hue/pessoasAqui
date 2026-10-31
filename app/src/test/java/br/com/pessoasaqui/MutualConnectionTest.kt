@@ -5,6 +5,7 @@ import br.com.pessoasaqui.domain.model.NearbyPerson
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import java.io.File
 
 class MutualConnectionTest {
 
@@ -145,5 +146,71 @@ class MutualConnectionTest {
         assertTrue("Mural local nasce 100% vazio em produção", repo.localChatMessages.value.isEmpty())
         assertTrue("Conversas privadas nascem 100% vazias em produção", repo.privateChats.value.isEmpty())
         assertTrue("Radar nasce 100% vazio em produção para novo usuário", repo.discoveredPeople.value.isEmpty())
+    }
+
+    @Test
+    fun testUndoneConnectionPreservesChatHistoryWithoutResurrectingMutualConnection() {
+        val tempDir = File(System.getProperty("java.io.tmpdir"), "test_pessoasaqui_chat_" + System.currentTimeMillis())
+        tempDir.mkdirs()
+        try {
+            val persistence = br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager(baseDir = tempDir)
+            val peerId = "093F4EC86E8AA845"
+            val peerAlias = "Teste S24"
+
+            // 1. Simula mensagem existente no disco para o contato
+            val msg = br.com.pessoasaqui.domain.model.ChatMessage(
+                id = "msg-123",
+                senderId = peerId,
+                senderAlias = peerAlias,
+                text = "Olá, tudo bem?",
+                timestampMs = System.currentTimeMillis(),
+                isFromMe = false
+            )
+            persistence.savePrivateChat(peerId, listOf(msg))
+
+            // 2. Instancia o repositório com o gerenciador de persistência injetado
+            val repo = br.com.pessoasaqui.data.repository.PessoasAquiRepository(injectedChatPersistence = persistence)
+
+            // Estabelece conexão mútua legítima
+            val connected = repo.setMarkPerson(peerId, mark = true, explicitMutual = true)
+            assertNotNull(connected)
+            assertTrue("Conexão deve ser mútua após aceitação", repo.isPeerMutual(connected!!))
+
+            // 3. Usuário desfaz a conexão mútua
+            val disconnected = repo.setMarkPerson(peerId, mark = false)
+            assertNotNull(disconnected)
+            assertFalse("Marcação própria deve ser removida", disconnected!!.isMarkedByMe)
+            assertFalse("Conexão mútua não deve estar mais ativa", repo.isPeerMutual(disconnected))
+
+            // 4. Salva contatos e carrega contatos salvos
+            repo.saveSavedContactsToPrefs()
+            val contacts = repo.loadSavedContactsFromPrefs()
+            val peerInContacts = contacts.find { it.id == peerId || it.technicalIdentityHash == peerId }
+            assertNotNull("Contato ainda deve existir na lista recuperada devido ao histórico", peerInContacts)
+            assertFalse("Contato com histórico salvo NÃO pode ressuscitar como conexão mútua", peerInContacts!!.isMutualConnection)
+            assertFalse("isPeerMutual deve continuar falso após salvar e recarregar", repo.isPeerMutual(peerInContacts))
+
+            // 5. Histórico em disco permanece 100% preservado
+            val chatsOnDisk = persistence.loadAllPrivateChats()
+            val messages = chatsOnDisk[peerId] ?: chatsOnDisk[peerId.lowercase()]
+            assertNotNull("Histórico de mensagens deve estar preservado no disco", messages)
+            assertTrue("Deve haver mensagens preservadas no histórico", messages!!.isNotEmpty())
+            assertTrue("Mensagem original enviada/recebida deve permanecer preservada", messages.any { it.text == "Olá, tudo bem?" })
+
+            // 6. Simula fechar e reabrir o app (novo repositório com o mesmo armazenamento em disco)
+            val reloadedRepo = br.com.pessoasaqui.data.repository.PessoasAquiRepository(injectedChatPersistence = persistence)
+            val reloadedContacts = reloadedRepo.loadSavedContactsFromPrefs()
+            val reloadedPeer = reloadedContacts.find { it.id == peerId || it.technicalIdentityHash == peerId }
+            assertNotNull(reloadedPeer)
+            assertFalse("Ao reabrir o app, a conexão deve permanecer desfeita", reloadedPeer!!.isMutualConnection)
+            assertFalse("isPeerMutual no repositório recarregado deve ser falso", reloadedRepo.isPeerMutual(reloadedPeer))
+
+            // 7. Reconexão legítima: quando o usuário reconecta explicitamente, deve virar mútua
+            val reconnected = reloadedRepo.setMarkPerson(peerId, mark = true, explicitMutual = true)
+            assertNotNull(reconnected)
+            assertTrue("Reconexão legítima deve ser aceita com sucesso", reloadedRepo.isPeerMutual(reconnected!!))
+        } finally {
+            tempDir.deleteRecursively()
+        }
     }
 }

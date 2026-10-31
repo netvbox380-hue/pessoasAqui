@@ -60,6 +60,26 @@ class LocalDiskCryptoManager(
         return SecretKeySpec(keyBytes, "AES")
     }
 
+    private fun base64Encode(bytes: ByteArray): String {
+        return try {
+            android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                ?.takeIf { it.isNotBlank() }
+                ?: java.util.Base64.getEncoder().encodeToString(bytes)
+        } catch (_: Throwable) {
+            java.util.Base64.getEncoder().encodeToString(bytes)
+        }
+    }
+
+    private fun base64Decode(str: String): ByteArray {
+        return try {
+            android.util.Base64.decode(str, android.util.Base64.NO_WRAP)
+                ?.takeIf { it.isNotEmpty() }
+                ?: java.util.Base64.getDecoder().decode(str)
+        } catch (_: Throwable) {
+            java.util.Base64.getDecoder().decode(str)
+        }
+    }
+
     /**
      * Cifra uma string em texto puro para gravação segura em repouso no disco.
      */
@@ -73,8 +93,8 @@ class LocalDiskCryptoManager(
             cipher.init(Cipher.ENCRYPT_MODE, diskKey, gcmSpec)
 
             val ciphertext = cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
-            val b64Iv = Base64.encodeToString(iv, Base64.NO_WRAP)
-            val b64Cipher = Base64.encodeToString(ciphertext, Base64.NO_WRAP)
+            val b64Iv = base64Encode(iv)
+            val b64Cipher = base64Encode(ciphertext)
 
             "$PREFIX$b64Iv:$b64Cipher"
         } catch (e: Exception) {
@@ -98,8 +118,8 @@ class LocalDiskCryptoManager(
             val parts = payload.split(":", limit = 2)
             if (parts.size < 2) return trimmed
 
-            val iv = Base64.decode(parts[0], Base64.NO_WRAP)
-            val ciphertext = Base64.decode(parts[1], Base64.NO_WRAP)
+            val iv = base64Decode(parts[0])
+            val ciphertext = base64Decode(parts[1])
 
             val cipher = Cipher.getInstance(ALGORITHM)
             val gcmSpec = GCMParameterSpec(TAG_LENGTH_BITS, iv)
