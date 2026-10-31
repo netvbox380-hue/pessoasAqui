@@ -215,7 +215,8 @@ fun PessoasAquiNavHost(
     val connectedPeople = remember(discoveredPeople, privateChats) {
         val activeOrWithChats = discoveredPeople.filter { person ->
             val cid = person.technicalIdentityHash.ifBlank { person.id }
-            person.isMutualConnection || person.isFamily || privateChats.containsKey(cid) || privateChats.containsKey(person.id)
+            val hasPersistedChat = repository.chatPersistence?.hasPrivateChat(cid) == true || repository.chatPersistence?.hasPrivateChat(person.id) == true
+            person.isMutualConnection || person.isFamily || hasPersistedChat
         }
         activeOrWithChats
             .distinctBy { it.technicalIdentityHash.ifBlank { it.id } }

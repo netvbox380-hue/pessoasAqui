@@ -99,6 +99,13 @@ class ChatMessagePersistenceManager(
     /**
      * Remove o histórico de conversa com um contato específico em disco.
      */
+    fun hasPrivateChat(peerId: String): Boolean {
+        val clean = cleanKey(peerId)
+        if (clean.isBlank()) return false
+        val file = getFileForPeer(clean) ?: return false
+        return file.exists() && file.length() > 0
+    }
+
     fun deletePrivateChat(peerId: String) {
         val cleanKey = cleanKey(peerId)
         if (cleanKey.isBlank()) return

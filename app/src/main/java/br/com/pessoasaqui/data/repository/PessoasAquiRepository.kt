@@ -65,6 +65,12 @@ class PessoasAquiRepository(
     val distanceEstimator: DistanceEstimator = DistanceEstimator(),
     injectedChatPersistence: br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager? = null
 ) {
+    companion object {
+        const val TEMPORARY_SESSION_GRACE_PERIOD_MS = 30000L // 30s de tolerância contra jitter/oscilação BLE
+        const val TEMPORARY_SESSION_EXPIRATION_MS = 45000L   // 45s de ausência para encerramento e purga
+    }
+
+
     val diskCrypto = LocalDiskCryptoManager(context)
     private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -174,6 +180,54 @@ class PessoasAquiRepository(
         saveSavedContactsToPrefs()
     }
 
+
+    fun isPeerPermanent(peerId: String): Boolean {
+        val cid = cleanId(peerId)
+        if (cid.isBlank()) return false
+        if (savedMutualPeople.contains(cid)) return true
+        val p = _realDiscoveredPeople.value.find { cleanId(it.id) == cid || cleanId(it.technicalIdentityHash) == cid }
+        return p?.isFamily == true || (p != null && isPeerMutual(p))
+    }
+
+    fun promoteTemporarySessionToMutual(peerId: String) {
+        val clean = cleanId(peerId)
+        if (clean.isBlank()) return
+        val messages = _unifiedPrivateChats.value[clean]
+            ?: _unifiedPrivateChats.value["peer-$clean"]
+            ?: _unifiedPrivateChats.value[clean.lowercase()]
+            ?: emptyList()
+        if (messages.isNotEmpty()) {
+            chatPersistence?.savePrivateChat(clean, messages)
+        }
+    }
+
+    fun cleanupExpiredTemporarySessions(
+        now: Long = System.currentTimeMillis(),
+        expirationMs: Long = TEMPORARY_SESSION_EXPIRATION_MS
+    ): List<String> {
+        val current = _realDiscoveredPeople.value.toMutableList()
+        val expiredPeers = current.filter { peer ->
+            val isPermanent = peer.isMutualConnection || peer.isFamily || isPeerMutual(peer)
+            val elapsed = now - peer.lastSeenEpochMs
+            !isPermanent && elapsed >= expirationMs
+        }
+
+        if (expiredPeers.isEmpty()) return emptyList()
+
+        val expiredIds = mutableListOf<String>()
+        expiredPeers.forEach { p ->
+            val cid = cleanId(p.technicalIdentityHash.ifBlank { p.id })
+            expiredIds.add(cid)
+            proximitySimulator.clearPrivateChat(cid)
+            chatPersistence?.deletePrivateChat(cid)
+        }
+
+        val remaining = current.filter { it !in expiredPeers }
+        _realDiscoveredPeople.value = remaining
+        updateUnifiedData()
+        return expiredIds
+    }
+
     fun isPeerMarkedByMe(person: NearbyPerson): Boolean {
         val cid = cleanId(person.technicalIdentityHash)
         val pid = cleanId(person.id)
@@ -201,6 +255,14 @@ class PessoasAquiRepository(
         val marked = isPeerMarkedByMe(person)
         val marking = isPeerMarkingMe(person)
         return marked && marking
+    }
+
+    fun isPeerMutual(peerId: String): Boolean {
+        val cid = cleanId(peerId)
+        if (cid.isBlank()) return false
+        if (savedMutualPeople.contains(cid)) return true
+        val p = _realDiscoveredPeople.value.find { cleanId(it.id) == cid || cleanId(it.technicalIdentityHash) == cid }
+        return p?.let { isPeerMutual(it) } ?: false
     }
 
     fun applyConnectionState(person: NearbyPerson): NearbyPerson {
@@ -516,6 +578,9 @@ class PessoasAquiRepository(
         prefs?.edit()?.remove("saved_revoked_mutual_people")?.apply()
         chatPersistence?.let { cp ->
             proximitySimulator.setPersistenceManager(cp)
+        }
+        proximitySimulator.shouldPersistPrivateChat = { peerId ->
+            isPeerPermanent(peerId)
         }
 
         val restoredContacts = loadSavedContactsFromPrefs()
@@ -1108,20 +1173,9 @@ class PessoasAquiRepository(
                         )
                     }
 
-                    // 6. Limpeza automática de fantasmas e pessoas que saíram do alcance (> 15 segundos)
-                    // Pessoas com conexão mútua, parentesco ou marcação NUNCA são removidas pelo timeout de alcance!
-                    val now = System.currentTimeMillis()
-                    val activeList = _realDiscoveredPeople.value.filter { peer ->
-                        val cid = cleanId(peer.technicalIdentityHash)
-                        val isValidHex = cid.matches(Regex("^[0-9A-F]{8,16}$"))
-                        val isRecent = (now - peer.lastSeenEpochMs) < 15000L
-                        val isSpecial = peer.isMutualConnection || peer.isFamily || isPeerMutual(peer) || isPeerMarkedByMe(peer) || isPeerMarkingMe(peer)
-                        (isValidHex && isRecent) || isSpecial
-                    }
-                    if (activeList.size != _realDiscoveredPeople.value.size) {
-                        _realDiscoveredPeople.value = activeList
-                        updateUnifiedData()
-                    }
+                    // 6. Limpeza automática e segura de sessões temporárias expiradas (> 45s de afastamento)
+                    // Contatos mútuos e familiares são permanentes e protegidos contra expiração física.
+                    cleanupExpiredTemporarySessions()
                 } catch (e: Throwable) {
                     Log.w("PessoasAqui", "Polling de presença: ${e.message}")
                 }
@@ -1343,6 +1397,15 @@ class PessoasAquiRepository(
         updateUnifiedData()
     }
 
+    fun addDiscoveredPeer(person: NearbyPerson) {
+        val current = _realDiscoveredPeople.value.toMutableList()
+        val cId = cleanId(person.technicalIdentityHash.ifBlank { person.id })
+        current.removeAll { cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cId }
+        current.add(0, applyConnectionState(person))
+        _realDiscoveredPeople.value = current
+        updateUnifiedData()
+    }
+
     fun completeAgeVerification() {
         _isAgeVerified.value = true
         prefs?.edit()?.putBoolean("is_age_verified", true)?.apply()
@@ -1549,6 +1612,7 @@ class PessoasAquiRepository(
                     keys.forEach {
                         savedMutualPeople.add(it)
                         savedMarkingMePeople.add(it)
+                        promoteTemporarySessionToMutual(it)
                     }
                 }
             } else {
@@ -1847,6 +1911,7 @@ class PessoasAquiRepository(
                     savedMutualPeople.add(cleanSender)
                     savedMarkedPeople.add(cleanSender)
                     savedMarkingMePeople.add(cleanSender)
+                    promoteTemporarySessionToMutual(cleanSender)
                     saveConnectionsToPrefs()
 
                     val peer = NearbyPerson(

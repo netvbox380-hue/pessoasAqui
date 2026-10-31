@@ -78,6 +78,14 @@ class ProximitySimulator(
         loadPersistedMessages()
     }
 
+    var shouldPersistPrivateChat: ((peerId: String) -> Boolean)? = null
+
+    private fun persistPrivateChatIfEligible(cleanId: String, messages: List<ChatMessage>) {
+        if (shouldPersistPrivateChat == null || shouldPersistPrivateChat?.invoke(cleanId) == true) {
+            persistenceManager?.savePrivateChat(cleanId, messages)
+        }
+    }
+
     fun setPersistenceManager(pm: ChatMessagePersistenceManager) {
         this.persistenceManager = pm
         loadPersistedMessages()
@@ -325,7 +333,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, newList)
+        persistPrivateChatIfEligible(cleanId, newList)
     }
 
     /**
@@ -346,7 +354,7 @@ class ProximitySimulator(
             updatedMap[cleanId] = updatedList
             updatedMap["peer-$cleanId"] = updatedList
             _privateChats.value = updatedMap
-            persistenceManager?.savePrivateChat(cleanId, updatedList)
+            persistPrivateChatIfEligible(cleanId, updatedList)
             return
         }
 
@@ -366,7 +374,7 @@ class ProximitySimulator(
                 updatedMap[cleanId] = updatedList
                 updatedMap["peer-$cleanId"] = updatedList
                 _privateChats.value = updatedMap
-                persistenceManager?.savePrivateChat(cleanId, updatedList)
+                persistPrivateChatIfEligible(cleanId, updatedList)
             }
             return
         }
@@ -387,7 +395,7 @@ class ProximitySimulator(
             updatedMap[cleanId] = updatedList
             updatedMap["peer-$cleanId"] = updatedList
             _privateChats.value = updatedMap
-            persistenceManager?.savePrivateChat(cleanId, updatedList)
+            persistPrivateChatIfEligible(cleanId, updatedList)
             return
         }
 
@@ -459,7 +467,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, newList)
+        persistPrivateChatIfEligible(cleanId, newList)
     }
 
     fun sendAudioMessage(
@@ -492,7 +500,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, newList)
+        persistPrivateChatIfEligible(cleanId, newList)
     }
 
     fun sendImageMessage(recipientId: String, base64: String, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
@@ -518,7 +526,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, newList)
+        persistPrivateChatIfEligible(cleanId, newList)
     }
 
     fun sendDocumentMessage(recipientId: String, fileName: String, base64: String, sizeBytes: Long, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
@@ -546,7 +554,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, newList)
+        persistPrivateChatIfEligible(cleanId, newList)
     }
 
     /**
@@ -605,7 +613,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = updatedList
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        persistPrivateChatIfEligible(cleanId, updatedList)
         return true
     }
 
@@ -626,7 +634,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = updatedList
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        persistPrivateChatIfEligible(cleanId, updatedList)
         return newStatus
     }
 
@@ -653,7 +661,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = updatedList
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        persistPrivateChatIfEligible(cleanId, updatedList)
         return true
     }
 
@@ -671,7 +679,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = updatedList
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        persistPrivateChatIfEligible(cleanId, updatedList)
         return true
     }
 
@@ -705,7 +713,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = updatedList
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        persistPrivateChatIfEligible(cleanId, updatedList)
         return true
     }
 
@@ -717,6 +725,9 @@ class ProximitySimulator(
         val updatedMap = _privateChats.value.toMutableMap()
         updatedMap.remove(cleanId)
         updatedMap.remove("peer-$cleanId")
+        updatedMap.remove(peerId)
+        updatedMap.remove(cleanId.uppercase())
+        updatedMap.remove(cleanId.lowercase())
         _privateChats.value = updatedMap
         persistenceManager?.deletePrivateChat(cleanId)
     }
