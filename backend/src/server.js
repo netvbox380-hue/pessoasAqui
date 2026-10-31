@@ -1132,7 +1132,7 @@ app.post('/api/invites/create', async (req, res) => {
     }
   }
 
-  const baseUrl = process.env.BASE_URL || (req.get('host') ? `${req.protocol}://${req.get('host')}` : 'https://pessoasaqui-rj8b.onrender.com');
+  const baseUrl = process.env.BASE_URL || (req.get('host') ? `${req.protocol}://${req.get('host')}` : 'https://pessoasaqui3.onrender.com');
   const queryParams = `id=${encodeURIComponent(inviteId)}&token=${encodeURIComponent(token)}&sender=${encodeURIComponent(sender)}&alias=${encodeURIComponent(alias)}&sig=${encodeURIComponent(signature)}&exp=${expiresAt}`;
   const inviteUrl = `${baseUrl}/invite?${queryParams}`;
 
@@ -1314,7 +1314,7 @@ app.get('/invite', (req, res) => {
   const safeAlias = (alias || 'Alguém').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const queryParams = `id=${encodeURIComponent(id || '')}&token=${encodeURIComponent(token || '')}&sender=${encodeURIComponent(sender || '')}&alias=${encodeURIComponent(alias || '')}&sig=${encodeURIComponent(sig || '')}&exp=${encodeURIComponent(exp || '')}`;
   const appDeepLink = `pessoasaqui://invite?${queryParams}`;
-  const currentHost = req.get('host') || 'pessoasaqui-rj8b.onrender.com';
+  const currentHost = req.get('host') || 'pessoasaqui3.onrender.com';
   const fallbackUrl = `${req.protocol}://${currentHost}/invite?${queryParams}&fallback=true`;
   const chromeIntentLink = `intent://invite?${queryParams}#Intent;scheme=pessoasaqui;package=br.com.pessoasaqui;S.browser_fallback_url=${encodeURIComponent(fallbackUrl)};end`;
 

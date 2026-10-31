@@ -168,6 +168,7 @@ class PessoasAquiRepository(
             ?.putStringSet("saved_marked_people", HashSet(savedMarkedPeople))
             ?.putStringSet("saved_marking_me_people", HashSet(savedMarkingMePeople))
             ?.putStringSet("saved_mutual_people", HashSet(savedMutualPeople))
+            ?.remove("saved_revoked_mutual_people")
             ?.apply()
         saveSavedContactsToPrefs()
     }
@@ -530,6 +531,7 @@ class PessoasAquiRepository(
     private var lastSupportSyncMs = 0L
 
     init {
+        prefs?.edit()?.remove("saved_revoked_mutual_people")?.apply()
         chatPersistence?.let { cp ->
             proximitySimulator.setPersistenceManager(cp)
         }
