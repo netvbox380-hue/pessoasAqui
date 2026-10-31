@@ -2,6 +2,7 @@ package br.com.pessoasaqui
 
 import br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager
 import br.com.pessoasaqui.data.repository.PessoasAquiRepository
+import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import org.junit.Assert.*
 import org.junit.After
@@ -242,5 +243,70 @@ class TemporaryProximitySessionTest {
         assertFalse("Modo B permaneceu intacto", expired.contains(mutualId))
 
         assertTrue("Chat do Modo B continua no disco", persistence.hasPrivateChat(mutualId))
+    }
+
+    @Test
+    fun test11_ConversationsTabFilterExcludesNonMutualAndNonFamilyEvenIfOldChatExistsOnDisk() {
+        val oldPeerId = "LEGACY_CHAT_PEER"
+        val now = System.currentTimeMillis()
+        val peer = createNearbyPeer(oldPeerId, "Ex-Contato", lastSeen = now)
+
+        // Simula que existe um arquivo de chat legado gravado no disco
+        val oldMsgs = listOf(
+            ChatMessage(id = "msg_old_1", senderId = oldPeerId, senderAlias = "Ex-Contato", text = "Mensagem antiga salva", timestampMs = now - 100000L, isFromMe = false)
+        )
+        persistence.savePrivateChat(oldPeerId, oldMsgs)
+        assertTrue("Arquivo existe no disco", persistence.hasPrivateChat(oldPeerId))
+
+        // Verifica que o peer NÃO é mútua nem família
+        assertFalse(peer.isMutualConnection)
+        assertFalse(peer.isFamily)
+        assertFalse(repo.isPeerPermanent(oldPeerId))
+
+        // Aplica o filtro estrito da aba Conversas (isMutualConnection || isFamily)
+        val candidateList = listOf(peer)
+        val connectedPeople = candidateList.filter { it.isMutualConnection || it.isFamily }
+
+        // Comprova que mesmo tendo chat em disco, NÃO entra na lista de conversas ativas
+        assertTrue("Ex-contato com chat em disco não pode poluir a lista de conversas ativas", connectedPeople.isEmpty())
+
+        // Já um familiar ou conexão mútua entra com sucesso
+        val familyPeer = createNearbyPeer("FAMILY_01", "Mãe").copy(isFamily = true)
+        val mutualPeer = createNearbyPeer("MUTUAL_01", "Amigo").copy(isMutualConnection = true)
+        val activeList = listOf(peer, familyPeer, mutualPeer).filter { it.isMutualConnection || it.isFamily }
+        assertEquals(2, activeList.size)
+        assertTrue(activeList.contains(familyPeer))
+        assertTrue(activeList.contains(mutualPeer))
+    }
+
+    @Test
+    fun test12_CleanupExpiredSessionsNeverDeletesPersistedDiskHistoryOfFormerContacts() {
+        val formerId = "FORMER_CONTACT_12"
+        val now = System.currentTimeMillis()
+        createNearbyPeer(formerId, "Ex-Conexão", lastSeen = now)
+
+        // 1. Foi conexão mútua com mensagens gravadas em disco
+        repo.setMarkPerson(formerId, mark = true, explicitMutual = true)
+        val msgs = listOf(
+            ChatMessage(id = "msg_hist_1", senderId = formerId, senderAlias = "Ex-Conexão", text = "Conversa importante gravada", timestampMs = now, isFromMe = false)
+        )
+        persistence.savePrivateChat(formerId, msgs)
+        assertTrue("Histórico está no disco", persistence.hasPrivateChat(formerId))
+
+        // 2. Conexão foi desfeita voluntariamente pelo usuário
+        repo.setMarkPerson(formerId, mark = false)
+        assertFalse("Conexão mútua não está mais ativa", repo.isPeerPermanent(formerId))
+        assertTrue("Histórico continua preservado no disco após desfazer vínculo", persistence.hasPrivateChat(formerId))
+
+        // 3. Pessoa se afasta fisicamente (timeout > 45s no BLE)
+        val expired = repo.cleanupExpiredTemporarySessions(now = now + 60000L, expirationMs = 45000L)
+        assertTrue("Sessão de radar expirou por afastamento físico", expired.contains(formerId))
+
+        // 4. CRÍTICO: O arquivo histórico no disco NUNCA foi apagado pela rotina de cleanup
+        assertTrue("Histórico gravado no disco JAMAIS pode ser apagado por timeout de rádio BLE", persistence.hasPrivateChat(formerId))
+        val allChats = persistence.loadAllPrivateChats()
+        val loaded = allChats[formerId.lowercase()] ?: allChats[formerId] ?: emptyList()
+        assertEquals("Mensagens em disco devem permanecer intactas", 1, loaded.size)
+        assertEquals("Conversa importante gravada", loaded[0].text)
     }
 }

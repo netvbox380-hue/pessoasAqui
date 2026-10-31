@@ -219,7 +219,9 @@ class PessoasAquiRepository(
             val cid = cleanId(p.technicalIdentityHash.ifBlank { p.id })
             expiredIds.add(cid)
             proximitySimulator.clearPrivateChat(cid)
-            chatPersistence?.deletePrivateChat(cid)
+            // Preservação estrita: sessões temporárias existem apenas na memória RAM.
+            // Históricos legados em disco NUNCA são apagados por timeout de afastamento BLE.
+            // Exclusão de arquivos em disco é prerrogativa exclusiva de ação voluntária do usuário.
         }
 
         val remaining = current.filter { it !in expiredPeers }
