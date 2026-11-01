@@ -229,7 +229,8 @@ class PessoasAquiRepository(
     ): List<String> {
         val current = _realDiscoveredPeople.value.toMutableList()
         val expiredPeers = current.filter { peer ->
-            val isPermanent = peer.isMutualConnection || peer.isFamily || isPeerMutual(peer)
+            val isPermanent = peer.isMutualConnection || peer.isFamily || isPeerMutual(peer) ||
+                    isPeerPermanent(peer.id) || isPeerPermanent(peer.technicalIdentityHash)
             val elapsed = now - peer.lastSeenEpochMs
             !isPermanent && elapsed >= expirationMs
         }
@@ -671,7 +672,7 @@ class PessoasAquiRepository(
 
     private val processedMessageIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
-    private fun processIncomingPayload(senderHash: String, senderAlias: String, rawPayload: String, iv: String = "", messageId: String = "") {
+    internal fun processIncomingPayload(senderHash: String, senderAlias: String, rawPayload: String, iv: String = "", messageId: String = "") {
         if (messageId.isNotBlank()) {
             if (processedMessageIds.contains(messageId)) return
             processedMessageIds.add(messageId)
@@ -1012,6 +1013,18 @@ class PessoasAquiRepository(
                 }
             }
             else -> {
+                val isPermanent = isPeerPermanent(cleanSender)
+                val isPresentInRadar = _realDiscoveredPeople.value.any {
+                    val cid = cleanId(it.technicalIdentityHash.ifBlank { it.id })
+                    cid == cleanSender
+                }
+                // Regra Fundamental dos Dois Modos:
+                // 1. Mensagens de conexões permanentes (Modo B) funcionam pela internet independente de Bluetooth.
+                // 2. Mensagens atrasadas de sessões temporárias (Modo A) de pares ausentes do radar são descartadas.
+                if (!isPermanent && !isPresentInRadar) {
+                    Log.d("PessoasAqui", "Mensagem atrasada de sessão temporária descartada para $cleanSender (sessão expirada/não presente no radar BLE)")
+                    return
+                }
                 proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload, messageId)
                 callRingtoneWakeManager?.notifyIncomingMessageIfBackground(senderAlias, payload)
             }

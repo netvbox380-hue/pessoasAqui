@@ -349,4 +349,87 @@ class TemporaryProximitySessionTest {
         assertTrue("Histórico antigo deve ser preservado", texts.contains("Mensagem antiga do passado"))
         assertTrue("Nova mensagem presencial deve ser preservada", texts.contains("Nova mensagem presencial recente"))
     }
+
+    @Test
+    fun test14_DelayedMessageFromExpiredTemporarySessionIsDiscarded() {
+        val peerId = "TEMP_PEER_14"
+        val now = System.currentTimeMillis()
+        createNearbyPeer(peerId, "Pessoa Efêmera", lastSeen = now)
+
+        // 1. A sessão temporária expira após 45 segundos de ausência de sinal BLE
+        val expired = repo.cleanupExpiredTemporarySessions(now = now + 60000L, expirationMs = 45000L)
+        assertTrue("Sessão temporária expirou", expired.contains(peerId))
+        assertFalse("Par não é permanente", repo.isPeerPermanent(peerId))
+
+        // 2. Uma mensagem atrasada chega da fila do backend após a sessão ter sido encerrada
+        repo.processIncomingPayload(peerId, "Pessoa Efêmera", "Mensagem atrasada que chegou depois de expirar", "", "delayed_msg_14")
+
+        // 3. Comprova que a mensagem atrasada foi DESCARTADA
+        val memoryChats = repo.proximitySimulator.privateChats.value[peerId] ?: emptyList()
+        assertTrue("Mensagem atrasada de sessão temporária expirada DEVE ser descartada", memoryChats.isEmpty())
+        assertFalse("Nenhum arquivo de chat deve ser criado no disco", persistence.hasPrivateChat(peerId))
+
+        // 4. Comprova que a mensagem atrasada NÃO ressuscita o par no Radar
+        val isResurrected = repo.discoveredPeople.value.any { it.id == peerId || it.technicalIdentityHash == peerId }
+        assertFalse("Mensagem atrasada não pode restaurar par expirado no radar", isResurrected)
+    }
+
+    @Test
+    fun test15_PermanentConnectionReceivesInternetMessagesWithoutBluetoothPresence() {
+        val permanentId = "MUTUAL_PEER_15"
+        val now = System.currentTimeMillis()
+
+        // 1. Conexão mútua estabelecida (Modo B)
+        createNearbyPeer(permanentId, "Amigo Distante", lastSeen = now)
+        repo.setMarkPerson(permanentId, mark = true, explicitMutual = true)
+        assertTrue(repo.isPeerPermanent(permanentId))
+
+        // 2. Simula ausência total de Bluetooth (contato a quilômetros de distância, fora do radar BLE)
+        repo.cleanupExpiredTemporarySessions(now = now + 100000L, expirationMs = 45000L)
+        // Conexão permanente permanece ativa
+        assertTrue("Conexão permanente nunca expira por afastamento", repo.isPeerPermanent(permanentId))
+
+        // 3. Chega uma mensagem legítima pela internet (sem presença BLE)
+        repo.processIncomingPayload(permanentId, "Amigo Distante", "Mensagem legítima pela internet à distância", "", "net_msg_15")
+
+        // 4. Comprova que conexões permanentes recebem mensagens normalmente pela internet
+        val memoryChats = repo.proximitySimulator.privateChats.value[permanentId] ?: emptyList()
+        assertFalse("Mensagem de conexão permanente NÃO pode ser bloqueada por ausência de Bluetooth", memoryChats.isEmpty())
+        assertTrue("Conteúdo da mensagem deve ser entregue", memoryChats.any { it.text == "Mensagem legítima pela internet à distância" })
+
+        // 5. Comprova que a mensagem da conexão permanente foi gravada no disco criptografado
+        assertTrue("Mensagem de conexão permanente DEVE ser salva em disco", persistence.hasPrivateChat(permanentId))
+    }
+
+    @Test
+    fun test16_NewTemporaryProximitySessionStartsFreshWithoutOldDiscardedMessages() {
+        val peerId = "TEMP_PEER_16"
+        val now = System.currentTimeMillis()
+
+        // 1. Primeiro encontro presencial (Sessão 1 do Modo A)
+        createNearbyPeer(peerId, "Encontro 1", lastSeen = now)
+        repo.proximitySimulator.sendPrivateMessage(peerId, "Conversa efêmera do primeiro encontro", "Eu")
+        val session1Chats = repo.proximitySimulator.privateChats.value[peerId] ?: emptyList()
+        assertEquals(1, session1Chats.size)
+
+        // 2. Usuário se afasta e sessão 1 expira e é descartada
+        repo.cleanupExpiredTemporarySessions(now = now + 60000L, expirationMs = 45000L)
+        assertTrue("Memória deve estar vazia após encerramento da sessão", repo.proximitySimulator.privateChats.value[peerId].isNullOrEmpty())
+        assertFalse("Disco não tem mensagens", persistence.hasPrivateChat(peerId))
+
+        // 3. Horas depois, ocorre um novo encontro presencial (Sessão 2 do Modo A)
+        createNearbyPeer(peerId, "Encontro 2", lastSeen = now + 3600000L)
+
+        // 4. Comprova que a nova sessão temporária inicia LIMPA, sem recuperar mensagens antigas
+        val session2InitialChats = repo.proximitySimulator.privateChats.value[peerId] ?: emptyList()
+        assertTrue("Novo encontro temporário DEVE iniciar com histórico em branco", session2InitialChats.isEmpty())
+
+        // 5. Troca nova mensagem na sessão 2
+        repo.proximitySimulator.sendPrivateMessage(peerId, "Nova mensagem do segundo encontro", "Eu")
+        val session2Chats = repo.proximitySimulator.privateChats.value[peerId] ?: emptyList()
+        assertEquals(1, session2Chats.size)
+        assertEquals("Nova mensagem do segundo encontro", session2Chats[0].text)
+        assertFalse("Mensagem descartada do primeiro encontro NUNCA deve ser recuperada", session2Chats.any { it.text == "Conversa efêmera do primeiro encontro" })
+        assertFalse("Sessão temporária 2 continua estritamente em memória", persistence.hasPrivateChat(peerId))
+    }
 }
