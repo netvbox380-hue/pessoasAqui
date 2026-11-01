@@ -242,6 +242,11 @@ class BleSessionTokenManager(
 
     fun getActiveSessionCount(): Int = sessionsById.size
 
+    fun getAllActiveSessions(): List<BleProximitySession> {
+        val now = System.currentTimeMillis()
+        return sessionsById.values.filter { !it.isExpired(now, expirationTimeoutMs) }
+    }
+
     @Synchronized
     fun clearAll() {
         for (session in sessionsById.values) {

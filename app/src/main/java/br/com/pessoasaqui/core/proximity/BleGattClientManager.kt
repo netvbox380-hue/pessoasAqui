@@ -1,0 +1,491 @@
+package br.com.pessoasaqui.core.proximity
+
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
+import android.content.Context
+import java.nio.ByteBuffer
+import java.util.UUID
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * Gerenciador do Cliente Bluetooth GATT (FASE 3C).
+ *
+ * Responsável por:
+ * - Estabelecer conexão com servidores GATT remotos (GAP Central / GATT Client).
+ * - Realizar a descoberta de serviços e características do PessoasAqui.
+ * - Negociar MTU estendido (até 517 bytes) para alta performance.
+ * - Habilitar notificações na característica CHAR_TX via descriptor CCCD.
+ * - Gerenciar a fila sequencial de escrita de fragmentos em CHAR_RX com controle de confirmação.
+ * - Processar confirmações autenticadas de entrega (MSG_ACK) e notificações recebidas.
+ * - Encerrar conexões físicas ociosas (após 15s) preservando a sessão lógica na memória RAM.
+ * - Executar reconexão rápida via pacote SESSION_RESUME de 20 bytes.
+ */
+class BleGattClientManager(
+    private val context: Context? = null,
+    val framingEngine: BlePacketFramingEngine = BlePacketFramingEngine(),
+    val sessionManager: BleSessionTokenManager = BleSessionTokenManager(),
+    customDriver: BleGattClientDriver? = null,
+    private val inactivityTimeoutMs: Long = DEFAULT_INACTIVITY_TIMEOUT_MS
+) {
+
+    companion object {
+        val SERVICE_UUID: UUID = BleGattServerManager.SERVICE_UUID
+        val CHAR_RX_UUID: UUID = BleGattServerManager.CHAR_RX_UUID
+        val CHAR_TX_UUID: UUID = BleGattServerManager.CHAR_TX_UUID
+        val CCCD_UUID: UUID = BleGattServerManager.CCCD_UUID
+
+        const val DEFAULT_INACTIVITY_TIMEOUT_MS = 15000L
+        const val MAX_WRITE_RETRIES = 3
+        const val DEFAULT_MTU = 23
+        const val TARGET_MTU = 517
+
+        const val GATT_SUCCESS = 0
+        const val GATT_FAILURE = 257
+    }
+
+    enum class ConnectionState {
+        DISCONNECTED,
+        CONNECTING,
+        CONNECTED,
+        SERVICES_DISCOVERED,
+        READY
+    }
+
+    private val driver: BleGattClientDriver = customDriver ?: DefaultAndroidGattClientDriver(context)
+
+    var connectionState: ConnectionState = ConnectionState.DISCONNECTED
+        private set
+
+    var currentMtu: Int = DEFAULT_MTU
+        private set
+
+    var connectedDeviceAddress: String? = null
+        private set
+
+    var activeSessionId: String? = null
+
+    // Fila sequencial de pacotes para transmissão pelo rádio
+    private val transmissionQueue = ConcurrentLinkedQueue<ByteArray>()
+    private val isWriting = AtomicBoolean(false)
+    private var currentRetryCount = 0
+
+    var lastActivityMs: Long = System.currentTimeMillis()
+        private set
+
+    // Ouvintes da camada de aplicação
+    var onDeliveryConfirmedListener: ((msgId: Int) -> Unit)? = null
+    var onMessageReceivedListener: ((sessionId: String, msgId: Int, plaintext: ByteArray) -> Unit)? = null
+    var onStateChangedListener: ((newState: ConnectionState) -> Unit)? = null
+    var onErrorListener: ((errorMessage: String) -> Unit)? = null
+
+    private val clientCallback = object : BleGattClientCallback {
+        override fun onConnectionStateChange(status: Int, newState: Int) {
+            lastActivityMs = System.currentTimeMillis()
+            if (status == GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
+                transitionTo(ConnectionState.CONNECTED)
+                driver.discoverServices()
+            } else {
+                transitionTo(ConnectionState.DISCONNECTED)
+                connectedDeviceAddress = null
+                transmissionQueue.clear()
+                isWriting.set(false)
+            }
+        }
+
+        override fun onServicesDiscovered(status: Int, serviceUuids: List<UUID>) {
+            lastActivityMs = System.currentTimeMillis()
+            if (status == GATT_SUCCESS && serviceUuids.contains(SERVICE_UUID)) {
+                transitionTo(ConnectionState.SERVICES_DISCOVERED)
+                // Solicita negociação de MTU estendido imediatamente
+                driver.requestMtu(TARGET_MTU)
+            } else {
+                onErrorListener?.invoke("Serviço PessoasAqui não encontrado no servidor remoto")
+                disconnect()
+            }
+        }
+
+        override fun onMtuChanged(mtu: Int, status: Int) {
+            lastActivityMs = System.currentTimeMillis()
+            if (status == GATT_SUCCESS) {
+                currentMtu = mtu.coerceIn(BlePacketFramingEngine.MIN_MTU, BlePacketFramingEngine.MAX_MTU)
+            }
+            // Habilita notificações na característica de recepção de TX
+            driver.setCharacteristicNotification(CHAR_TX_UUID, true)
+            driver.writeDescriptor(CCCD_UUID, byteArrayOf(0x01, 0x00))
+            transitionTo(ConnectionState.READY)
+            processNextQueuedPacket()
+        }
+
+        override fun onCharacteristicWrite(charUuid: UUID, status: Int) {
+            lastActivityMs = System.currentTimeMillis()
+            if (charUuid == CHAR_RX_UUID) {
+                if (status == GATT_SUCCESS) {
+                    currentRetryCount = 0
+                    transmissionQueue.poll() // Remove pacote transmitido com sucesso
+                    isWriting.set(false)
+                    processNextQueuedPacket()
+                } else {
+                    if (currentRetryCount < MAX_WRITE_RETRIES) {
+                        currentRetryCount++
+                        // Retenta envio do pacote no topo da fila
+                        isWriting.set(false)
+                        processNextQueuedPacket()
+                    } else {
+                        currentRetryCount = 0
+                        transmissionQueue.clear()
+                        isWriting.set(false)
+                        onErrorListener?.invoke("Falha definitiva na escrita física do fragmento GATT")
+                    }
+                }
+            }
+        }
+
+        override fun onCharacteristicChanged(charUuid: UUID, value: ByteArray) {
+            lastActivityMs = System.currentTimeMillis()
+            if (charUuid == CHAR_TX_UUID) {
+                processIncomingNotification(value)
+            }
+        }
+    }
+
+    private fun transitionTo(newState: ConnectionState) {
+        connectionState = newState
+        onStateChangedListener?.invoke(newState)
+    }
+
+    /**
+     * Conecta a um servidor GATT de dispositivo remoto.
+     */
+    @Synchronized
+    fun connect(deviceAddress: String, autoConnect: Boolean = false): Boolean {
+        if (connectionState != ConnectionState.DISCONNECTED) {
+            disconnect()
+        }
+
+        connectedDeviceAddress = deviceAddress
+        transitionTo(ConnectionState.CONNECTING)
+        val success = driver.connect(deviceAddress, autoConnect, clientCallback)
+        if (!success) {
+            transitionTo(ConnectionState.DISCONNECTED)
+            onErrorListener?.invoke("Falha ao iniciar chamada connectGatt para $deviceAddress")
+        }
+        return success
+    }
+
+    /**
+     * Encerra a conexão GATT física sem destruir a sessão lógica na memória RAM.
+     */
+    @Synchronized
+    fun disconnect() {
+        driver.disconnect()
+        transitionTo(ConnectionState.DISCONNECTED)
+    }
+
+    /**
+     * Fecha e libera os recursos do cliente Bluetooth.
+     */
+    @Synchronized
+    fun close() {
+        disconnect()
+        driver.close()
+        transmissionQueue.clear()
+        isWriting.set(false)
+    }
+
+    /**
+     * Enfileira uma mensagem cifrada e autenticada para transmissão fragmentada via rádio.
+     */
+    @Synchronized
+    fun sendEncryptedMessage(
+        sessionId: String,
+        plaintext: ByteArray,
+        msgId: Int
+    ): Boolean {
+        val session = sessionManager.getSession(sessionId)
+        if (session == null) {
+            onErrorListener?.invoke("Tentativa de envio sem sessão lógica ativa em memória")
+            return false
+        }
+
+        if (session.isExpired(System.currentTimeMillis())) {
+            sessionManager.terminateSession(sessionId)
+            onErrorListener?.invoke("Sessão lógica expirada: mensagem não pode ser enviada")
+            return false
+        }
+
+        val sequence = session.nextTxSequence()
+
+        val envelope = BleCryptoHandshakeEngine.encryptMessage(
+            plaintext = plaintext,
+            encKey = session.encKey,
+            sessionSalt = session.sessionSalt,
+            sessionToken = session.sessionToken,
+            msgId = msgId,
+            direction = BleCryptoHandshakeEngine.ROLE_INITIATOR,
+            sequence = sequence
+        )
+
+        val fragments = framingEngine.fragment(
+            payload = envelope,
+            mtu = currentMtu,
+            msgId = msgId,
+            frameType = BlePacketFramingEngine.FRAME_TYPE_DATA
+        )
+
+        transmissionQueue.addAll(fragments)
+        processNextQueuedPacket()
+        return true
+    }
+
+    /**
+     * Envia um pacote de controle ou pacote pré-formatado (ex: SESSION_RESUME).
+     */
+    @Synchronized
+    fun sendRawPacket(packet: ByteArray) {
+        transmissionQueue.add(packet)
+        processNextQueuedPacket()
+    }
+
+    @Synchronized
+    private fun processNextQueuedPacket() {
+        if (connectionState != ConnectionState.READY) return
+        if (isWriting.get()) return
+
+        val nextPacket = transmissionQueue.peek() ?: return
+        if (isWriting.compareAndSet(false, true)) {
+            val written = driver.writeCharacteristic(
+                charUuid = CHAR_RX_UUID,
+                value = nextPacket,
+                writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            )
+            if (!written) {
+                isWriting.set(false)
+                onErrorListener?.invoke("Erro imediato na chamada writeCharacteristic")
+            }
+        }
+    }
+
+    /**
+     * Processa notificações recebidas do servidor na característica CHAR_TX.
+     */
+    fun processIncomingNotification(packet: ByteArray) {
+        if (packet.size < 2) return
+        if (packet[0] != BlePacketFramingEngine.MAGIC_BYTE) return
+
+        val frameType = packet[1]
+
+        // 1. Tratamento de Confirmação de Entrega (MSG_ACK)
+        if (frameType == BlePacketFramingEngine.FRAME_TYPE_ACK && packet.size >= 13) {
+            val msgId = ((packet[2].toInt() and 0xFF) shl 8) or (packet[3].toInt() and 0xFF)
+            val statusCode = packet[4]
+            val receivedHmac = packet.copyOfRange(5, 13)
+
+            val session = activeSessionId?.let { sessionManager.getSession(it) }
+            if (session != null) {
+                val validHmac = BleCryptoHandshakeEngine.verifyAckHmac(
+                    macKey = session.macKey,
+                    sessionId = session.sessionId,
+                    direction = BleCryptoHandshakeEngine.ROLE_INITIATOR,
+                    msgId = msgId,
+                    statusCode = statusCode,
+                    receivedHmac = receivedHmac
+                )
+                if (validHmac && statusCode == 0x00.toByte()) {
+                    onDeliveryConfirmedListener?.invoke(msgId)
+                } else {
+                    onErrorListener?.invoke("ACK recebido com HMAC inválido ou código de erro: $statusCode")
+                }
+            }
+            return
+        }
+
+        // 2. Fragmento de Dados recebido do servidor
+        val sessionId = activeSessionId ?: "session-client-unknown"
+        val result = framingEngine.receivePacket(packet, sessionId, System.currentTimeMillis())
+        if (result is BlePacketFramingEngine.ReassemblyResult.Completed &&
+            result.frameType == BlePacketFramingEngine.FRAME_TYPE_DATA
+        ) {
+            val session = sessionManager.getSession(sessionId)
+            if (session != null && !session.isExpired(System.currentTimeMillis())) {
+                try {
+                    val envelope = result.payload
+                    val seqBytes = ByteBuffer.wrap(envelope, 4, 8)
+                    val sequence = seqBytes.long
+
+                    if (session.validateAndRecordRxSequence(sequence)) {
+                        val decrypted = BleCryptoHandshakeEngine.decryptMessage(
+                            envelope = envelope,
+                            encKey = session.encKey,
+                            sessionToken = session.sessionToken,
+                            msgId = result.msgId,
+                            direction = BleCryptoHandshakeEngine.ROLE_RESPONDER,
+                            sequence = sequence
+                        )
+                        onMessageReceivedListener?.invoke(sessionId, result.msgId, decrypted)
+                    }
+                } catch (e: Exception) {
+                    onErrorListener?.invoke("Erro ao decifrar notificação de dados: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * Verifica e encerra a conexão física se estiver inativa há mais de 15 segundos.
+     */
+    fun checkInactivity(nowMs: Long = System.currentTimeMillis()): Boolean {
+        if (connectionState == ConnectionState.READY || connectionState == ConnectionState.CONNECTED) {
+            if (nowMs - lastActivityMs > inactivityTimeoutMs) {
+                disconnect()
+                return true
+            }
+        }
+        return false
+    }
+
+    fun getQueuedPacketCount(): Int = transmissionQueue.size
+
+    /**
+     * Interface de abstração do rádio Bluetooth GATT Client para viabilizar testes unitários e produção.
+     */
+    interface BleGattClientDriver {
+        fun connect(deviceAddress: String, autoConnect: Boolean, callback: BleGattClientCallback): Boolean
+        fun discoverServices(): Boolean
+        fun requestMtu(mtu: Int): Boolean
+        fun setCharacteristicNotification(charUuid: UUID, enabled: Boolean): Boolean
+        fun writeDescriptor(descUuid: UUID, value: ByteArray): Boolean
+        fun writeCharacteristic(charUuid: UUID, value: ByteArray, writeType: Int): Boolean
+        fun disconnect()
+        fun close()
+    }
+
+    /**
+     * Interface de retorno dos eventos de hardware do cliente GATT.
+     */
+    interface BleGattClientCallback {
+        fun onConnectionStateChange(status: Int, newState: Int)
+        fun onServicesDiscovered(status: Int, serviceUuids: List<UUID>)
+        fun onMtuChanged(mtu: Int, status: Int)
+        fun onCharacteristicWrite(charUuid: UUID, status: Int)
+        fun onCharacteristicChanged(charUuid: UUID, value: ByteArray)
+    }
+
+    /**
+     * Driver concreto que utiliza a API nativa Android Bluetooth no runtime físico.
+     */
+    private class DefaultAndroidGattClientDriver(private val context: Context?) : BleGattClientDriver {
+        private var bluetoothGatt: BluetoothGatt? = null
+        private var rxChar: BluetoothGattCharacteristic? = null
+        private var txChar: BluetoothGattCharacteristic? = null
+
+        @SuppressLint("MissingPermission")
+        override fun connect(deviceAddress: String, autoConnect: Boolean, callback: BleGattClientCallback): Boolean {
+            if (context == null) return false
+            val bm = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return false
+            val device = bm.adapter?.getRemoteDevice(deviceAddress) ?: return false
+
+            val nativeCallback = object : BluetoothGattCallback() {
+                override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
+                    callback.onConnectionStateChange(status, newState)
+                }
+
+                override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
+                    val uuids = gatt?.services?.map { it.uuid } ?: emptyList()
+                    rxChar = gatt?.getService(SERVICE_UUID)?.getCharacteristic(CHAR_RX_UUID)
+                    txChar = gatt?.getService(SERVICE_UUID)?.getCharacteristic(CHAR_TX_UUID)
+                    callback.onServicesDiscovered(status, uuids)
+                }
+
+                override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+                    callback.onMtuChanged(mtu, status)
+                }
+
+                override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
+                    characteristic?.uuid?.let { callback.onCharacteristicWrite(it, status) }
+                }
+
+                override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
+                    if (characteristic != null) {
+                        callback.onCharacteristicChanged(characteristic.uuid, characteristic.value ?: ByteArray(0))
+                    }
+                }
+            }
+
+            try {
+                bluetoothGatt = device.connectGatt(context, autoConnect, nativeCallback, BluetoothDevice.TRANSPORT_LE)
+                return bluetoothGatt != null
+            } catch (_: Exception) {
+                return false
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun discoverServices(): Boolean = try {
+            bluetoothGatt?.discoverServices() == true
+        } catch (_: Exception) {
+            false
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun requestMtu(mtu: Int): Boolean = try {
+            bluetoothGatt?.requestMtu(mtu) == true
+        } catch (_: Exception) {
+            false
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun setCharacteristicNotification(charUuid: UUID, enabled: Boolean): Boolean = try {
+            val ch = if (charUuid == CHAR_TX_UUID) txChar else null
+            if (ch != null) {
+                bluetoothGatt?.setCharacteristicNotification(ch, enabled) == true
+            } else false
+        } catch (_: Exception) {
+            false
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun writeDescriptor(descUuid: UUID, value: ByteArray): Boolean = try {
+            val desc = txChar?.getDescriptor(descUuid)
+            if (desc != null) {
+                desc.value = value
+                bluetoothGatt?.writeDescriptor(desc) == true
+            } else false
+        } catch (_: Exception) {
+            false
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun writeCharacteristic(charUuid: UUID, value: ByteArray, writeType: Int): Boolean = try {
+            val ch = if (charUuid == CHAR_RX_UUID) rxChar else null
+            if (ch != null) {
+                ch.writeType = writeType
+                ch.value = value
+                bluetoothGatt?.writeCharacteristic(ch) == true
+            } else false
+        } catch (_: Exception) {
+            false
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun disconnect() {
+            try {
+                bluetoothGatt?.disconnect()
+            } catch (_: Exception) {}
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun close() {
+            try {
+                bluetoothGatt?.close()
+            } catch (_: Exception) {}
+            bluetoothGatt = null
+        }
+    }
+}
