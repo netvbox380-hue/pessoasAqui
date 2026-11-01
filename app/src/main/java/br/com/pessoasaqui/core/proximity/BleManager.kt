@@ -27,15 +27,173 @@ import java.nio.charset.StandardCharsets
  * aplicando o corte estrito de 10 metros pelo sinal RSSI.
  */
 class BleManager(
-    private val context: Context,
-    private val distanceEstimator: DistanceEstimator = DistanceEstimator()
+    private val context: Context? = null,
+    private val distanceEstimator: DistanceEstimator = DistanceEstimator(),
+    private val customAdvertiserDriver: BleAdvertiserDriver? = null
 ) {
     private val tag = "PessoasAquiBLE"
 
-    private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+    /**
+     * Parâmetros de anúncio desacoplados para execução em dispositivos e testes de JVM.
+     */
+    data class AdvertisingParams(
+        val isConnectable: Boolean = true,
+        val mode: Int = AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY,
+        val txPowerLevel: Int = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH,
+        val timeoutMillis: Int = 0,
+        val primaryPayload: ByteArray,
+        val scanResponsePayload: ByteArray
+    )
+
+    /**
+     * Interface de abstração do transmissor BLE para suporte a testes unitários e desacoplamento de rádio.
+     */
+    interface BleAdvertiserDriver {
+        fun startAdvertising(
+            params: AdvertisingParams,
+            callback: (isSuccess: Boolean, errorCode: Int?) -> Unit
+        )
+        fun stopAdvertising()
+    }
+
+    private class DefaultAndroidAdvertiserDriver(
+        private val getAdvertiser: () -> BluetoothLeAdvertiser?
+    ) : BleAdvertiserDriver {
+        private var currentCallback: AdvertiseCallback? = null
+
+        @SuppressLint("MissingPermission")
+        override fun startAdvertising(
+            params: AdvertisingParams,
+            callback: (isSuccess: Boolean, errorCode: Int?) -> Unit
+        ) {
+            val adv = getAdvertiser() ?: run {
+                callback(false, -1)
+                return
+            }
+
+            val settings = AdvertiseSettings.Builder()
+                .setAdvertiseMode(params.mode)
+                .setTxPowerLevel(params.txPowerLevel)
+                .setConnectable(params.isConnectable)
+                .setTimeout(params.timeoutMillis)
+                .build()
+
+            val data = AdvertiseData.Builder()
+                .setIncludeDeviceName(false)
+                .setIncludeTxPowerLevel(false)
+                .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), params.primaryPayload)
+                .build()
+
+            val scanResponse = AdvertiseData.Builder()
+                .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), params.scanResponsePayload)
+                .build()
+
+            val cb = object : AdvertiseCallback() {
+                override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+                    callback(true, null)
+                }
+
+                override fun onStartFailure(errorCode: Int) {
+                    callback(false, errorCode)
+                }
+            }
+            currentCallback = cb
+            adv.startAdvertising(settings, data, scanResponse, cb)
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun stopAdvertising() {
+            currentCallback?.let { cb ->
+                getAdvertiser()?.stopAdvertising(cb)
+                currentCallback = null
+            }
+        }
+    }
+
+    companion object {
+        // Limites físicos de pacotes Legados Bluetooth Low Energy (Bluetooth Core Specification v4.0+)
+        const val MAX_LEGACY_ADV_BYTES = 31
+        const val FLAGS_OVERHEAD_BYTES = 3 // 1B Len (0x02) + 1B Type (0x01) + 1B Flags (0x06)
+        const val SERVICE_DATA_16BIT_HEADER_BYTES = 4 // 1B Len + 1B Type (0x16) + 2B UUID16 (0xFA01)
+
+        // Limites máximos de payload de dados úteis para respeitar estritamente o limite de 31 bytes
+        const val MAX_CONNECTABLE_PRIMARY_PAYLOAD_BYTES = 24 // 31 - 3 (Flags) - 4 (Cabeçalho) = 24 bytes
+        const val MAX_SCAN_RESPONSE_PAYLOAD_BYTES = 27       // 31 - 4 (Cabeçalho, sem Flags) = 27 bytes
+        const val FALLBACK_ULTRA_COMPACT_PAYLOAD_BYTES = 18  // 16 hex + 1 ':' + 1 ordinal = 18 bytes
+
+        /**
+         * Calcula o tamanho total em bytes do pacote físico de anúncio.
+         */
+        fun calculateTotalPacketSize(payloadSizeBytes: Int, isConnectable: Boolean): Int {
+            val flags = if (isConnectable) FLAGS_OVERHEAD_BYTES else 0
+            return flags + SERVICE_DATA_16BIT_HEADER_BYTES + payloadSizeBytes
+        }
+
+        /**
+         * Trunca com segurança uma string preservando limites válidos de caracteres codificados em UTF-8
+         * e integridade de pares substitutos (surrogate pairs / emojis).
+         */
+        fun takeUtf8Bytes(str: String, maxBytes: Int): String {
+            val bytes = str.toByteArray(StandardCharsets.UTF_8)
+            if (bytes.size <= maxBytes) return str
+            val sb = StringBuilder()
+            var currentBytes = 0
+            var i = 0
+            while (i < str.length) {
+                val cp = str.codePointAt(i)
+                val charCount = Character.charCount(cp)
+                val cpBytes = String(Character.toChars(cp)).toByteArray(StandardCharsets.UTF_8).size
+                if (currentBytes + cpBytes > maxBytes) {
+                    break
+                }
+                sb.appendCodePoint(cp)
+                currentBytes += cpBytes
+                i += charCount
+            }
+            return sb.toString()
+        }
+
+        /**
+         * Constrói a carga de dados de anúncio garantindo conformidade com o limite de bytes do pacote BLE.
+         * Para pacotes conectáveis primários (ADV_IND), o payload máximo suportado é 24 bytes.
+         */
+        fun buildAdvertisingPayload(
+            identityHash: String,
+            intent: UserIntent,
+            alias: String,
+            maxPayloadBytes: Int = MAX_CONNECTABLE_PRIMARY_PAYLOAD_BYTES
+        ): ByteArray {
+            val cleanId = identityHash.removePrefix("peer-").trim().uppercase()
+            val prefix = "$cleanId:${intent.ordinal}"
+            val prefixBytes = prefix.toByteArray(StandardCharsets.UTF_8)
+            if (prefixBytes.size >= maxPayloadBytes) {
+                return prefixBytes.take(maxPayloadBytes).toByteArray()
+            }
+            val remainingForAlias = maxPayloadBytes - prefixBytes.size - 1 // 1 byte para ':'
+            if (remainingForAlias <= 0 || alias.isBlank()) {
+                return prefixBytes
+            }
+            val safeAlias = takeUtf8Bytes(alias.trim(), remainingForAlias)
+            return if (safeAlias.isNotEmpty()) {
+                "$prefix:$safeAlias".toByteArray(StandardCharsets.UTF_8)
+            } else {
+                prefixBytes
+            }
+        }
+    }
+
+    private val bluetoothManager = context?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager?.adapter
 
-    private var advertiser: BluetoothLeAdvertiser? = null
+    private val advertiserDriver: BleAdvertiserDriver = customAdvertiserDriver ?: DefaultAndroidAdvertiserDriver {
+        try {
+            bluetoothAdapter?.bluetoothLeAdvertiser
+        } catch (e: Throwable) {
+            Log.w(tag, "Não foi possível obter advertiser BLE: ${e.message}")
+            null
+        }
+    }
+
     private var scanner: BluetoothLeScanner? = null
 
     private val _realDiscoveredPeers = MutableStateFlow<Map<String, NearbyPerson>>(emptyMap())
@@ -52,10 +210,13 @@ class BleManager(
     private var lastIntent: UserIntent? = null
     private var lastScanCallback: ((NearbyPerson) -> Unit)? = null
     var onDeviceAddressDiscovered: ((identityHash: String, address: String) -> Unit)? = null
+    var onAdvertisingStateChanged: ((isSuccess: Boolean, errorCode: Int?) -> Unit)? = null
 
-    val isBluetoothSupported: Boolean get() = bluetoothAdapter != null
+    var isMockBluetoothEnabled: Boolean? = null
+
+    val isBluetoothSupported: Boolean get() = bluetoothAdapter != null || customAdvertiserDriver != null
     val isBluetoothEnabled: Boolean
-        get() = try {
+        get() = isMockBluetoothEnabled ?: try {
             bluetoothAdapter?.isEnabled == true
         } catch (e: Throwable) {
             Log.w(tag, "Não foi possível verificar status do Bluetooth: ${e.message}")
@@ -68,7 +229,7 @@ class BleManager(
     init {
         try {
             val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
-            context.registerReceiver(object : BroadcastReceiver() {
+            context?.registerReceiver(object : BroadcastReceiver() {
                 override fun onReceive(c: Context?, intent: Intent?) {
                     if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
                         val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
@@ -93,7 +254,8 @@ class BleManager(
     }
 
     /**
-     * Inicia a transmissão (Advertising) deste aparelho para que outros aparelhos a até 10m o vejam.
+     * Inicia a transmissão (Advertising) deste aparelho para que outros aparelhos a até 10m o vejam
+     * e consigam estabelecer transporte físico GATT (anúncio conectável ADV_IND).
      */
     @SuppressLint("MissingPermission")
     fun startAdvertising(
@@ -105,72 +267,56 @@ class BleManager(
         lastAlias = myAlias
         lastIntent = myIntent
         if (!isBluetoothEnabled) return
-        advertiser = try {
-            bluetoothAdapter?.bluetoothLeAdvertiser
-        } catch (e: Throwable) {
-            Log.w(tag, "Não foi possível obter advertiser BLE: ${e.message}")
-            null
-        } ?: return
 
         stopAdvertising()
 
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-            .setConnectable(false)
-            .setTimeout(0)
-            .build()
-
         val cleanMyId = myIdentityHash.removePrefix("peer-").trim().uppercase()
-        // Monta carga de dados compacta (<= 25 bytes): ID (16 hex) + ":" + ordinal (1 byte) + ":" + apelido (até 6 chars)
-        val cleanAlias = myAlias.trim().take(6)
-        val payload = "$cleanMyId:${myIntent.ordinal}:$cleanAlias".toByteArray(StandardCharsets.UTF_8)
 
-        // Pacote Principal de Anúncio: coloca os dados de serviço diretamente no pacote primário
-        // Isso é fundamental para Android 14/15/16 onde o scanResponse pode ser descartado em transmissões não conectáveis
-        val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(false)
-            .setIncludeTxPowerLevel(false)
-            .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), payload)
-            .build()
+        // Carga primária limitada a 24 bytes para garantir tamanho total <= 31B (3B Flags + 4B Header + <=24B Payload)
+        val primaryPayload = buildAdvertisingPayload(cleanMyId, myIntent, myAlias, MAX_CONNECTABLE_PRIMARY_PAYLOAD_BYTES)
 
-        // Pacote de Resposta de Varredura redundante
-        val scanResponse = AdvertiseData.Builder()
-            .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), payload)
-            .build()
+        // Carga de Scan Response pode utilizar até 27 bytes (4B Header + <=27B Payload = <=31B, sem Flags)
+        val scanResponsePayload = buildAdvertisingPayload(cleanMyId, myIntent, myAlias, MAX_SCAN_RESPONSE_PAYLOAD_BYTES)
 
-        advertiseCallback = object : AdvertiseCallback() {
-            override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-                Log.d(tag, "BLE Advertising iniciado com sucesso para presença em 10m.")
-            }
+        val params = AdvertisingParams(
+            isConnectable = true, // <--- CONECTÁVEL: habilita canal de transporte GATT (ADV_IND)
+            mode = AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY,
+            txPowerLevel = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH,
+            timeoutMillis = 0,
+            primaryPayload = primaryPayload,
+            scanResponsePayload = scanResponsePayload
+        )
 
-            override fun onStartFailure(errorCode: Int) {
-                Log.w(tag, "Falha ao iniciar BLE Advertising. Código: $errorCode")
-                if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
-                    // Fallback para carga ultra-compacta
-                    try {
-                        val ultraCompact = "$cleanMyId:${myIntent.ordinal}".toByteArray(StandardCharsets.UTF_8)
-                        val fallbackData = AdvertiseData.Builder()
-                            .setIncludeDeviceName(false)
-                            .setIncludeTxPowerLevel(false)
-                            .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), ultraCompact)
-                            .build()
-                        advertiser?.startAdvertising(settings, fallbackData, null, object : AdvertiseCallback() {
-                            override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-                                Log.d(tag, "BLE Advertising compacto iniciado com sucesso.")
+        try {
+            advertiserDriver.startAdvertising(params) { isSuccess, errorCode ->
+                if (isSuccess) {
+                    Log.d(tag, "BLE Advertising conectável iniciado com sucesso para presença em 10m e transporte GATT.")
+                    onAdvertisingStateChanged?.invoke(true, null)
+                } else {
+                    Log.w(tag, "Falha ao iniciar BLE Advertising. Código: $errorCode")
+                    onAdvertisingStateChanged?.invoke(false, errorCode)
+                    if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
+                        // Fallback para carga ultra-compacta conectável (18 bytes -> 25 bytes total no pacote físico)
+                        try {
+                            val ultraCompact = "$cleanMyId:${myIntent.ordinal}".toByteArray(StandardCharsets.UTF_8)
+                            val fallbackParams = params.copy(primaryPayload = ultraCompact)
+                            advertiserDriver.startAdvertising(fallbackParams) { fbSuccess, fbErr ->
+                                if (fbSuccess) {
+                                    Log.d(tag, "BLE Advertising compacto conectável iniciado com sucesso.")
+                                } else {
+                                    Log.e(tag, "Falha no fallback de BLE advertising: $fbErr")
+                                }
+                                onAdvertisingStateChanged?.invoke(fbSuccess, fbErr)
                             }
-                        })
-                    } catch (e: Exception) {
-                        Log.e(tag, "Erro no fallback de BLE advertising: ${e.message}")
+                        } catch (e: Exception) {
+                            Log.e(tag, "Erro no fallback de BLE advertising: ${e.message}")
+                        }
                     }
                 }
             }
-        }
-
-        try {
-            advertiser?.startAdvertising(settings, data, scanResponse, advertiseCallback)
         } catch (e: Exception) {
             Log.e(tag, "Erro ao iniciar advertising BLE: ${e.message}")
+            onAdvertisingStateChanged?.invoke(false, -1)
         }
     }
 
@@ -179,13 +325,10 @@ class BleManager(
      */
     @SuppressLint("MissingPermission")
     fun stopAdvertising() {
-        advertiseCallback?.let {
-            try {
-                advertiser?.stopAdvertising(it)
-            } catch (e: Exception) {
-                Log.e(tag, "Erro ao parar advertising: ${e.message}")
-            }
-            advertiseCallback = null
+        try {
+            advertiserDriver.stopAdvertising()
+        } catch (e: Exception) {
+            Log.e(tag, "Erro ao parar advertising: ${e.message}")
         }
     }
 
@@ -256,6 +399,16 @@ class BleManager(
             }
             serviceData = entry?.value
         }
+        val mac = try { result.device?.address } catch (_: SecurityException) { null }
+        processScanRecordData(serviceData, mac, result.rssi, onPeerDiscovered)
+    }
+
+    internal fun processScanRecordData(
+        serviceData: ByteArray?,
+        macAddress: String?,
+        rawRssi: Int,
+        onPeerDiscovered: (NearbyPerson) -> Unit
+    ) {
         // Rejeita estritamente qualquer pacote que não pertença ao serviço PessoasAqui (UUID 0xFA01)
         if (serviceData == null || serviceData.isEmpty()) {
             return
@@ -302,7 +455,6 @@ class BleManager(
 
         // Suavização do RSSI por aparelho via EMA (Exponential Moving Average):
         // Elimina oscilações instantâneas de radiofrequência que faziam contatos saltarem de posição
-        val rawRssi = result.rssi
         val prevRssi = peerRssiHistory[identityHash]
         val smoothedRssi = distanceEstimator.smoothRssi(rawRssi, prevRssi)
         peerRssiHistory[identityHash] = smoothedRssi
@@ -320,12 +472,9 @@ class BleManager(
             peerRssiHistory.keys.take(50).forEach { peerRssiHistory.remove(it) }
         }
 
-        try {
-            val mac = result.device?.address
-            if (!mac.isNullOrBlank()) {
-                onDeviceAddressDiscovered?.invoke(identityHash, mac)
-            }
-        } catch (_: SecurityException) {}
+        if (!macAddress.isNullOrBlank()) {
+            onDeviceAddressDiscovered?.invoke(identityHash, macAddress)
+        }
 
         val finalAlias = if (!peerAlias.isNullOrBlank()) peerAlias else "Pessoa Próxima #${identityHash.take(4)}"
 
