@@ -84,9 +84,13 @@ class BleManager(
                 .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), params.primaryPayload)
                 .build()
 
-            val scanResponse = AdvertiseData.Builder()
-                .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), params.scanResponsePayload)
-                .build()
+            val scanResponse = if (params.scanResponsePayload.isNotEmpty()) {
+                AdvertiseData.Builder()
+                    .addServiceData(ParcelUuid(BleConstants.SERVICE_UUID), params.scanResponsePayload)
+                    .build()
+            } else {
+                null
+            }
 
             val cb = object : AdvertiseCallback() {
                 override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
@@ -275,8 +279,11 @@ class BleManager(
         // Carga primária limitada a 24 bytes para garantir tamanho total <= 31B (3B Flags + 4B Header + <=24B Payload)
         val primaryPayload = buildAdvertisingPayload(cleanMyId, myIntent, myAlias, MAX_CONNECTABLE_PRIMARY_PAYLOAD_BYTES)
 
-        // Carga de Scan Response pode utilizar até 27 bytes (4B Header + <=27B Payload = <=31B, sem Flags)
-        val scanResponsePayload = buildAdvertisingPayload(cleanMyId, myIntent, myAlias, MAX_SCAN_RESPONSE_PAYLOAD_BYTES)
+        // Carga de Scan Response: não duplicamos o mesmo UUID 0xFA01 no Scan Response para evitar que
+        // o parser de certos dispositivos (como Samsung One UI / Android 16) concatene os dados
+        // gerando nomes corrompidos com hashes. O apelido completo é transmitido de forma confidencial
+        // e íntegra via canal seguro GATT (AES-256-GCM).
+        val scanResponsePayload = ByteArray(0)
 
         val params = AdvertisingParams(
             isConnectable = true, // <--- CONECTÁVEL: habilita canal de transporte GATT (ADV_IND)
@@ -435,8 +442,14 @@ class BleManager(
             if (intentIdx !in 0..UserIntent.values().size) return
             intent = UserIntent.values().getOrElse(intentIdx) { UserIntent.QUERO_CONVERSAR }
 
+            // Sanitização e validação estrita do apelido preliminar de broadcast:
+            // Rejeita qualquer candidato que contenha hash técnico embutido [0-9A-F]{8,16} ou formato inválido
             if (parts.size > 2 && parts[2].isNotBlank()) {
-                peerAlias = parts[2].trim()
+                val candidate = parts[2].trim()
+                val containsEmbeddedHex = candidate.contains(Regex("[0-9A-F]{8,16}"))
+                if (!containsEmbeddedHex && candidate.length <= 32) {
+                    peerAlias = candidate
+                }
             }
         } catch (e: Exception) {
             return
@@ -476,7 +489,9 @@ class BleManager(
             onDeviceAddressDiscovered?.invoke(identityHash, macAddress)
         }
 
-        val finalAlias = if (!peerAlias.isNullOrBlank()) peerAlias else "Pessoa Próxima #${identityHash.take(4)}"
+        // Se o apelido de broadcast não estiver disponível ou for inválido, utiliza o identificador genérico
+        // "Pessoa Próxima", sem expor fragmentos de hash técnico como nome de usuário.
+        val finalAlias = if (!peerAlias.isNullOrBlank()) peerAlias else "Pessoa Próxima"
 
         val peer = NearbyPerson(
             id = identityHash,

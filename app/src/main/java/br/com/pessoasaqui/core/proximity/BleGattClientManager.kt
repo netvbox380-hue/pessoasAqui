@@ -113,7 +113,15 @@ class BleGattClientManager(
             if (status == GATT_SUCCESS && serviceUuids.contains(SERVICE_UUID)) {
                 transitionTo(ConnectionState.SERVICES_DISCOVERED)
                 // Solicita negociação de MTU estendido imediatamente
-                driver.requestMtu(TARGET_MTU)
+                val requested = driver.requestMtu(TARGET_MTU)
+                if (!requested) {
+                    // Fallback imediato se o hardware não suportar solicitação de MTU:
+                    // Habilita notificações CCCD e transiciona para READY
+                    driver.setCharacteristicNotification(CHAR_TX_UUID, true)
+                    driver.writeDescriptor(CCCD_UUID, byteArrayOf(0x01, 0x00))
+                    transitionTo(ConnectionState.READY)
+                    processNextQueuedPacket()
+                }
             } else {
                 onErrorListener?.invoke("Serviço PessoasAqui não encontrado no servidor remoto")
                 disconnect()
@@ -175,6 +183,15 @@ class BleGattClientManager(
     @Synchronized
     fun connect(deviceAddress: String, autoConnect: Boolean = false): Boolean {
         if (connectionState != ConnectionState.DISCONNECTED) {
+            if (connectedDeviceAddress == deviceAddress &&
+                (connectionState == ConnectionState.READY ||
+                 connectionState == ConnectionState.CONNECTING ||
+                 connectionState == ConnectionState.CONNECTED ||
+                 connectionState == ConnectionState.SERVICES_DISCOVERED)
+            ) {
+                // Já conectado ou com conexão em andamento para o mesmo dispositivo
+                return true
+            }
             disconnect()
         }
 
@@ -543,6 +560,7 @@ class BleGattClientManager(
         fun onMtuChanged(mtu: Int, status: Int)
         fun onCharacteristicWrite(charUuid: UUID, status: Int)
         fun onCharacteristicChanged(charUuid: UUID, value: ByteArray)
+        fun onDescriptorWrite(descUuid: UUID, status: Int) {}
     }
 
     /**
@@ -579,10 +597,19 @@ class BleGattClientManager(
                     characteristic?.uuid?.let { callback.onCharacteristicWrite(it, status) }
                 }
 
+                @Deprecated("Deprecated in Java")
                 override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
                     if (characteristic != null) {
                         callback.onCharacteristicChanged(characteristic.uuid, characteristic.value ?: ByteArray(0))
                     }
+                }
+
+                override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+                    callback.onCharacteristicChanged(characteristic.uuid, value)
+                }
+
+                override fun onDescriptorWrite(gatt: BluetoothGatt?, descriptor: BluetoothGattDescriptor?, status: Int) {
+                    descriptor?.uuid?.let { callback.onDescriptorWrite(it, status) }
                 }
             }
 

@@ -127,7 +127,7 @@ class BleTemporaryChatIntegrationTest {
         var internetSent = false
 
         val testCoordinator = object : BleDirectTransportCoordinator(context = null) {
-            override fun sendTemporaryMessage(recipientId: String, text: String, myAlias: String): Boolean {
+            override fun sendTemporaryMessage(recipientId: String, text: String, myAlias: String, messageUuid: String): Boolean {
                 bleSent = true
                 return true
             }
@@ -164,7 +164,7 @@ class BleTemporaryChatIntegrationTest {
         var internetSent = false
 
         val testCoordinator = object : BleDirectTransportCoordinator(context = null) {
-            override fun sendTemporaryMessage(recipientId: String, text: String, myAlias: String): Boolean {
+            override fun sendTemporaryMessage(recipientId: String, text: String, myAlias: String, messageUuid: String): Boolean {
                 bleSent = true
                 return true
             }
@@ -615,7 +615,7 @@ class BleTemporaryChatIntegrationTest {
         var internetAttempted = false
 
         val testCoordinator = object : BleDirectTransportCoordinator(context = null) {
-            override fun sendTemporaryMessage(recipientId: String, text: String, myAlias: String): Boolean {
+            override fun sendTemporaryMessage(recipientId: String, text: String, myAlias: String, messageUuid: String): Boolean {
                 // Simula falha catastrófica de Bluetooth (fora de alcance / rádio desligado)
                 return false
             }
@@ -651,7 +651,7 @@ class BleTemporaryChatIntegrationTest {
         var bleSent = false
 
         val testCoordinator = object : BleDirectTransportCoordinator(context = null) {
-            override fun sendTemporaryMessage(recipientId: String, text: String, myAlias: String): Boolean {
+            override fun sendTemporaryMessage(recipientId: String, text: String, myAlias: String, messageUuid: String): Boolean {
                 bleSent = true
                 return true
             }

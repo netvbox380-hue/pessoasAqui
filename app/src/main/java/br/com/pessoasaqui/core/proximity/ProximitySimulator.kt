@@ -313,9 +313,15 @@ class ProximitySimulator(
     }
 
     /**
-     * Envia mensagem privada para conexão mútua (qualquer distância)
+     * Envia mensagem privada para conexão mútua (qualquer distância) ou temporária BLE (10m).
      */
-    fun sendPrivateMessage(recipientId: String, text: String, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
+    fun sendPrivateMessage(
+        recipientId: String,
+        text: String,
+        myAlias: String,
+        messageId: String = UUID.randomUUID().toString(),
+        deliveryStatus: br.com.pessoasaqui.domain.model.MessageDeliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
+    ) {
         val msg = ChatMessage(
             id = messageId,
             senderId = "me",
@@ -323,7 +329,8 @@ class ProximitySimulator(
             text = text,
             isLocalOnly = false,
             isEncrypted = true,
-            isFromMe = true
+            isFromMe = true,
+            deliveryStatus = deliveryStatus
         )
         val cleanId = recipientId.removePrefix("peer-")
         val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: emptyList()
@@ -334,6 +341,45 @@ class ProximitySimulator(
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
         persistPrivateChatIfEligible(cleanId, newList)
+    }
+
+    /**
+     * Atualiza o status de entrega de uma mensagem (PENDENTE -> ENTREGUE ou FALHA).
+     */
+    fun updateMessageDeliveryStatus(
+        recipientId: String,
+        messageId: String,
+        status: br.com.pessoasaqui.domain.model.MessageDeliveryStatus
+    ) {
+        val cleanId = recipientId.removePrefix("peer-")
+        val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: return
+        val idx = currentList.indexOfFirst { it.id == messageId }
+        if (idx != -1) {
+            val updated = currentList.toMutableList()
+            updated[idx] = updated[idx].copy(deliveryStatus = status)
+            val updatedMap = _privateChats.value.toMutableMap()
+            updatedMap[recipientId] = updated
+            updatedMap[cleanId] = updated
+            updatedMap["peer-$cleanId"] = updated
+            _privateChats.value = updatedMap
+            persistPrivateChatIfEligible(cleanId, updated)
+        }
+    }
+
+    /**
+     * Atualiza o apelido do remetente nas mensagens recebidas ao autenticar nome completo.
+     */
+    fun updatePeerSenderAlias(senderId: String, newAlias: String) {
+        val cleanId = senderId.removePrefix("peer-")
+        val currentList = _privateChats.value[senderId] ?: _privateChats.value[cleanId] ?: return
+        val updated = currentList.map { msg ->
+            if (!msg.isFromMe) msg.copy(senderAlias = newAlias) else msg
+        }
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[senderId] = updated
+        updatedMap[cleanId] = updated
+        updatedMap["peer-$cleanId"] = updated
+        _privateChats.value = updatedMap
     }
 
     /**

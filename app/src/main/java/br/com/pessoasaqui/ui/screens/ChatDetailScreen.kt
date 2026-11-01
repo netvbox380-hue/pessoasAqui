@@ -1596,13 +1596,33 @@ fun ChatDetailScreen(
                                     )
                                     if (isMe) {
                                         Spacer(modifier = Modifier.width(2.dp))
-                                        val isRead = msg.isRead
-                                        Icon(
-                                            imageVector = Icons.Default.DoneAll,
-                                            contentDescription = if (isRead) "Visualizada" else "Entregue",
-                                            tint = if (isRead) Color(0xFF69F0AE) else if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
-                                            modifier = Modifier.size(12.dp)
-                                        )
+                                        when (msg.deliveryStatus) {
+                                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.PENDING -> {
+                                                Icon(
+                                                    imageVector = Icons.Default.Schedule,
+                                                    contentDescription = "Pendente / Enviando...",
+                                                    tint = if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED -> {
+                                                Icon(
+                                                    imageVector = Icons.Default.ErrorOutline,
+                                                    contentDescription = "Falha no envio",
+                                                    tint = Color(0xFFFF5252),
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED -> {
+                                                val isRead = msg.isRead
+                                                Icon(
+                                                    imageVector = Icons.Default.DoneAll,
+                                                    contentDescription = if (isRead) "Visualizada" else "Entregue",
+                                                    tint = if (isRead) Color(0xFF69F0AE) else if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }

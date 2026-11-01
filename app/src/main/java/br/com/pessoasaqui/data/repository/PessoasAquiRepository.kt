@@ -667,7 +667,7 @@ class PessoasAquiRepository(
             }
         }
 
-        // Configura Coordenador de Transporte Bluetooth Direto (ETAPA 3D)
+        // Configura Coordenador de Transporte Bluetooth Direto (ETAPA 3D & 3E)
         bleTransportCoordinator.onTemporaryMessageReceived = { peerId, text, _ ->
             val cleanSender = cleanId(peerId)
             // Se o contato for permanente (Modo B), não roteia por canal temporário
@@ -676,7 +676,40 @@ class PessoasAquiRepository(
                     cleanId(it.id) == cleanSender || cleanId(it.technicalIdentityHash) == cleanSender
                 }?.alias ?: "Pessoa Próxima"
                 proximitySimulator.receivePrivateMessage(cleanSender, peerAlias, text)
+                updateUnifiedData()
             }
+        }
+
+        // Confirmação física real de entrega via ACK verificado
+        bleTransportCoordinator.onDeliveryConfirmedWithUuid = { peerId, _, messageUuid ->
+            val cleanSender = cleanId(peerId)
+            if (messageUuid.isNotBlank()) {
+                proximitySimulator.updateMessageDeliveryStatus(
+                    cleanSender,
+                    messageUuid,
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
+                )
+                updateUnifiedData()
+            }
+        }
+
+        // Notificação real de falha de entrega (timeout ou desconexão)
+        bleTransportCoordinator.onDeliveryFailed = { peerId, _, messageUuid, _ ->
+            val cleanSender = cleanId(peerId)
+            if (messageUuid.isNotBlank()) {
+                proximitySimulator.updateMessageDeliveryStatus(
+                    cleanSender,
+                    messageUuid,
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                )
+                updateUnifiedData()
+            }
+        }
+
+        // Recepção segura do nome completo autenticado via metadados AES-256-GCM
+        bleTransportCoordinator.onPeerAliasReceived = { peerId, fullAlias ->
+            val cleanSender = cleanId(peerId)
+            updatePeerFullAlias(cleanSender, fullAlias)
         }
 
         bleManager?.onDeviceAddressDiscovered = { peerHash, address ->
@@ -1549,15 +1582,13 @@ class PessoasAquiRepository(
 
                         val currentList = _realDiscoveredPeople.value.toMutableList()
                         val idx = currentList.indexOfFirst {
-                            cleanId(it.id) == peerCleanId ||
-                            cleanId(it.technicalIdentityHash) == peerCleanId ||
-                            (!it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(realPeer.alias, ignoreCase = true))
+                            cleanId(it.id) == peerCleanId || cleanId(it.technicalIdentityHash) == peerCleanId
                         }
                         if (idx != -1) {
                             val existing = currentList[idx]
-                            val resolvedAlias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) {
+                            val resolvedAlias = if (existing.alias.isNotBlank() && existing.alias != "Pessoa Próxima" && !existing.alias.startsWith("Pessoa Próxima #")) {
                                 existing.alias
-                            } else if (!realPeer.alias.startsWith("Pessoa Próxima #")) {
+                            } else if (realPeer.alias.isNotBlank() && realPeer.alias != "Pessoa Próxima" && !realPeer.alias.startsWith("Pessoa Próxima #")) {
                                 realPeer.alias
                             } else {
                                 existing.alias
@@ -1592,6 +1623,25 @@ class PessoasAquiRepository(
         } catch (e: Throwable) {
             Log.e("PessoasAqui", "BLE não disponível ou permissão ausente: ${e.message}")
         }
+    }
+
+    /**
+     * Atualiza o nome completo autenticado do participante recebido via metadados criptografados GATT (AES-256-GCM).
+     */
+    fun updatePeerFullAlias(peerId: String, fullAlias: String) {
+        if (fullAlias.isBlank()) return
+        val cleanPeer = cleanId(peerId)
+        val currentReal = _realDiscoveredPeople.value.toMutableList()
+        val idx = currentReal.indexOfFirst {
+            cleanId(it.id) == cleanPeer || cleanId(it.technicalIdentityHash) == cleanPeer
+        }
+        if (idx != -1) {
+            val existing = currentReal[idx]
+            currentReal[idx] = existing.copy(alias = fullAlias)
+            _realDiscoveredPeople.value = currentReal
+        }
+        proximitySimulator.updatePeerSenderAlias(cleanPeer, fullAlias)
+        updateUnifiedData()
     }
 
     fun restartBleHardware() {
@@ -2045,10 +2095,57 @@ class PessoasAquiRepository(
         val isDoc = text.startsWith("[DOC:")
         val msgId = UUID.randomUUID().toString()
 
+        val isPermanent = isPeerPermanent(cleanRecipient)
+
+        if (!isPermanent) {
+            // MODO A: Conversa Temporária
+            // Criação local com status inicial PENDING até confirmação física por ACK
+            if (!isSignaling && !isAudio && !isImage && !isDoc) {
+                val mod = moderationManager.evaluateContent(deviceSessionManager.getDeviceId(), text)
+                if (!mod.isAllowed) return mod
+                proximitySimulator.sendPrivateMessage(
+                    recipientId = cleanRecipient,
+                    text = text,
+                    myAlias = _currentAlias.value,
+                    messageId = msgId,
+                    deliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.PENDING
+                )
+            } else if (isAudio) {
+                val content = text.removePrefix("[AUDIO:").removeSuffix("]")
+                val parts = content.split(":", limit = 2)
+                val dur = parts.getOrNull(0)?.toIntOrNull() ?: 3
+                val b64 = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+                proximitySimulator.sendAudioMessage(cleanRecipient, dur, _currentAlias.value, msgId, b64)
+            } else if (isImage) {
+                val base64 = text.removePrefix("[IMAGE:").removeSuffix("]")
+                proximitySimulator.sendImageMessage(cleanRecipient, base64, _currentAlias.value, msgId)
+            } else if (isDoc) {
+                val parts = text.removePrefix("[DOC:").removeSuffix("]").split(":", limit = 3)
+                val fileName = parts.getOrNull(0) ?: "documento.pdf"
+                val size = parts.getOrNull(1)?.toLongOrNull() ?: 0L
+                val base64 = parts.getOrNull(2) ?: ""
+                proximitySimulator.sendDocumentMessage(cleanRecipient, fileName, base64, size, _currentAlias.value, msgId)
+            }
+
+            // Roteamento exclusivamente via rádio Bluetooth BLE GATT direto.
+            // Sem contato com a Internet / Render / WebSocket / HTTP.
+            // Em caso de falha de rádio, NUNCA faz fallback para o servidor Render.
+            bleTransportCoordinator.sendTemporaryMessage(cleanRecipient, text, _currentAlias.value, messageUuid = msgId)
+            updateUnifiedData()
+            return ContentModerationManager.ModerationResult(isAllowed = true)
+        }
+
+        // MODO B: Conexão Mútua / Conexão Permanente
         if (!isSignaling && !isAudio && !isImage && !isDoc) {
             val mod = moderationManager.evaluateContent(deviceSessionManager.getDeviceId(), text)
             if (!mod.isAllowed) return mod
-            proximitySimulator.sendPrivateMessage(cleanRecipient, text, _currentAlias.value)
+            proximitySimulator.sendPrivateMessage(
+                recipientId = cleanRecipient,
+                text = text,
+                myAlias = _currentAlias.value,
+                messageId = msgId,
+                deliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
+            )
         } else if (isAudio) {
             val content = text.removePrefix("[AUDIO:").removeSuffix("]")
             val parts = content.split(":", limit = 2)
@@ -2064,17 +2161,6 @@ class PessoasAquiRepository(
             val size = parts.getOrNull(1)?.toLongOrNull() ?: 0L
             val base64 = parts.getOrNull(2) ?: ""
             proximitySimulator.sendDocumentMessage(cleanRecipient, fileName, base64, size, _currentAlias.value, msgId)
-        }
-
-        val isPermanent = isPeerPermanent(cleanRecipient)
-
-        if (!isPermanent) {
-            // MODO A: Conversa Temporária
-            // Roteamento exclusivamente via rádio Bluetooth BLE GATT direto.
-            // Sem contato com a Internet / Render / WebSocket / HTTP.
-            // Em caso de falha de rádio, NUNCA faz fallback para o servidor Render.
-            bleTransportCoordinator.sendTemporaryMessage(cleanRecipient, text, _currentAlias.value)
-            return ContentModerationManager.ModerationResult(isAllowed = true)
         }
 
         // MODO B: Conexão Mútua / Conexão Permanente

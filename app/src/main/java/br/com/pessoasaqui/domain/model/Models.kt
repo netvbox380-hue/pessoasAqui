@@ -66,6 +66,16 @@ data class NearbyPerson(
 }
 
 /**
+ * Status de entrega de mensagem no transporte direto ou em nuvem.
+ */
+@Serializable
+enum class MessageDeliveryStatus {
+    PENDING,   // Criada localmente, aguardando envio/ACK do destinatário
+    DELIVERED, // Entregue com confirmação criptográfica autenticada (ACK)
+    FAILED     // Falha definitiva de entrega (timeout, desconexão ou erro de autenticação)
+}
+
+/**
  * Mensagem em tópico local (10m) ou conversa privada ponto-a-ponta.
  */
 @Serializable
@@ -88,7 +98,8 @@ data class ChatMessage(
     val isImportant: Boolean = false,
     val isEdited: Boolean = false,
     val editedTimestampMs: Long = 0L,
-    val isDeleted: Boolean = false
+    val isDeleted: Boolean = false,
+    val deliveryStatus: MessageDeliveryStatus = MessageDeliveryStatus.DELIVERED
 )
 
 /**
