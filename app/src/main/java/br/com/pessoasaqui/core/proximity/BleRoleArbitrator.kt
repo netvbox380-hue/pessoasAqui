@@ -60,10 +60,12 @@ object BleRoleArbitrator {
         val cleanRemote = remoteIdentityHash.removePrefix("peer-").trim().uppercase()
         val cmp = cleanLocal.compareTo(cleanRemote)
 
-        return if (cmp < 0) {
-            Role.CENTRAL_CLIENT // Menor hash assume papel de Central/Client
+        return if (cmp > 0) {
+            Role.CENTRAL_CLIENT // Maior hash lexicográfico assume papel de Central/Client
+        } else if (cmp < 0) {
+            Role.PERIPHERAL_SERVER // Menor hash lexicográfico assume papel de Peripheral/Server
         } else {
-            Role.PERIPHERAL_SERVER // Maior hash assume papel de Peripheral/Server
+            Role.INCOMPATIBLE // Identidades idênticas não estabelecem conexão
         }
     }
 }

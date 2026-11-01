@@ -36,10 +36,10 @@ class BleGattServerManager(
 ) {
 
     companion object {
-        val SERVICE_UUID: UUID = UUID.fromString("0000FA01-0000-1000-8000-00805F9B34FB")
-        val CHAR_RX_UUID: UUID = UUID.fromString("0000FA02-0000-1000-8000-00805F9B34FB")
-        val CHAR_TX_UUID: UUID = UUID.fromString("0000FA03-0000-1000-8000-00805F9B34FB")
-        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
+        val SERVICE_UUID: UUID = BleConstants.SERVICE_UUID // 0000FA01-0000-1000-8000-00805F9B34FB (Preserva descoberta do Radar)
+        val CHAR_RX_UUID: UUID = UUID.fromString("FA010002-4D2A-4C3D-9E1F-72A0168E29A1") // 128-bit custom proprietary RX
+        val CHAR_TX_UUID: UUID = UUID.fromString("FA010003-4D2A-4C3D-9E1F-72A0168E29A1") // 128-bit custom proprietary TX
+        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB") // Bluetooth SIG Standard CCCD (0x2902)
 
         const val DEFAULT_MAX_CONNECTIONS = 4
         const val GATT_SUCCESS = 0
@@ -67,27 +67,20 @@ class BleGattServerManager(
     var activeSessionId: String? = null
 
     /**
-     * Associa manualmente um endereço de dispositivo a um identificador de sessão lógica.
+     * Associa explicitamente um endereço de dispositivo a uma sessão lógica autenticada.
      */
-    fun bindSession(deviceAddress: String, sessionId: String) {
-        connectedClients[deviceAddress]?.boundSessionId = sessionId
+    fun bindSession(deviceAddress: String, sessionId: String): Boolean {
+        val session = sessionManager.getSession(sessionId) ?: return false
+        if (session.isExpired(System.currentTimeMillis())) return false
+        val client = connectedClients[deviceAddress] ?: return false
+        client.boundSessionId = sessionId
+        return true
     }
 
     /**
-     * Resolve o identificador da sessão associada a um dispositivo conectado.
+     * Retorna o identificador de sessão associado a uma conexão ativa.
      */
-    fun resolveSessionId(deviceAddress: String): String? {
-        val client = connectedClients[deviceAddress]
-        if (client?.boundSessionId != null) return client.boundSessionId
-        if (activeSessionId != null) return activeSessionId
-        val active = sessionManager.getAllActiveSessions()
-        if (active.size == 1) {
-            val autoId = active.first().sessionId
-            client?.boundSessionId = autoId
-            return autoId
-        }
-        return null
-    }
+    fun getBoundSessionId(deviceAddress: String): String? = connectedClients[deviceAddress]?.boundSessionId
 
     // Ouvintes de eventos da camada superior
     var onMessageReceivedListener: ((sessionId: String, msgId: Int, plaintext: ByteArray) -> Unit)? = null
@@ -188,16 +181,34 @@ class BleGattServerManager(
             )
             if (resumedSession != null) {
                 client?.boundSessionId = resumedSession.sessionId
+            } else {
+                onErrorListener?.invoke("Pacote SESSION_RESUME rejeitado para $deviceAddress: autenticação inválida ou sessão expirada")
             }
             return
         }
 
-        val sessionId = resolveSessionId(deviceAddress) ?: "session-peer-$deviceAddress"
-        val result = framingEngine.receivePacket(packet, sessionId, nowMs)
+        // Validação estrita de autenticação: conexão DEVE possuir uma sessão lógica autenticada
+        val boundSessionId = client?.boundSessionId ?: activeSessionId
+        if (boundSessionId == null) {
+            onErrorListener?.invoke("Pacote rejeitado: conexão $deviceAddress não autenticada por handshake ou resume")
+            return
+        }
+
+        val session = sessionManager.getSession(boundSessionId)
+        if (session == null || session.isExpired(nowMs)) {
+            if (session != null && session.isExpired(nowMs)) {
+                sessionManager.terminateSession(boundSessionId)
+            }
+            client?.boundSessionId = null
+            onErrorListener?.invoke("Pacote rejeitado: sessão $boundSessionId expirada ou inexistente")
+            return
+        }
+
+        val result = framingEngine.receivePacket(packet, boundSessionId, nowMs)
 
         when (result) {
             is BlePacketFramingEngine.ReassemblyResult.Completed -> {
-                handleCompletedEnvelope(deviceAddress, sessionId, result)
+                handleCompletedEnvelope(deviceAddress, boundSessionId, result)
             }
             is BlePacketFramingEngine.ReassemblyResult.Rejected -> {
                 onErrorListener?.invoke("Pacote rejeitado pelo motor de fragmentação: ${result.reason}")

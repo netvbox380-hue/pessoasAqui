@@ -253,6 +253,38 @@ class BleGattClientManager(
         processNextQueuedPacket()
     }
 
+    /**
+     * Envia um pacote de retomada de sessão criptográfica (SESSION_RESUME de 20 bytes).
+     * Autentica o canal GATT físico utilizando a chave MAC da sessão em memória.
+     */
+    @Synchronized
+    fun sendSessionResume(sessionId: String): Boolean {
+        val session = sessionManager.getSession(sessionId) ?: return false
+        if (session.isExpired(System.currentTimeMillis())) {
+            sessionManager.terminateSession(sessionId)
+            onErrorListener?.invoke("Tentativa de retomada para sessão expirada: $sessionId")
+            return false
+        }
+
+        val nonce = BleCryptoHandshakeEngine.generateNonce(BleCryptoHandshakeEngine.RESUME_NONCE_SIZE_BYTES)
+        val mac = BleCryptoHandshakeEngine.computeResumeMac(
+            macKey = session.macKey,
+            sessionToken = session.sessionToken,
+            resumeNonce = nonce,
+            direction = BleCryptoHandshakeEngine.ROLE_INITIATOR
+        )
+
+        val resumePacket = BleCryptoHandshakeEngine.buildResumePacket(
+            sessionToken = session.sessionToken,
+            resumeNonce = nonce,
+            resumeMac = mac
+        )
+
+        activeSessionId = sessionId
+        sendRawPacket(resumePacket)
+        return true
+    }
+
     @Synchronized
     private fun processNextQueuedPacket() {
         if (connectionState != ConnectionState.READY) return
