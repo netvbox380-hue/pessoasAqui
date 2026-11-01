@@ -451,4 +451,140 @@ object BleCryptoHandshakeEngine {
         val kf = KeyFactory.getInstance("EC")
         return kf.generatePublic(X509EncodedKeySpec(encodedBytes))
     }
+
+    // =========================================================================
+    // Serialização e Desserialização de Handshake Inicial (FRAME_TYPE 0x03 e 0x04)
+    // =========================================================================
+
+    data class HandshakeInitData(
+        val version: Byte,
+        val initiatorIdHash: String,
+        val responderIdHash: String,
+        val timestampMs: Long,
+        val initiatorNonce: ByteArray,
+        val initiatorIdentityPubKeyBytes: ByteArray,
+        val initiatorEphemeralPubKeyBytes: ByteArray,
+        val signature: ByteArray
+    )
+
+    data class HandshakeRespData(
+        val version: Byte,
+        val responderNonce: ByteArray,
+        val responderIdentityPubKeyBytes: ByteArray,
+        val responderEphemeralPubKeyBytes: ByteArray,
+        val signature: ByteArray,
+        val sessionConfirmMac: ByteArray
+    )
+
+    fun encodeHandshakeInit(data: HandshakeInitData): ByteArray {
+        val initIdBytes = data.initiatorIdHash.toByteArray(StandardCharsets.UTF_8)
+        val respIdBytes = data.responderIdHash.toByteArray(StandardCharsets.UTF_8)
+        val totalSize = 1 +
+                1 + initIdBytes.size +
+                1 + respIdBytes.size +
+                8 +
+                data.initiatorNonce.size +
+                2 + data.initiatorIdentityPubKeyBytes.size +
+                2 + data.initiatorEphemeralPubKeyBytes.size +
+                2 + data.signature.size
+
+        val bb = ByteBuffer.allocate(totalSize)
+        bb.put(data.version)
+        bb.put(initIdBytes.size.toByte())
+        bb.put(initIdBytes)
+        bb.put(respIdBytes.size.toByte())
+        bb.put(respIdBytes)
+        bb.putLong(data.timestampMs)
+        bb.put(data.initiatorNonce)
+        bb.putShort(data.initiatorIdentityPubKeyBytes.size.toShort())
+        bb.put(data.initiatorIdentityPubKeyBytes)
+        bb.putShort(data.initiatorEphemeralPubKeyBytes.size.toShort())
+        bb.put(data.initiatorEphemeralPubKeyBytes)
+        bb.putShort(data.signature.size.toShort())
+        bb.put(data.signature)
+        return bb.array()
+    }
+
+    fun decodeHandshakeInit(bytes: ByteArray): HandshakeInitData? {
+        return try {
+            val bb = ByteBuffer.wrap(bytes)
+            val version = bb.get()
+            if (version != PROTOCOL_VERSION) return null
+            val initIdLen = bb.get().toInt() and 0xFF
+            val initIdBytes = ByteArray(initIdLen).also { bb.get(it) }
+            val initIdHash = String(initIdBytes, StandardCharsets.UTF_8)
+            val respIdLen = bb.get().toInt() and 0xFF
+            val respIdBytes = ByteArray(respIdLen).also { bb.get(it) }
+            val respIdHash = String(respIdBytes, StandardCharsets.UTF_8)
+            val timestampMs = bb.long
+            val initiatorNonce = ByteArray(NONCE_SIZE_BYTES).also { bb.get(it) }
+            val idPubLen = bb.short.toInt() and 0xFFFF
+            val idPubBytes = ByteArray(idPubLen).also { bb.get(it) }
+            val ephPubLen = bb.short.toInt() and 0xFFFF
+            val ephPubBytes = ByteArray(ephPubLen).also { bb.get(it) }
+            val sigLen = bb.short.toInt() and 0xFFFF
+            val sigBytes = ByteArray(sigLen).also { bb.get(it) }
+
+            HandshakeInitData(
+                version = version,
+                initiatorIdHash = initIdHash,
+                responderIdHash = respIdHash,
+                timestampMs = timestampMs,
+                initiatorNonce = initiatorNonce,
+                initiatorIdentityPubKeyBytes = idPubBytes,
+                initiatorEphemeralPubKeyBytes = ephPubBytes,
+                signature = sigBytes
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun encodeHandshakeResp(data: HandshakeRespData): ByteArray {
+        val totalSize = 1 +
+                data.responderNonce.size +
+                2 + data.responderIdentityPubKeyBytes.size +
+                2 + data.responderEphemeralPubKeyBytes.size +
+                2 + data.signature.size +
+                data.sessionConfirmMac.size
+
+        val bb = ByteBuffer.allocate(totalSize)
+        bb.put(data.version)
+        bb.put(data.responderNonce)
+        bb.putShort(data.responderIdentityPubKeyBytes.size.toShort())
+        bb.put(data.responderIdentityPubKeyBytes)
+        bb.putShort(data.responderEphemeralPubKeyBytes.size.toShort())
+        bb.put(data.responderEphemeralPubKeyBytes)
+        bb.putShort(data.signature.size.toShort())
+        bb.put(data.signature)
+        bb.put(data.sessionConfirmMac)
+        return bb.array()
+    }
+
+    fun decodeHandshakeResp(bytes: ByteArray): HandshakeRespData? {
+        return try {
+            val bb = ByteBuffer.wrap(bytes)
+            val version = bb.get()
+            if (version != PROTOCOL_VERSION) return null
+            val responderNonce = ByteArray(NONCE_SIZE_BYTES).also { bb.get(it) }
+            val idPubLen = bb.short.toInt() and 0xFFFF
+            val idPubBytes = ByteArray(idPubLen).also { bb.get(it) }
+            val ephPubLen = bb.short.toInt() and 0xFFFF
+            val ephPubBytes = ByteArray(ephPubLen).also { bb.get(it) }
+            val sigLen = bb.short.toInt() and 0xFFFF
+            val sigBytes = ByteArray(sigLen).also { bb.get(it) }
+            val confirmMac = ByteArray(32).also { bb.get(it) }
+
+            HandshakeRespData(
+                version = version,
+                responderNonce = responderNonce,
+                responderIdentityPubKeyBytes = idPubBytes,
+                responderEphemeralPubKeyBytes = ephPubBytes,
+                signature = sigBytes,
+                sessionConfirmMac = confirmMac
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
 }

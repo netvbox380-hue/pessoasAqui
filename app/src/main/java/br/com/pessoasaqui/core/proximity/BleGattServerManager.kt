@@ -12,6 +12,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import java.nio.ByteBuffer
+import java.security.KeyPair
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -65,6 +66,8 @@ class BleGattServerManager(
         private set
 
     var activeSessionId: String? = null
+    var localIdentityKeyPair: KeyPair? = null
+    var localIdentityHash: String? = null
 
     /**
      * Associa explicitamente um endereço de dispositivo a uma sessão lógica autenticada.
@@ -169,6 +172,20 @@ class BleGattServerManager(
         val nowMs = System.currentTimeMillis()
         client?.lastActiveMs = nowMs
 
+        // Tratamento de Handshake Inicial (FRAME_TYPE_HANDSHAKE_INIT = 0x03)
+        if (packet.size >= 7 &&
+            packet[0] == BlePacketFramingEngine.MAGIC_BYTE &&
+            packet[1] == BlePacketFramingEngine.FRAME_TYPE_HANDSHAKE_INIT
+        ) {
+            val result = framingEngine.receivePacket(packet, "handshake-$deviceAddress", nowMs)
+            if (result is BlePacketFramingEngine.ReassemblyResult.Completed) {
+                handleHandshakeInit(deviceAddress, result.payload)
+            } else if (result is BlePacketFramingEngine.ReassemblyResult.Rejected) {
+                onErrorListener?.invoke("Handshake rejeitado na remontagem: ${result.reason}")
+            }
+            return
+        }
+
         // Tratamento especial para SESSION_RESUME rápido (20 bytes)
         if (packet.size == 20 &&
             packet[0] == BlePacketFramingEngine.MAGIC_BYTE &&
@@ -216,6 +233,121 @@ class BleGattServerManager(
             is BlePacketFramingEngine.ReassemblyResult.InProgress -> {
                 // Aguardando fragmentos subsequentes
             }
+        }
+    }
+
+    private fun handleHandshakeInit(deviceAddress: String, payload: ByteArray) {
+        val initData = BleCryptoHandshakeEngine.decodeHandshakeInit(payload)
+        if (initData == null) {
+            onErrorListener?.invoke("Payload de HandshakeInit inválido de $deviceAddress")
+            return
+        }
+
+        val nowMs = System.currentTimeMillis()
+        if (Math.abs(nowMs - initData.timestampMs) > BleCryptoHandshakeEngine.MAX_HANDSHAKE_DRIFT_MS) {
+            onErrorListener?.invoke("Timestamp de HandshakeInit fora da janela de tolerância de 30s")
+            return
+        }
+
+        val initIdentityPubKey = try {
+            BleCryptoHandshakeEngine.decodePublicKey(initData.initiatorIdentityPubKeyBytes)
+        } catch (_: Exception) {
+            onErrorListener?.invoke("Chave pública de identidade do iniciador inválida")
+            return
+        }
+
+        val transcriptHash = BleCryptoHandshakeEngine.buildTranscriptHash(
+            version = initData.version,
+            role = BleCryptoHandshakeEngine.ROLE_INITIATOR,
+            initiatorIdHash = initData.initiatorIdHash,
+            responderIdHash = initData.responderIdHash,
+            initiatorEphemeralPubKey = initData.initiatorEphemeralPubKeyBytes,
+            responderEphemeralPubKey = ByteArray(0),
+            initiatorNonce = initData.initiatorNonce,
+            responderNonce = ByteArray(0),
+            timestampMs = initData.timestampMs
+        )
+
+        val sigValid = BleCryptoHandshakeEngine.verifyTranscriptSignature(
+            identityPublicKey = initIdentityPubKey,
+            transcriptHash = transcriptHash,
+            signature = initData.signature
+        )
+
+        if (!sigValid) {
+            onErrorListener?.invoke("Assinatura do transcript de HandshakeInit inválida")
+            return
+        }
+
+        val respEphemeral = BleCryptoHandshakeEngine.generateEphemeralKeyPair()
+        val respNonce = BleCryptoHandshakeEngine.generateNonce(BleCryptoHandshakeEngine.NONCE_SIZE_BYTES)
+
+        val initEphemeralPubKey = try {
+            BleCryptoHandshakeEngine.decodePublicKey(initData.initiatorEphemeralPubKeyBytes)
+        } catch (_: Exception) {
+            onErrorListener?.invoke("Chave efêmera do iniciador inválida")
+            return
+        }
+
+        val sharedSecret = BleCryptoHandshakeEngine.computeEcdhSharedSecret(respEphemeral.private, initEphemeralPubKey)
+        val derived = BleCryptoHandshakeEngine.deriveSessionKeys(
+            ecdhSecret = sharedSecret,
+            initiatorNonce = initData.initiatorNonce,
+            responderNonce = respNonce,
+            initiatorPubKey = initData.initiatorEphemeralPubKeyBytes,
+            responderPubKey = respEphemeral.public.encoded
+        )
+
+        val confirmMac = BleCryptoHandshakeEngine.computeSessionConfirmMac(derived.macKey, derived.sessionId)
+
+        val respTranscriptHash = BleCryptoHandshakeEngine.buildTranscriptHash(
+            version = BleCryptoHandshakeEngine.PROTOCOL_VERSION,
+            role = BleCryptoHandshakeEngine.ROLE_RESPONDER,
+            initiatorIdHash = initData.initiatorIdHash,
+            responderIdHash = initData.responderIdHash,
+            initiatorEphemeralPubKey = initData.initiatorEphemeralPubKeyBytes,
+            responderEphemeralPubKey = respEphemeral.public.encoded,
+            initiatorNonce = initData.initiatorNonce,
+            responderNonce = respNonce,
+            timestampMs = nowMs
+        )
+
+        val myKeyPair = localIdentityKeyPair ?: BleCryptoHandshakeEngine.generateEphemeralKeyPair()
+        val respSig = BleCryptoHandshakeEngine.signTranscript(myKeyPair.private, respTranscriptHash)
+
+        val session = BleSessionTokenManager.BleProximitySession(
+            sessionId = derived.sessionId,
+            sessionToken = derived.sessionToken,
+            localIdentityHash = localIdentityHash ?: "SERVER",
+            peerIdentityHash = initData.initiatorIdHash,
+            localRole = BleCryptoHandshakeEngine.ROLE_RESPONDER,
+            encKey = derived.encKey,
+            macKey = derived.macKey,
+            sessionSalt = derived.sessionSalt,
+            createdAtMs = nowMs,
+            lastActiveMs = nowMs
+        )
+        sessionManager.registerSession(session)
+        bindSession(deviceAddress, session.sessionId)
+
+        val respData = BleCryptoHandshakeEngine.HandshakeRespData(
+            version = BleCryptoHandshakeEngine.PROTOCOL_VERSION,
+            responderNonce = respNonce,
+            responderIdentityPubKeyBytes = myKeyPair.public.encoded,
+            responderEphemeralPubKeyBytes = respEphemeral.public.encoded,
+            signature = respSig,
+            sessionConfirmMac = confirmMac
+        )
+        val respPayload = BleCryptoHandshakeEngine.encodeHandshakeResp(respData)
+        val mtu = connectedClients[deviceAddress]?.mtu ?: BlePacketFramingEngine.MIN_MTU
+        val fragments = framingEngine.fragment(
+            payload = respPayload,
+            mtu = mtu,
+            msgId = 0,
+            frameType = BlePacketFramingEngine.FRAME_TYPE_HANDSHAKE_RESP
+        )
+        for (frag in fragments) {
+            notifyClient(deviceAddress, frag)
         }
     }
 
@@ -304,6 +436,44 @@ class BleGattServerManager(
      */
     fun notifyClient(deviceAddress: String, packet: ByteArray): Boolean {
         return driver.notifyCharacteristicChanged(deviceAddress, CHAR_TX_UUID, confirm = false, value = packet)
+    }
+
+    /**
+     * Envia mensagem cifrada para o cliente conectado via notificação na característica CHAR_TX.
+     */
+    fun sendEncryptedNotification(
+        sessionId: String,
+        payload: ByteArray,
+        msgId: Int
+    ): Boolean {
+        val session = sessionManager.getSession(sessionId) ?: return false
+        val address = connectedClients.entries.firstOrNull { it.value.boundSessionId == sessionId }?.key ?: return false
+        if (session.isExpired(System.currentTimeMillis())) return false
+
+        val sequence = session.nextTxSequence()
+        val envelope = BleCryptoHandshakeEngine.encryptMessage(
+            plaintext = payload,
+            encKey = session.encKey,
+            sessionSalt = session.sessionSalt,
+            sessionToken = session.sessionToken,
+            msgId = msgId,
+            direction = BleCryptoHandshakeEngine.ROLE_RESPONDER,
+            sequence = sequence
+        )
+
+        val mtu = connectedClients[address]?.mtu ?: BlePacketFramingEngine.MIN_MTU
+        val fragments = framingEngine.fragment(
+            payload = envelope,
+            mtu = mtu,
+            msgId = msgId,
+            frameType = BlePacketFramingEngine.FRAME_TYPE_DATA
+        )
+
+        for (frag in fragments) {
+            val sent = notifyClient(address, frag)
+            if (!sent) return false
+        }
+        return true
     }
 
     fun getConnectedClientCount(): Int = connectedClients.size

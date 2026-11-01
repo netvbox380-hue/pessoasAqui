@@ -51,6 +51,7 @@ class BleManager(
     private var lastAlias: String? = null
     private var lastIntent: UserIntent? = null
     private var lastScanCallback: ((NearbyPerson) -> Unit)? = null
+    var onDeviceAddressDiscovered: ((identityHash: String, address: String) -> Unit)? = null
 
     val isBluetoothSupported: Boolean get() = bluetoothAdapter != null
     val isBluetoothEnabled: Boolean
@@ -318,6 +319,13 @@ class BleManager(
         if (peerRssiHistory.size > 300) {
             peerRssiHistory.keys.take(50).forEach { peerRssiHistory.remove(it) }
         }
+
+        try {
+            val mac = result.device?.address
+            if (!mac.isNullOrBlank()) {
+                onDeviceAddressDiscovered?.invoke(identityHash, mac)
+            }
+        } catch (_: SecurityException) {}
 
         val finalAlias = if (!peerAlias.isNullOrBlank()) peerAlias else "Pessoa Próxima #${identityHash.take(4)}"
 

@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
  * Cliente de Rede HTTP e WebSockets do PessoasAqui.
  * Conecta o aplicativo ao servidor backend (seja local ou hospedado no Render / Supabase).
  */
-class PessoasAquiNetworkClient(
+open class PessoasAquiNetworkClient(
     var baseUrl: String = "https://pessoasaqui3.onrender.com",
     var wsUrl: String = "wss://pessoasaqui3.onrender.com"
 ) {
@@ -435,7 +435,7 @@ class PessoasAquiNetworkClient(
     /**
      * Envia envelope cifrado E2EE pelo WebSocket
      */
-    fun sendE2eeEnvelope(recipientHash: String, ciphertext: String, ivNonce: String, messageId: String = java.util.UUID.randomUUID().toString()): Boolean {
+    open fun sendE2eeEnvelope(recipientHash: String, ciphertext: String, ivNonce: String, messageId: String = java.util.UUID.randomUUID().toString()): Boolean {
         if (!isWsConnected) return false
         val ws = activeWebSocket ?: return false
         val envelope = JSONObject().apply {

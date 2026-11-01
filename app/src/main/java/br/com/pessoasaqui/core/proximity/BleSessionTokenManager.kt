@@ -40,8 +40,8 @@ class BleSessionTokenManager(
         val encKey: ByteArray,
         val macKey: ByteArray,
         val sessionSalt: ByteArray,
-        val createdAtMs: Long,
-        var lastActiveMs: Long
+        val createdAtMs: Long = System.currentTimeMillis(),
+        var lastActiveMs: Long = System.currentTimeMillis()
     ) {
         val txSequenceCounter = AtomicLong(0L)
         val highestRxSequenceCounter = AtomicLong(0L)

@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import java.nio.ByteBuffer
+import java.security.KeyPair
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -70,6 +71,14 @@ class BleGattClientManager(
         private set
 
     var activeSessionId: String? = null
+    var localIdentityKeyPair: KeyPair? = null
+    var localIdentityHash: String? = null
+
+    var onHandshakeCompletedListener: ((success: Boolean, sessionId: String?) -> Unit)? = null
+    private var pendingHandshakeEphemeral: KeyPair? = null
+    private var pendingHandshakeNonce: ByteArray? = null
+    private var pendingHandshakeTimestamp: Long = 0L
+    private var pendingPeerIdHash: String? = null
 
     // Fila sequencial de pacotes para transmissão pelo rádio
     private val transmissionQueue = ConcurrentLinkedQueue<ByteArray>()
@@ -285,6 +294,124 @@ class BleGattClientManager(
         return true
     }
 
+    /**
+     * Inicia o handshake criptográfico mútuo com um dispositivo desconhecido pelo canal GATT (FRAME_TYPE_HANDSHAKE_INIT).
+     */
+    @Synchronized
+    fun startHandshake(
+        peerIdentityHash: String,
+        localIdHash: String,
+        localKeyPair: KeyPair,
+        onComplete: ((success: Boolean, sessionId: String?) -> Unit)? = null
+    ): Boolean {
+        if (connectionState != ConnectionState.READY) return false
+        onHandshakeCompletedListener = onComplete
+        pendingPeerIdHash = peerIdentityHash
+        localIdentityHash = localIdHash
+        localIdentityKeyPair = localKeyPair
+
+        val ephem = BleCryptoHandshakeEngine.generateEphemeralKeyPair()
+        pendingHandshakeEphemeral = ephem
+        val nonce = BleCryptoHandshakeEngine.generateNonce(BleCryptoHandshakeEngine.NONCE_SIZE_BYTES)
+        pendingHandshakeNonce = nonce
+        val nowMs = System.currentTimeMillis()
+        pendingHandshakeTimestamp = nowMs
+
+        val transcriptHash = BleCryptoHandshakeEngine.buildTranscriptHash(
+            version = BleCryptoHandshakeEngine.PROTOCOL_VERSION,
+            role = BleCryptoHandshakeEngine.ROLE_INITIATOR,
+            initiatorIdHash = localIdHash,
+            responderIdHash = peerIdentityHash,
+            initiatorEphemeralPubKey = ephem.public.encoded,
+            responderEphemeralPubKey = ByteArray(0),
+            initiatorNonce = nonce,
+            responderNonce = ByteArray(0),
+            timestampMs = nowMs
+        )
+        val signature = BleCryptoHandshakeEngine.signTranscript(localKeyPair.private, transcriptHash)
+
+        val initData = BleCryptoHandshakeEngine.HandshakeInitData(
+            version = BleCryptoHandshakeEngine.PROTOCOL_VERSION,
+            initiatorIdHash = localIdHash,
+            responderIdHash = peerIdentityHash,
+            timestampMs = nowMs,
+            initiatorNonce = nonce,
+            initiatorIdentityPubKeyBytes = localKeyPair.public.encoded,
+            initiatorEphemeralPubKeyBytes = ephem.public.encoded,
+            signature = signature
+        )
+        val payload = BleCryptoHandshakeEngine.encodeHandshakeInit(initData)
+        val fragments = framingEngine.fragment(
+            payload = payload,
+            mtu = currentMtu,
+            msgId = 0,
+            frameType = BlePacketFramingEngine.FRAME_TYPE_HANDSHAKE_INIT
+        )
+        for (frag in fragments) {
+            sendRawPacket(frag)
+        }
+        return true
+    }
+
+    private fun handleHandshakeResp(payload: ByteArray) {
+        val respData = BleCryptoHandshakeEngine.decodeHandshakeResp(payload)
+        if (respData == null) {
+            onHandshakeCompletedListener?.invoke(false, null)
+            return
+        }
+        val ephem = pendingHandshakeEphemeral ?: return
+        val nonce = pendingHandshakeNonce ?: return
+        val localHash = localIdentityHash ?: return
+        val peerHash = pendingPeerIdHash ?: return
+
+        val respIdentityPubKey = try {
+            BleCryptoHandshakeEngine.decodePublicKey(respData.responderIdentityPubKeyBytes)
+        } catch (_: Exception) {
+            onHandshakeCompletedListener?.invoke(false, null)
+            return
+        }
+
+        val respEphemeralPubKey = try {
+            BleCryptoHandshakeEngine.decodePublicKey(respData.responderEphemeralPubKeyBytes)
+        } catch (_: Exception) {
+            onHandshakeCompletedListener?.invoke(false, null)
+            return
+        }
+
+        val sharedSecret = BleCryptoHandshakeEngine.computeEcdhSharedSecret(ephem.private, respEphemeralPubKey)
+        val derived = BleCryptoHandshakeEngine.deriveSessionKeys(
+            ecdhSecret = sharedSecret,
+            initiatorNonce = nonce,
+            responderNonce = respData.responderNonce,
+            initiatorPubKey = ephem.public.encoded,
+            responderPubKey = respData.responderEphemeralPubKeyBytes
+        )
+
+        val macValid = BleCryptoHandshakeEngine.verifySessionConfirmMac(derived.macKey, derived.sessionId, respData.sessionConfirmMac)
+        if (!macValid) {
+            onErrorListener?.invoke("SessionConfirmMac inválido do servidor")
+            onHandshakeCompletedListener?.invoke(false, null)
+            return
+        }
+
+        val session = BleSessionTokenManager.BleProximitySession(
+            sessionId = derived.sessionId,
+            sessionToken = derived.sessionToken,
+            localIdentityHash = localHash,
+            peerIdentityHash = peerHash,
+            localRole = BleCryptoHandshakeEngine.ROLE_INITIATOR,
+            encKey = derived.encKey,
+            macKey = derived.macKey,
+            sessionSalt = derived.sessionSalt,
+            createdAtMs = System.currentTimeMillis(),
+            lastActiveMs = System.currentTimeMillis()
+        )
+        sessionManager.registerSession(session)
+        activeSessionId = session.sessionId
+
+        onHandshakeCompletedListener?.invoke(true, session.sessionId)
+    }
+
     @Synchronized
     private fun processNextQueuedPacket() {
         if (connectionState != ConnectionState.READY) return
@@ -338,7 +465,16 @@ class BleGattClientManager(
             return
         }
 
-        // 2. Fragmento de Dados recebido do servidor
+        // 2. Fragmento de Resposta de Handshake Inicial (FRAME_TYPE_HANDSHAKE_RESP = 0x04)
+        if (frameType == BlePacketFramingEngine.FRAME_TYPE_HANDSHAKE_RESP) {
+            val result = framingEngine.receivePacket(packet, "handshake-client", System.currentTimeMillis())
+            if (result is BlePacketFramingEngine.ReassemblyResult.Completed) {
+                handleHandshakeResp(result.payload)
+            }
+            return
+        }
+
+        // 3. Fragmento de Dados recebido do servidor
         val sessionId = activeSessionId ?: "session-client-unknown"
         val result = framingEngine.receivePacket(packet, sessionId, System.currentTimeMillis())
         if (result is BlePacketFramingEngine.ReassemblyResult.Completed &&

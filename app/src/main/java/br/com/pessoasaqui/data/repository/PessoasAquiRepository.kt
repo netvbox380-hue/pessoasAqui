@@ -63,7 +63,8 @@ class PessoasAquiRepository(
     val bleManager: BleManager? = null,
     val networkClient: PessoasAquiNetworkClient = PessoasAquiNetworkClient(),
     val distanceEstimator: DistanceEstimator = DistanceEstimator(),
-    injectedChatPersistence: br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager? = null
+    injectedChatPersistence: br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager? = null,
+    injectedBleTransportCoordinator: br.com.pessoasaqui.core.proximity.BleDirectTransportCoordinator? = null
 ) {
     companion object {
         const val TEMPORARY_SESSION_GRACE_PERIOD_MS = 30000L // 30s de tolerância contra jitter/oscilação BLE
@@ -116,6 +117,12 @@ class PessoasAquiRepository(
     val chatPersistence: br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager? = injectedChatPersistence ?: context?.let { ctx ->
         ChatMessagePersistenceManager(ctx)
     }
+
+    val bleTransportCoordinator: br.com.pessoasaqui.core.proximity.BleDirectTransportCoordinator =
+        injectedBleTransportCoordinator ?: br.com.pessoasaqui.core.proximity.BleDirectTransportCoordinator(
+            context = context,
+            cryptoIdentityManager = cryptoIdentityManager
+        )
 
     val p2pVaultManager: P2PVaultManager? = context?.let { ctx ->
         P2PVaultManager(ctx)
@@ -250,6 +257,10 @@ class PessoasAquiRepository(
         val remaining = current.filter { it !in expiredPeers }
         _realDiscoveredPeople.value = remaining
         updateUnifiedData()
+
+        // Purga sessões lógicas expiradas no coordenador BLE com memory wiping seguro
+        bleTransportCoordinator.cleanupExpiredSessions(now)
+
         return expiredIds
     }
 
@@ -654,6 +665,22 @@ class PessoasAquiRepository(
                     "🚫 $banMsg"
                 )
             }
+        }
+
+        // Configura Coordenador de Transporte Bluetooth Direto (ETAPA 3D)
+        bleTransportCoordinator.onTemporaryMessageReceived = { peerId, text, _ ->
+            val cleanSender = cleanId(peerId)
+            // Se o contato for permanente (Modo B), não roteia por canal temporário
+            if (!isPeerPermanent(cleanSender)) {
+                val peerAlias = _realDiscoveredPeople.value.firstOrNull {
+                    cleanId(it.id) == cleanSender || cleanId(it.technicalIdentityHash) == cleanSender
+                }?.alias ?: "Pessoa Próxima"
+                proximitySimulator.receivePrivateMessage(cleanSender, peerAlias, text)
+            }
+        }
+
+        bleManager?.onDeviceAddressDiscovered = { peerHash, address ->
+            bleTransportCoordinator.recordPeerDeviceAddress(peerHash, address)
         }
 
         startPresencePollingLoop()
@@ -1505,6 +1532,7 @@ class PessoasAquiRepository(
 
     private fun startNativeBleHardware() {
         try {
+            bleTransportCoordinator.start()
             bleManager?.let { ble ->
                 if (ble.isBluetoothEnabled) {
                     ble.startAdvertising(
@@ -1617,11 +1645,15 @@ class PessoasAquiRepository(
                 val cCid = cleanId(it.technicalIdentityHash)
                 val cPid = cleanId(it.id)
                 cleanTargetId == cCid || cleanTargetId == cPid
-            }
-            if (fallback != null) {
-                currentReal.add(fallback)
-                idx = currentReal.size - 1
-            }
+            } ?: NearbyPerson(
+                id = cleanTargetId,
+                technicalIdentityHash = cleanTargetId,
+                alias = "Contato $cleanTargetId",
+                estimatedDistanceMeters = 5.0,
+                proximityLabel = "5m"
+            )
+            currentReal.add(fallback)
+            idx = currentReal.size - 1
         }
 
         var updatedPeer: NearbyPerson? = null
@@ -2034,6 +2066,20 @@ class PessoasAquiRepository(
             proximitySimulator.sendDocumentMessage(cleanRecipient, fileName, base64, size, _currentAlias.value, msgId)
         }
 
+        val isPermanent = isPeerPermanent(cleanRecipient)
+
+        if (!isPermanent) {
+            // MODO A: Conversa Temporária
+            // Roteamento exclusivamente via rádio Bluetooth BLE GATT direto.
+            // Sem contato com a Internet / Render / WebSocket / HTTP.
+            // Em caso de falha de rádio, NUNCA faz fallback para o servidor Render.
+            bleTransportCoordinator.sendTemporaryMessage(cleanRecipient, text, _currentAlias.value)
+            return ContentModerationManager.ModerationResult(isAllowed = true)
+        }
+
+        // MODO B: Conexão Mútua / Conexão Permanente
+        // Roteamento exclusivamente via Internet (WebSocket + REST HTTP) com E2EE permanente.
+        // Nunca utiliza Bluetooth BLE para conversas permanentes.
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         // Criptografia de Ponta a Ponta com AES-256-GCM e ECDH Zero-Knowledge
         val (ciphertext, iv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, cryptoIdentityManager.getActivePrivateKey())
