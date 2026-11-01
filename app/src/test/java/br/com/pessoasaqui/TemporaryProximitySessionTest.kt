@@ -309,4 +309,44 @@ class TemporaryProximitySessionTest {
         assertEquals("Mensagens em disco devem permanecer intactas", 1, loaded.size)
         assertEquals("Conversa importante gravada", loaded[0].text)
     }
+
+    @Test
+    fun test13_PromotionMergesWithExistingDiskHistoryWithoutDuplicatesOrOverwrites() {
+        val peerId = "MERGE_TEST_PEER"
+        val now = System.currentTimeMillis()
+        createNearbyPeer(peerId, "Contato Antigo e Novo", lastSeen = now)
+
+        // 1. Já existia histórico antigo em disco
+        val pastMsg = ChatMessage(
+            id = "msg_past_1",
+            senderId = peerId,
+            senderAlias = "Contato Antigo e Novo",
+            text = "Mensagem antiga do passado",
+            timestampMs = now - 500000L,
+            isFromMe = false
+        )
+        persistence.savePrivateChat(peerId, listOf(pastMsg))
+
+        // 2. No encontro presencial atual (Modo A), uma nova mensagem efêmera é enviada em memória
+        repo.proximitySimulator.sendPrivateMessage(peerId, "Nova mensagem presencial recente", "Eu")
+        // O disco ainda deve conter apenas a mensagem antiga (não foi promovida ainda)
+        var diskMsgs = persistence.loadAllPrivateChats()[peerId.lowercase()] ?: emptyList()
+        assertEquals(1, diskMsgs.size)
+        assertEquals("Mensagem antiga do passado", diskMsgs[0].text)
+
+        // 3. Tentar promover sem conexão mútua confirmada deve ser recusado
+        repo.promoteTemporarySessionToMutual(peerId)
+        diskMsgs = persistence.loadAllPrivateChats()[peerId.lowercase()] ?: emptyList()
+        assertEquals("Sem conexão mútua confirmada, histórico não é promovido", 1, diskMsgs.size)
+
+        // 4. Usuários confirmam conexão mútua permanente
+        repo.setMarkPerson(peerId, mark = true, explicitMutual = true)
+        assertTrue(repo.isPeerPermanent(peerId))
+
+        // 5. Histórico em disco agora deve conter AMBAS as mensagens sem duplicar ou sobrescrever
+        diskMsgs = persistence.loadAllPrivateChats()[peerId.lowercase()] ?: emptyList()
+        val texts = diskMsgs.map { it.text }
+        assertTrue("Histórico antigo deve ser preservado", texts.contains("Mensagem antiga do passado"))
+        assertTrue("Nova mensagem presencial deve ser preservada", texts.contains("Nova mensagem presencial recente"))
+    }
 }

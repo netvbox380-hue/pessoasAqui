@@ -189,15 +189,37 @@ class PessoasAquiRepository(
         return p?.isFamily == true || (p != null && isPeerMutual(p))
     }
 
+    /**
+     * Política Oficial da ETAPA 2 (Opção A - Preservação Automática do Histórico Temporário):
+     * Promove o histórico em memória de uma sessão temporária para armazenamento local criptografado (AES-256-GCM)
+     * única e exclusivamente mediante conexão mútua confirmada, preservando mensagens prévias e evitando duplicações.
+     */
     fun promoteTemporarySessionToMutual(peerId: String) {
         val clean = cleanId(peerId)
         if (clean.isBlank()) return
-        val messages = _unifiedPrivateChats.value[clean]
+        // 1. Confirmar que a conexão mútua ou familiar foi validamente estabelecida
+        if (!isPeerPermanent(clean)) return
+
+        // 2. Recuperar as mensagens temporárias existentes na memória
+        val memoryMsgs = _unifiedPrivateChats.value[clean]
             ?: _unifiedPrivateChats.value["peer-$clean"]
             ?: _unifiedPrivateChats.value[clean.lowercase()]
+            ?: proximitySimulator.privateChats.value[clean]
             ?: emptyList()
-        if (messages.isNotEmpty()) {
-            chatPersistence?.savePrivateChat(clean, messages)
+
+        // 3. Evitar duplicação ou sobrescrita: mescla histórico prévio do disco com as mensagens de proximidade
+        val existingDiskMsgs = chatPersistence?.loadAllPrivateChats()?.let { all ->
+            all[clean.lowercase()] ?: all[clean] ?: emptyList()
+        } ?: emptyList()
+
+        val merged = (existingDiskMsgs + memoryMsgs)
+            .distinctBy { it.id }
+            .sortedBy { it.timestampMs }
+
+        // 4. Preserva automaticamente o histórico consolidado no disco criptografado
+        if (merged.isNotEmpty()) {
+            chatPersistence?.savePrivateChat(clean, merged)
+            proximitySimulator.loadPersistedMessages()
         }
     }
 
