@@ -141,6 +141,24 @@ class BlePhase3EFixTest {
         assertEquals("Olá Bob assíncrono!", receivedText)
     }
 
+    @Test
+    fun test01b_HandshakeWaitsUntilCccdWriteIsConfirmed() {
+        val bobId = coordinatorB.cryptoIdentityManager.getTechnicalIdentity()
+        coordinatorA.recordPeerDeviceAddress(bobId, peerAddressB)
+        clientDriverA.pauseCccdCallback = true
+
+        var arrived = false
+        coordinatorB.onTemporaryMessageReceived = { _, _, _ -> arrived = true }
+        assertTrue(coordinatorA.sendTemporaryMessage(bobId, "aguardando CCCD", "Alice", "msg-cccd"))
+        assertEquals(BleGattClientManager.ConnectionState.SERVICES_DISCOVERED,
+            coordinatorA.clientManager.connectionState)
+        assertFalse("Não se deve fazer handshake antes do CCCD", arrived)
+
+        clientDriverA.completePendingCccdWrite()
+        assertEquals(BleGattClientManager.ConnectionState.READY, coordinatorA.clientManager.connectionState)
+        assertTrue("O envio deve prosseguir após CCCD confirmado", arrived)
+    }
+
     // -------------------------------------------------------------------------
     // 2. Fila de Requisições Pendentes: Falha na Conexão Notifica onDeliveryFailed
     // -------------------------------------------------------------------------
@@ -371,6 +389,14 @@ class BlePhase3EFixTest {
         var targetServer: AsyncGattServerDriver? = null
         var connectedAddress: String? = null
         var pauseConnectionCallbacks = false
+        var pauseCccdCallback = false
+        private var pendingCccdUuid: UUID? = null
+
+        fun completePendingCccdWrite() {
+            val uuid = pendingCccdUuid ?: return
+            pendingCccdUuid = null
+            callback?.onDescriptorWrite(uuid, BleGattClientManager.GATT_SUCCESS)
+        }
 
         override fun connect(deviceAddress: String, autoConnect: Boolean, callback: BleGattClientCallback): Boolean {
             this.callback = callback
@@ -412,7 +438,11 @@ class BlePhase3EFixTest {
             targetServer?.callback?.onDescriptorWriteRequest(
                 connectedAddress ?: "CLIENT", 2, descUuid, false, true, 0, value
             )
-            callback?.onDescriptorWrite(descUuid, BleGattClientManager.GATT_SUCCESS)
+            if (pauseCccdCallback) {
+                pendingCccdUuid = descUuid
+            } else {
+                callback?.onDescriptorWrite(descUuid, BleGattClientManager.GATT_SUCCESS)
+            }
             return true
         }
 
