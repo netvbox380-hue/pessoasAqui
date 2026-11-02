@@ -115,12 +115,8 @@ class BleGattClientManager(
                 // Solicita negociação de MTU estendido imediatamente
                 val requested = driver.requestMtu(TARGET_MTU)
                 if (!requested) {
-                    // Fallback imediato se o hardware não suportar solicitação de MTU:
-                    // Habilita notificações CCCD e transiciona para READY
-                    driver.setCharacteristicNotification(CHAR_TX_UUID, true)
-                    driver.writeDescriptor(CCCD_UUID, byteArrayOf(0x01, 0x00))
-                    transitionTo(ConnectionState.READY)
-                    processNextQueuedPacket()
+                    // MTU é opcional, CCCD não. READY somente após confirmação do descritor.
+                    enableNotifications()
                 }
             } else {
                 onErrorListener?.invoke("Serviço PessoasAqui não encontrado no servidor remoto")
@@ -133,11 +129,18 @@ class BleGattClientManager(
             if (status == GATT_SUCCESS) {
                 currentMtu = mtu.coerceIn(BlePacketFramingEngine.MIN_MTU, BlePacketFramingEngine.MAX_MTU)
             }
-            // Habilita notificações na característica de recepção de TX
-            driver.setCharacteristicNotification(CHAR_TX_UUID, true)
-            driver.writeDescriptor(CCCD_UUID, byteArrayOf(0x01, 0x00))
-            transitionTo(ConnectionState.READY)
-            processNextQueuedPacket()
+            enableNotifications()
+        }
+
+        override fun onDescriptorWrite(descUuid: UUID, status: Int) {
+            if (descUuid != CCCD_UUID) return
+            if (status == GATT_SUCCESS && connectionState == ConnectionState.SERVICES_DISCOVERED) {
+                transitionTo(ConnectionState.READY)
+                processNextQueuedPacket()
+            } else if (status != GATT_SUCCESS) {
+                onErrorListener?.invoke("Habilitação das notificações GATT falhou: $status")
+                disconnect()
+            }
         }
 
         override fun onCharacteristicWrite(charUuid: UUID, status: Int) {
@@ -169,6 +172,14 @@ class BleGattClientManager(
             if (charUuid == CHAR_TX_UUID) {
                 processIncomingNotification(value)
             }
+        }
+    }
+
+    private fun enableNotifications() {
+        if (!driver.setCharacteristicNotification(CHAR_TX_UUID, true) ||
+            !driver.writeDescriptor(CCCD_UUID, byteArrayOf(0x01, 0x00))) {
+            onErrorListener?.invoke("Não foi possível habilitar CCCD: handshake BLE bloqueado")
+            disconnect()
         }
     }
 
