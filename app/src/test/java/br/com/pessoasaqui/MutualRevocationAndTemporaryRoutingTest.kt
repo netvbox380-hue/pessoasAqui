@@ -72,6 +72,17 @@ class MutualRevocationAndTemporaryRoutingTest {
         assertFalse("O cache local não pode repovoar conexão revogada", repo.isPeerPermanent(peerId))
     }
 
+    @Test fun temporaryEmptyStatusSnapshotDoesNotPermanentlyBanValidMutualRelationship() {
+        val repo = PessoasAquiRepository()
+        repo.setMarkPerson(peerId, mark = true)
+        repo.confirmMutualConnectionFromServer(peerId)
+        repo.reconcileConnectionStatus(emptyList(), emptyList(), emptyList())
+        assertFalse(repo.isPeerPermanent(peerId))
+        // A fonte da verdade volta a relatar vínculo bilateral já existente.
+        repo.reconcileConnectionStatus(listOf(peerId), listOf(peerId), listOf(peerId))
+        assertTrue("Ausência temporária não é revogação irreversível", repo.isPeerPermanent(peerId))
+    }
+
     @Test fun oldConfirmationCannotResurrectRevokedRelationship() {
         val repo = PessoasAquiRepository()
         repo.setMarkPerson(peerId, mark = true)
