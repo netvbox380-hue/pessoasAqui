@@ -263,8 +263,10 @@ class PessoasAquiRepository(
         val confirmed = mutual.map(::cleanId).filter { it.isNotBlank() && it !in blocked && it in own && it in remote }.toSet()
         val previouslyConfirmed = savedMutualPeople.toSet()
         val newlyConfirmed = confirmed - previouslyConfirmed
-        // Revogação observada em /status também invalida eventos MUTUAL antigos.
-        revokedMutualPeople.addAll(previouslyConfirmed - confirmed)
+        // Um snapshot incompleto ou antigo não é prova de revogação explícita.
+        // Não criar veto persistente a partir de ausência em /status: a conexão
+        // poderá ser confirmada novamente quando o backend voltar a sincronizar.
+        // Tombstones são criadas somente por unmark local ou evento de revogação.
         savedMarkedPeople.clear(); savedMarkedPeople.addAll(own)
         savedMarkingMePeople.clear(); savedMarkingMePeople.addAll(remote)
         savedMutualPeople.clear(); savedMutualPeople.addAll(confirmed)
