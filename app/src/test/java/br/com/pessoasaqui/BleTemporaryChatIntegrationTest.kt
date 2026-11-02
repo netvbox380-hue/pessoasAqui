@@ -782,9 +782,12 @@ class BleTemporaryChatIntegrationTest {
             this.callback = callback
             this.connectedAddress = deviceAddress
             targetServer?.targetClients?.put(deviceAddress, this)
-            // Simula conexão com sucesso
-            callback.onConnectionStateChange(BleGattClientManager.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+            // No loopback síncrono, o Peripheral precisa registrar o cliente antes
+            // de o Central descobrir serviços e ativar CCCD (isso ocorre
+            // imediatamente dentro do callback CONNECTED simulado).
+            // Usar o MESMO endereço para conexão, descriptor e fragmentos.
             targetServer?.callback?.onConnectionStateChange(deviceAddress, BleGattServerManager.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+            callback.onConnectionStateChange(BleGattClientManager.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
             return true
         }
 
