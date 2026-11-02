@@ -15,6 +15,7 @@ import java.nio.ByteBuffer
 import java.security.KeyPair
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * Gerenciador do Servidor Bluetooth GATT (FASE 3C).
@@ -61,6 +62,9 @@ class BleGattServerManager(
     private val driver: BleGattServerDriver = customDriver ?: DefaultAndroidGattServerDriver(context)
 
     private val connectedClients = ConcurrentHashMap<String, ConnectedClient>()
+    // O rádio GATT transmite notificações sequencialmente para cada cliente.
+    private val notificationQueues = ConcurrentHashMap<String, ConcurrentLinkedQueue<ByteArray>>()
+    private val notifyingAddresses = ConcurrentHashMap.newKeySet<String>()
 
     var isServerRunning: Boolean = false
         private set
@@ -103,6 +107,8 @@ class BleGattServerManager(
                 onClientConnectedListener?.invoke(deviceAddress)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 connectedClients.remove(deviceAddress)
+                notificationQueues.remove(deviceAddress)
+                notifyingAddresses.remove(deviceAddress)
                 onClientDisconnectedListener?.invoke(deviceAddress)
             }
         }
@@ -126,7 +132,32 @@ class BleGattServerManager(
         }
 
         override fun onNotificationSent(deviceAddress: String, status: Int) {
-            // Confirmação de envio de notificação no rádio físico
+            if (status == GATT_SUCCESS) {
+                notificationQueues[deviceAddress]?.poll()
+            } else {
+                notificationQueues.remove(deviceAddress)
+                onErrorListener?.invoke("Falha na transmissão de notificação GATT para $deviceAddress: $status")
+            }
+            notifyingAddresses.remove(deviceAddress)
+            transmitNextNotification(deviceAddress)
+        }
+
+        override fun onDescriptorWriteRequest(
+            deviceAddress: String, requestId: Int, descriptorUuid: UUID,
+            preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
+        ) {
+            val client = connectedClients[deviceAddress]
+            val valid = descriptorUuid == CCCD_UUID && client != null &&
+                !preparedWrite && offset == 0 && value.size == 2 &&
+                (value.contentEquals(byteArrayOf(0x01, 0x00)) ||
+                 value.contentEquals(byteArrayOf(0x02, 0x00)) ||
+                 value.contentEquals(byteArrayOf(0x00, 0x00)))
+            if (valid) {
+                client!!.notificationsEnabled = !value.contentEquals(byteArrayOf(0x00, 0x00))
+            }
+            if (responseNeeded) {
+                driver.sendResponse(deviceAddress, requestId, if (valid) GATT_SUCCESS else GATT_FAILURE, offset, null)
+            }
         }
 
         override fun onMtuChanged(deviceAddress: String, mtu: Int) {
@@ -161,6 +192,8 @@ class BleGattServerManager(
         if (!isServerRunning) return
         isServerRunning = false
         connectedClients.clear()
+        notificationQueues.clear()
+        notifyingAddresses.clear()
         driver.close()
     }
 
@@ -428,14 +461,34 @@ class BleGattServerManager(
         ackPacket[4] = statusCode
         System.arraycopy(ackHmac, 0, ackPacket, 5, 8)
 
-        return driver.notifyCharacteristicChanged(deviceAddress, CHAR_TX_UUID, confirm = false, value = ackPacket)
+        return notifyClient(deviceAddress, ackPacket)
     }
 
     /**
      * Envia um pacote de dados ou controle para o cliente conectado via notificação.
      */
     fun notifyClient(deviceAddress: String, packet: ByteArray): Boolean {
-        return driver.notifyCharacteristicChanged(deviceAddress, CHAR_TX_UUID, confirm = false, value = packet)
+        if (connectedClients[deviceAddress]?.notificationsEnabled != true) {
+            onErrorListener?.invoke("Notificação GATT rejeitada: CCCD não habilitado para $deviceAddress")
+            return false
+        }
+        notificationQueues.computeIfAbsent(deviceAddress) { ConcurrentLinkedQueue() }.add(packet.copyOf())
+        transmitNextNotification(deviceAddress)
+        return true
+    }
+
+    private fun transmitNextNotification(deviceAddress: String) {
+        val queue = notificationQueues[deviceAddress] ?: return
+        if (queue.isEmpty() || !notifyingAddresses.add(deviceAddress)) return
+        val packet = queue.peek() ?: run {
+            notifyingAddresses.remove(deviceAddress)
+            return
+        }
+        if (!driver.notifyCharacteristicChanged(deviceAddress, CHAR_TX_UUID, confirm = false, value = packet)) {
+            notifyingAddresses.remove(deviceAddress)
+            notificationQueues.remove(deviceAddress)
+            onErrorListener?.invoke("Não foi possível iniciar notificação GATT para $deviceAddress")
+        }
     }
 
     /**
@@ -525,6 +578,10 @@ class BleGattServerManager(
             value: ByteArray
         )
         fun onNotificationSent(deviceAddress: String, status: Int)
+        fun onDescriptorWriteRequest(
+            deviceAddress: String, requestId: Int, descriptorUuid: UUID,
+            preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
+        ) {}
         fun onMtuChanged(deviceAddress: String, mtu: Int)
     }
 
@@ -564,6 +621,17 @@ class BleGattServerManager(
                     if (device != null && characteristic != null && value != null) {
                         callback.onCharacteristicWriteRequest(
                             device.address, requestId, characteristic.uuid, preparedWrite, responseNeeded, offset, value
+                        )
+                    }
+                }
+
+                override fun onDescriptorWriteRequest(
+                    device: BluetoothDevice?, requestId: Int, descriptor: BluetoothGattDescriptor?,
+                    preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray?
+                ) {
+                    if (device != null && descriptor != null && value != null) {
+                        callback.onDescriptorWriteRequest(
+                            device.address, requestId, descriptor.uuid, preparedWrite, responseNeeded, offset, value
                         )
                     }
                 }
