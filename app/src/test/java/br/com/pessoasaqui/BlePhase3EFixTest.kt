@@ -357,6 +357,7 @@ class BlePhase3EFixTest {
         override fun notifyCharacteristicChanged(deviceAddress: String, characteristicUuid: UUID, confirm: Boolean, value: ByteArray): Boolean {
             val client = targetClients[deviceAddress] ?: targetClient
             client?.callback?.onCharacteristicChanged(characteristicUuid, value)
+            callback?.onNotificationSent(deviceAddress, BleGattServerManager.GATT_SUCCESS)
             return true
         }
 
@@ -407,7 +408,13 @@ class BlePhase3EFixTest {
 
         override fun setCharacteristicNotification(charUuid: UUID, enabled: Boolean): Boolean = true
 
-        override fun writeDescriptor(descUuid: UUID, value: ByteArray): Boolean = true
+        override fun writeDescriptor(descUuid: UUID, value: ByteArray): Boolean {
+            targetServer?.callback?.onDescriptorWriteRequest(
+                connectedAddress ?: "CLIENT", 2, descUuid, false, true, 0, value
+            )
+            callback?.onDescriptorWrite(descUuid, BleGattClientManager.GATT_SUCCESS)
+            return true
+        }
 
         override fun writeCharacteristic(charUuid: UUID, value: ByteArray, writeType: Int): Boolean {
             targetServer?.callback?.onCharacteristicWriteRequest(
