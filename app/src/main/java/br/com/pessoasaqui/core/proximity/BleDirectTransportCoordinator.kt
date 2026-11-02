@@ -359,12 +359,20 @@ open class BleDirectTransportCoordinator(
                 if (clientManager.connectionState == BleGattClientManager.ConnectionState.READY &&
                     clientManager.connectedDeviceAddress == deviceAddress
                 ) {
+                    pendingRequests.remove(req)
                     processPendingRequest(req)
                     return true
                 }
 
                 startWatchdogTimer(deviceAddress)
-                return clientManager.connect(deviceAddress)
+                val connecting = clientManager.connect(deviceAddress)
+                if (!connecting) {
+                    cancelWatchdog(deviceAddress)
+                    pendingRequests.remove(req)
+                    msgIdToUuidMap.remove(msgId)
+                    onDeliveryFailed?.invoke(cleanRecipient, msgId, messageUuid, "Conexão GATT não iniciada")
+                }
+                return connecting
             }
             return false
         }
@@ -387,12 +395,20 @@ open class BleDirectTransportCoordinator(
         if (clientManager.connectionState == BleGattClientManager.ConnectionState.READY &&
             clientManager.connectedDeviceAddress == deviceAddress
         ) {
+            pendingRequests.remove(req)
             processPendingRequest(req)
             return true
         }
 
         startWatchdogTimer(deviceAddress)
-        return clientManager.connect(deviceAddress)
+        val connecting = clientManager.connect(deviceAddress)
+        if (!connecting) {
+            cancelWatchdog(deviceAddress)
+            pendingRequests.remove(req)
+            msgIdToUuidMap.remove(msgId)
+            onDeliveryFailed?.invoke(cleanRecipient, msgId, messageUuid, "Conexão GATT não iniciada")
+        }
+        return connecting
     }
 
     private fun startWatchdogTimer(deviceAddress: String) {
