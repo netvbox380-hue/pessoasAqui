@@ -141,6 +141,7 @@ class TemporaryProximitySessionTest {
 
         // 1. Estabelece conexão mútua legítima
         repo.setMarkPerson(permanentId, mark = true, explicitMutual = true)
+        repo.confirmMutualConnectionFromServer(permanentId)
         assertTrue("Contato deve ser conexão mútua", repo.isPeerMutual(permanentId))
 
         // 2. Envia mensagem para o contato mútuo
@@ -169,6 +170,7 @@ class TemporaryProximitySessionTest {
 
         // 2. Usuários trocam e aceitam convite de conexão mútua (conversão autorizada)
         repo.setMarkPerson(peerId, mark = true, explicitMutual = true)
+        repo.confirmMutualConnectionFromServer(peerId)
         assertTrue("Agora é conexão mútua", repo.isPeerMutual(peerId))
 
         // 3. Histórico anterior em memória é promovido automaticamente para o disco criptografado
@@ -200,6 +202,7 @@ class TemporaryProximitySessionTest {
 
         // Conecta e depois desfaz
         repo.setMarkPerson(peerId, mark = true, explicitMutual = true)
+        repo.confirmMutualConnectionFromServer(peerId)
         repo.proximitySimulator.sendPrivateMessage(peerId, "Histórico antigo", "Eu")
         repo.setMarkPerson(peerId, mark = false)
 
@@ -227,6 +230,7 @@ class TemporaryProximitySessionTest {
         // Modo B: Conexão mútua permanente
         createNearbyPeer(mutualId, "Pessoa Mútua")
         repo.setMarkPerson(mutualId, mark = true, explicitMutual = true)
+        repo.confirmMutualConnectionFromServer(mutualId)
         repo.proximitySimulator.sendPrivateMessage(mutualId, "Chat permanente", "Eu")
 
         // Verifica isolamento
@@ -287,6 +291,7 @@ class TemporaryProximitySessionTest {
 
         // 1. Foi conexão mútua com mensagens gravadas em disco
         repo.setMarkPerson(formerId, mark = true, explicitMutual = true)
+        repo.confirmMutualConnectionFromServer(formerId)
         val msgs = listOf(
             ChatMessage(id = "msg_hist_1", senderId = formerId, senderAlias = "Ex-Conexão", text = "Conversa importante gravada", timestampMs = now, isFromMe = false)
         )
@@ -341,6 +346,7 @@ class TemporaryProximitySessionTest {
 
         // 4. Usuários confirmam conexão mútua permanente
         repo.setMarkPerson(peerId, mark = true, explicitMutual = true)
+        repo.confirmMutualConnectionFromServer(peerId)
         assertTrue(repo.isPeerPermanent(peerId))
 
         // 5. Histórico em disco agora deve conter AMBAS as mensagens sem duplicar ou sobrescrever
@@ -382,6 +388,7 @@ class TemporaryProximitySessionTest {
         // 1. Conexão mútua estabelecida (Modo B)
         createNearbyPeer(permanentId, "Amigo Distante", lastSeen = now)
         repo.setMarkPerson(permanentId, mark = true, explicitMutual = true)
+        repo.confirmMutualConnectionFromServer(permanentId)
         assertTrue(repo.isPeerPermanent(permanentId))
 
         // 2. Simula ausência total de Bluetooth (contato a quilômetros de distância, fora do radar BLE)

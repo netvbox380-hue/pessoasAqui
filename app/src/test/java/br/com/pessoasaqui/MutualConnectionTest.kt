@@ -173,6 +173,7 @@ class MutualConnectionTest {
 
             // Estabelece conexão mútua legítima
             val connected = repo.setMarkPerson(peerId, mark = true, explicitMutual = true)
+            repo.confirmMutualConnectionFromServer(peerId)
             assertNotNull(connected)
             assertTrue("Conexão deve ser mútua após aceitação", repo.isPeerMutual(connected!!))
 
@@ -207,6 +208,7 @@ class MutualConnectionTest {
 
             // 7. Reconexão legítima: quando o usuário reconecta explicitamente, deve virar mútua
             val reconnected = reloadedRepo.setMarkPerson(peerId, mark = true, explicitMutual = true)
+            reloadedRepo.confirmMutualConnectionFromServer(peerId)
             assertNotNull(reconnected)
             assertTrue("Reconexão legítima deve ser aceita com sucesso", reloadedRepo.isPeerMutual(reconnected!!))
         } finally {

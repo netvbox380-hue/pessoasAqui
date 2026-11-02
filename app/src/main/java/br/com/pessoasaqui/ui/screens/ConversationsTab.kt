@@ -496,11 +496,11 @@ fun ConversationsTab(
                                         )
                                     )
                                     Text(
-                                        text = "1. Na aba 'Pessoas' ou no 'Mural Local', toque na estrela ★ para marcar alguém.",
+                                        text = "1. Para conversar por Bluetooth até ~10m, abra a aba Pessoas e toque em Conversar: não precisa de convite.",
                                         style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                                     )
                                     Text(
-                                        text = "2. Quando a outra pessoa também marcar você, a conversa privada à distância se abre aqui automaticamente!",
+                                        text = "2. Se quiserem continuar conversando além dos 10m, um envia convite de conexão mútua e o outro aceita.",
                                         style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                                     )
                                     Text(

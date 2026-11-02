@@ -1016,7 +1016,7 @@ fun ChatDetailScreen(
                         }
                         Spacer(modifier = Modifier.height(3.dp))
                         Text(
-                            text = "Chamadas de voz, vídeo, áudios e envio de fotos/documentos são liberados quando ambos se marcam mutuamente ou confirmam parentesco.",
+                            text = "Você já pode conversar por Bluetooth sem convite mútuo. Marcar conexão é opcional: após os dois aceitarem, vocês poderão continuar conversando além dos 10m e usar chamadas/mídia.",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = TextSecondary,
                                 fontSize = 11.sp

@@ -858,6 +858,7 @@ app.get('/api/connections/status', async (req, res) => {
       }
     } catch (e) {
       console.error('[DB] Erro ao buscar connections:', e.message);
+      return res.status(503).json({ success: false, error: 'Estado de conexões indisponível.' });
     }
   }
 
@@ -867,28 +868,10 @@ app.get('/api/connections/status', async (req, res) => {
 /**
  * Sincronização em Massa de Conexões Mútuas pelo Cliente (Blindagem de Conexões)
  */
-app.post('/api/connections/sync', async (req, res) => {
-  const { myIdentity, mutualPeers } = req.body;
-  if (!myIdentity || !Array.isArray(mutualPeers)) {
-    return res.status(400).json({ error: 'myIdentity e array mutualPeers são obrigatórios.' });
-  }
-  const kMy = keyId(myIdentity);
-  for (const peerId of mutualPeers) {
-    const kPeer = keyId(peerId);
-    if (kPeer && kPeer !== kMy) {
-      localStore.connections.set(`${kMy}->${kPeer}`, { fromIdentity: myIdentity, toIdentity: peerId, isMutual: true });
-      localStore.connections.set(`${kPeer}->${kMy}`, { fromIdentity: peerId, toIdentity: myIdentity, isMutual: true });
-      if (isPostgres()) {
-        query(
-          `INSERT INTO connections (from_identity, to_identity, is_mutual)
-           VALUES ($1, $2, TRUE), ($2, $1, TRUE)
-           ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = TRUE`,
-          [myIdentity, peerId]
-        ).catch((err) => console.warn('[DB] Erro ao sincronizar conexão:', err.message));
-      }
-    }
-  }
-  res.json({ success: true, count: mutualPeers.length });
+app.post('/api/connections/sync', async (_req, res) => {
+  // Endpoint legado inseguro: aceitava declarar conexões mútuas unilateralmente
+  // e ressuscitava vínculos revogados. Só /mark com reciprocidade pode criar vínculo.
+  return res.status(410).json({ success: false, error: 'Sincronização unilateral desativada. Use /connections/mark.' });
 });
 
 /**
@@ -942,6 +925,7 @@ app.post('/api/connections/mark', async (req, res) => {
       }
     } catch (e) {
       console.error('[DB] Erro ao gravar marcação no PostgreSQL:', e.message);
+      return res.status(503).json({ success: false, error: 'Marcação não confirmada no banco.' });
     }
   }
 
@@ -1034,29 +1018,23 @@ app.post('/api/connections/unmark', async (req, res) => {
   const kFrom = keyId(from);
   const kTo = keyId(to);
 
-  // Remove a marcação da origem
-  localStore.connections.delete(`${kFrom}->${kTo}`);
-  // Se havia conexão reversa, quebra a reciprocidade mútua
-  const reverseKey = `${kTo}->${kFrom}`;
-  if (localStore.connections.has(reverseKey)) {
-    localStore.connections.get(reverseKey).isMutual = false;
-  }
-
+  // Revogação de QUALQUER participante desfaz as duas marcações.
+  // Sem isto, uma nova marcação poderia reativar o vínculo unilateralmente.
   if (isPostgres()) {
     try {
       await query(
-        `DELETE FROM connections WHERE LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2)`,
+        `DELETE FROM connections
+         WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
+            OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
         [from, to]
       );
-      await query(
-        `UPDATE connections SET is_mutual = FALSE
-         WHERE LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2)`,
-        [to, from]
-      );
     } catch (e) {
-      console.error('[DB] Erro ao remover marcação no PostgreSQL:', e.message);
+      console.error('[DB] Erro ao revogar conexão no PostgreSQL:', e.message);
+      return res.status(503).json({ success: false, error: 'Revogação não confirmada no banco. Tente novamente.' });
     }
   }
+  localStore.connections.delete(`${kFrom}->${kTo}`);
+  localStore.connections.delete(`${kTo}->${kFrom}`);
 
   const myAlias = senderAlias || activePresence.get(kFrom)?.alias || 'Alguém';
   const targetWs = activeSockets.get(kTo);

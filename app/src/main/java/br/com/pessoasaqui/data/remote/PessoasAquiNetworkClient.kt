@@ -49,6 +49,7 @@ open class PessoasAquiNetworkClient(
     private var lastOnPeerOnline: ((RemotePeer) -> Unit)? = null
     private var lastOnPeerOffline: ((String) -> Unit)? = null
     private var lastOnMutualConnection: ((String, String) -> Unit)? = null
+    private var lastOnMutualConnectionBroken: ((String, String) -> Unit)? = null
     private var lastOnPeerMarkedYou: ((String, String) -> Unit)? = null
 
     var onOfferPublished: ((OfferItem) -> Unit)? = null
@@ -73,6 +74,7 @@ open class PessoasAquiNetworkClient(
                     onPeerOnline = lastOnPeerOnline,
                     onPeerOffline = lastOnPeerOffline,
                     onMutualConnection = lastOnMutualConnection,
+                    onMutualConnectionBroken = lastOnMutualConnectionBroken,
                     onPeerMarkedYou = lastOnPeerMarkedYou,
                     myPublicKeyBase64 = lastPublicKeyBase64,
                     signChallenge = lastSignChallenge
@@ -258,6 +260,7 @@ open class PessoasAquiNetworkClient(
         onPeerOnline: ((RemotePeer) -> Unit)? = null,
         onPeerOffline: ((String) -> Unit)? = null,
         onMutualConnection: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
+        onMutualConnectionBroken: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
         onPeerMarkedYou: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
         myPublicKeyBase64: String? = null,
         signChallenge: ((ByteArray) -> String)? = null
@@ -276,6 +279,7 @@ open class PessoasAquiNetworkClient(
         lastOnPeerOnline = onPeerOnline
         lastOnPeerOffline = onPeerOffline
         lastOnMutualConnection = onMutualConnection
+        lastOnMutualConnectionBroken = onMutualConnectionBroken
         lastOnPeerMarkedYou = onPeerMarkedYou
 
         val request = Request.Builder().url(wsUrl).build()
@@ -316,6 +320,11 @@ open class PessoasAquiNetworkClient(
                             if (partnerId.isNotBlank()) {
                                 onMutualConnection?.invoke(partnerId, partnerAlias)
                             }
+                        }
+                        "MUTUAL_CONNECTION_BROKEN" -> {
+                            val partnerId = obj.optString("partnerIdentity")
+                            val partnerAlias = obj.optString("partnerAlias", "Contato")
+                            if (partnerId.isNotBlank()) onMutualConnectionBroken?.invoke(partnerId, partnerAlias)
                         }
                         "PEER_MARKED_YOU" -> {
                             val partnerId = obj.optString("partnerIdentity")
@@ -611,6 +620,9 @@ open class PessoasAquiNetworkClient(
             client.newCall(request).execute().use { response ->
                 val bodyStr = response.body?.string() ?: "{}"
                 val obj = JSONObject(bodyStr)
+                if (!response.isSuccessful || !obj.optBoolean("success", false)) {
+                    return@withContext Result.failure(IOException("Falha ao consultar status de conexões: HTTP ${response.code}"))
+                }
                 val markedArr = obj.optJSONArray("markedByMe")
                 val markingArr = obj.optJSONArray("markingMe")
                 val mutualArr = obj.optJSONArray("mutual")

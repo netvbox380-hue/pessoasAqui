@@ -175,6 +175,17 @@ class PessoasAquiRepository(
         (prefs?.getStringSet("saved_mutual_people", emptySet()) ?: emptySet()).toMutableSet()
     )
 
+    // Revogações persistem localmente até que o usuário aprove novamente o vínculo.
+    // Isso impede que eventos atrasados, snapshots de presença e histórico salvo o reativem.
+    private val revokedMutualPeople = java.util.Collections.synchronizedSet(
+        (prefs?.getStringSet("saved_revoked_mutual_people", emptySet()) ?: emptySet()).toMutableSet()
+    )
+    // Se estiver offline, a retirada é aplicada imediatamente neste aparelho e enviada
+    // ao backend na próxima oportunidade. Não declara revogação remota antes do sucesso.
+    private val pendingUnmarkPeople = java.util.Collections.synchronizedSet(
+        (prefs?.getStringSet("pending_unmark_people", emptySet()) ?: emptySet()).toMutableSet()
+    )
+
     fun cleanId(id: String): String = id.removePrefix("peer-").trim().uppercase()
 
     fun saveConnectionsToPrefs() {
@@ -182,7 +193,8 @@ class PessoasAquiRepository(
             ?.putStringSet("saved_marked_people", HashSet(savedMarkedPeople))
             ?.putStringSet("saved_marking_me_people", HashSet(savedMarkingMePeople))
             ?.putStringSet("saved_mutual_people", HashSet(savedMutualPeople))
-            ?.remove("saved_revoked_mutual_people")
+            ?.putStringSet("saved_revoked_mutual_people", HashSet(revokedMutualPeople))
+            ?.putStringSet("pending_unmark_people", HashSet(pendingUnmarkPeople))
             ?.apply()
         saveSavedContactsToPrefs()
     }
@@ -191,9 +203,84 @@ class PessoasAquiRepository(
     fun isPeerPermanent(peerId: String): Boolean {
         val cid = cleanId(peerId)
         if (cid.isBlank()) return false
-        if (savedMutualPeople.contains(cid)) return true
         val p = _realDiscoveredPeople.value.find { cleanId(it.id) == cid || cleanId(it.technicalIdentityHash) == cid }
-        return p?.isFamily == true || (p != null && isPeerMutual(p))
+        // Um flag antigo em NearbyPerson não comprova vínculo. Família tem política própria.
+        return p?.isFamily == true || (cid !in revokedMutualPeople && cid in savedMutualPeople)
+    }
+
+    /** Somente confirmação vinda do backend (ou montagem explícita de cenário em teste). */
+    internal fun confirmMutualConnectionFromServer(peerId: String) {
+        val cid = cleanId(peerId)
+        if (cid.isBlank() || cid in revokedMutualPeople) return
+        savedMarkedPeople.add(cid)
+        savedMarkingMePeople.add(cid)
+        savedMutualPeople.add(cid)
+        saveConnectionsToPrefs()
+        _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
+            if (cleanId(peer.technicalIdentityHash.ifBlank { peer.id }) == cid) {
+                peer.copy(isMarkedByMe = true, isMarkingMe = true, isMutualConnection = true, isPhotoVisible = true)
+            } else peer
+        }
+        updateUnifiedData()
+        promoteTemporarySessionToMutual(cid) // Opção A, somente depois da confirmação
+    }
+
+    /** Derruba o privilégio permanente imediatamente, inclusive com UI e cache antigos. */
+    internal fun revokeMutualLocally(peerId: String, removeMyMark: Boolean = false, queueRemoteUnmark: Boolean = false) {
+        val cid = cleanId(peerId)
+        if (cid.isBlank()) return
+        revokedMutualPeople.add(cid)
+        savedMutualPeople.remove(cid)
+        savedMarkingMePeople.remove(cid)
+        if (removeMyMark) savedMarkedPeople.remove(cid)
+        if (queueRemoteUnmark) pendingUnmarkPeople.add(cid)
+        if (_activeCallState.value?.peerHash?.let(::cleanId) == cid) {
+            callRingtoneWakeManager?.stopAllCallAlerts()
+            callMediaEngine?.stopCallMedia()
+            _activeCallState.value = null
+        }
+        _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
+            if (cleanId(peer.technicalIdentityHash.ifBlank { peer.id }) == cid) {
+                peer.copy(
+                    isMarkedByMe = if (removeMyMark) false else cid in savedMarkedPeople,
+                    isMarkingMe = false,
+                    isMutualConnection = peer.isFamily,
+                    isPhotoVisible = peer.isFamily
+                )
+            } else peer
+        }
+        saveConnectionsToPrefs()
+        updateUnifiedData()
+    }
+
+    /** Reconciliação de mão única: servidor informa o estado, cliente NÃO o recria no servidor. */
+    internal fun reconcileConnectionStatus(
+        markedByMe: Collection<String>, markingMe: Collection<String>, mutual: Collection<String>
+    ) {
+        val blocked = revokedMutualPeople.toSet()
+        val own = markedByMe.map(::cleanId).filter { it.isNotBlank() && it !in blocked }.toSet()
+        val remote = markingMe.map(::cleanId).filter { it.isNotBlank() && it !in blocked }.toSet()
+        val confirmed = mutual.map(::cleanId).filter { it.isNotBlank() && it !in blocked && it in own && it in remote }.toSet()
+        val previouslyConfirmed = savedMutualPeople.toSet()
+        val newlyConfirmed = confirmed - previouslyConfirmed
+        // Revogação observada em /status também invalida eventos MUTUAL antigos.
+        revokedMutualPeople.addAll(previouslyConfirmed - confirmed)
+        savedMarkedPeople.clear(); savedMarkedPeople.addAll(own)
+        savedMarkingMePeople.clear(); savedMarkingMePeople.addAll(remote)
+        savedMutualPeople.clear(); savedMutualPeople.addAll(confirmed)
+        _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
+            val cid = cleanId(peer.technicalIdentityHash.ifBlank { peer.id })
+            val active = peer.isFamily || cid in confirmed
+            peer.copy(
+                isMarkedByMe = cid in own || cid in confirmed,
+                isMarkingMe = cid in remote || cid in confirmed,
+                isMutualConnection = active,
+                isPhotoVisible = active
+            )
+        }
+        saveConnectionsToPrefs()
+        updateUnifiedData()
+        newlyConfirmed.forEach { promoteTemporarySessionToMutual(it) }
     }
 
     /**
@@ -236,8 +323,7 @@ class PessoasAquiRepository(
     ): List<String> {
         val current = _realDiscoveredPeople.value.toMutableList()
         val expiredPeers = current.filter { peer ->
-            val isPermanent = peer.isMutualConnection || peer.isFamily || isPeerMutual(peer) ||
-                    isPeerPermanent(peer.id) || isPeerPermanent(peer.technicalIdentityHash)
+            val isPermanent = isPeerPermanent(peer.technicalIdentityHash.ifBlank { peer.id })
             val elapsed = now - peer.lastSeenEpochMs
             !isPermanent && elapsed >= expirationMs
         }
@@ -267,45 +353,37 @@ class PessoasAquiRepository(
     fun isPeerMarkedByMe(person: NearbyPerson): Boolean {
         val cid = cleanId(person.technicalIdentityHash)
         val pid = cleanId(person.id)
-        return person.isMarkedByMe ||
-                (cid.isNotBlank() && savedMarkedPeople.contains(cid)) ||
-                (pid.isNotBlank() && savedMarkedPeople.contains(pid))
+        return (cid.isNotBlank() && cid in savedMarkedPeople) ||
+                (pid.isNotBlank() && pid in savedMarkedPeople)
     }
 
     fun isPeerMarkingMe(person: NearbyPerson): Boolean {
         val cid = cleanId(person.technicalIdentityHash)
         val pid = cleanId(person.id)
-        return person.isMarkingMe ||
-                (cid.isNotBlank() && savedMarkingMePeople.contains(cid)) ||
-                (pid.isNotBlank() && savedMarkingMePeople.contains(pid))
+        return (cid.isNotBlank() && cid in savedMarkingMePeople) ||
+                (pid.isNotBlank() && pid in savedMarkingMePeople)
     }
 
     fun isPeerMutual(person: NearbyPerson): Boolean {
         if (person.isFamily) return true
-        val cid = cleanId(person.technicalIdentityHash)
-        val pid = cleanId(person.id)
-        if ((cid.isNotBlank() && savedMutualPeople.contains(cid)) ||
-            (pid.isNotBlank() && savedMutualPeople.contains(pid))) {
-            return true
-        }
-        val marked = isPeerMarkedByMe(person)
-        val marking = isPeerMarkingMe(person)
-        return marked && marking
+        val cid = cleanId(person.technicalIdentityHash.ifBlank { person.id })
+        return cid.isNotBlank() && cid !in revokedMutualPeople && cid in savedMutualPeople
     }
 
     fun isPeerMutual(peerId: String): Boolean {
         val cid = cleanId(peerId)
         if (cid.isBlank()) return false
-        if (savedMutualPeople.contains(cid)) return true
+        if (cid in revokedMutualPeople) return false
+        if (cid in savedMutualPeople) return true
         val p = _realDiscoveredPeople.value.find { cleanId(it.id) == cid || cleanId(it.technicalIdentityHash) == cid }
-        return p?.let { isPeerMutual(it) } ?: false
+        return p?.isFamily == true
     }
 
     fun applyConnectionState(person: NearbyPerson): NearbyPerson {
         val cid = cleanId(if (person.technicalIdentityHash.isNotBlank()) person.technicalIdentityHash else person.id)
         val marked = isPeerMarkedByMe(person)
         val marking = isPeerMarkingMe(person)
-        val mutual = isPeerMutual(person) || (marked && marking)
+        val mutual = isPeerMutual(person) // marcações recíprocas sem confirmação NÃO concedem Modo B
 
         return person.copy(
             id = cid,
@@ -499,7 +577,7 @@ class PessoasAquiRepository(
     fun saveSavedContactsToPrefs() {
         try {
             val currentList = _realDiscoveredPeople.value.filter {
-                (it.isMutualConnection || it.isFamily || isPeerMutual(it)) && !it.id.startsWith("sim-", ignoreCase = true)
+                (isPeerPermanent(it.technicalIdentityHash.ifBlank { it.id }) || it.isFamily) && !it.id.startsWith("sim-", ignoreCase = true)
             }
             val existingSaved = loadSavedContactsFromPrefs().filter {
                 !it.id.startsWith("sim-", ignoreCase = true)
@@ -509,14 +587,14 @@ class PessoasAquiRepository(
             val mergedMap = LinkedHashMap<String, NearbyPerson>()
             existingSaved.forEach { p ->
                 val k = cleanId(p.technicalIdentityHash.ifBlank { p.id })
-                if (k.isNotBlank() && (k in savedMutualPeople || p.isFamily)) {
+                if (k.isNotBlank() && (p.isFamily || (k in savedMutualPeople && k !in revokedMutualPeople))) {
                     mergedMap[k] = p
                 }
             }
             currentList.forEach { p ->
                 val k = cleanId(p.technicalIdentityHash.ifBlank { p.id })
                 if (k.isNotBlank()) {
-                    if (p.isMutualConnection || p.isFamily || k in savedMutualPeople) {
+                    if (p.isFamily || (k in savedMutualPeople && k !in revokedMutualPeople)) {
                         mergedMap[k] = p
                     } else {
                         mergedMap.remove(k)
@@ -611,7 +689,7 @@ class PessoasAquiRepository(
     private var lastSupportSyncMs = 0L
 
     init {
-        prefs?.edit()?.remove("saved_revoked_mutual_people")?.apply()
+        // Revogações não podem ser apagadas ao reiniciar, evitando ressuscitar vínculos antigos.
         chatPersistence?.let { cp ->
             proximitySimulator.setPersistenceManager(cp)
         }
@@ -716,7 +794,9 @@ class PessoasAquiRepository(
             bleTransportCoordinator.recordPeerDeviceAddress(peerHash, address)
         }
 
-        startPresencePollingLoop()
+        // Objetos criados nos testes JVM (sem Context Android) não devem
+        // executar polling real e consumir recursos do Render.
+        if (context != null) startPresencePollingLoop()
 
         // Se o perfil já estiver configurado, registra identidade no Supabase / Render
         if (_hasCompletedProfile.value) {
@@ -864,13 +944,8 @@ class PessoasAquiRepository(
 
                 keys.forEach { savedMarkingMePeople.add(it) }
                 val isMarked = targetPeer?.let { isPeerMarkedByMe(it) } ?: keys.any { savedMarkedPeople.contains(it) }
-                val isNowMutual = isMarked
-                if (isNowMutual) {
-                    keys.forEach {
-                        savedMutualPeople.add(it)
-                        savedMarkedPeople.add(it)
-                    }
-                }
+                val isNowMutual = isPeerPermanent(cleanSender)
+                // MARK_ON é apenas indicação de pedido, não prova de dupla aprovação.
                 saveConnectionsToPrefs()
 
                 val updatedPeer = if (idx != -1) {
@@ -908,7 +983,6 @@ class PessoasAquiRepository(
                 updateUnifiedData()
 
                 if (isNowMutual) {
-                    sendPrivateMessage(cleanSender, "[MARK_MUTUAL:${_currentAlias.value}]")
                     proximitySimulator.receivePrivateMessage(
                         cleanSender,
                         "Sistema",
@@ -925,103 +999,14 @@ class PessoasAquiRepository(
                 }
             }
             payload.startsWith("[MARK_OFF:") -> {
-                val currentReal = _realDiscoveredPeople.value.toMutableList()
-                val idx = currentReal.indexOfFirst { cleanId(it.id) == cleanSender || cleanId(it.technicalIdentityHash) == cleanSender }
-                val targetPeer = if (idx != -1) currentReal[idx] else null
-                val hashId = cleanId(targetPeer?.technicalIdentityHash?.ifBlank { cleanSender } ?: cleanSender)
-                val pId = cleanId(targetPeer?.id ?: cleanSender)
-                val aliasId = cleanId(targetPeer?.alias ?: "")
-
-                val keys = listOfNotNull(
-                    hashId.takeIf { it.isNotBlank() },
-                    pId.takeIf { it.isNotBlank() },
-                    cleanSender.takeIf { it.isNotBlank() }
-                ).distinct()
-
-                keys.forEach {
-                    savedMarkingMePeople.remove(it)
-                    savedMutualPeople.remove(it)
-                }
-                saveConnectionsToPrefs()
-
-                if (idx != -1) {
-                    val p = currentReal[idx]
-                    val updated = p.copy(
-                        isMarkingMe = false,
-                        isMutualConnection = p.isFamily,
-                        isPhotoVisible = p.isFamily
-                    )
-                    currentReal[idx] = updated
-                    _realDiscoveredPeople.value = currentReal
-                    updateUnifiedData()
-                }
+                // Compatibilidade com notificações antigas do backend: invalida o
+                // vínculo local, não tenta revivê-lo a partir de um chat antigo.
+                revokeMutualLocally(cleanSender)
             }
             payload.startsWith("[MARK_MUTUAL:") -> {
-                val callerAlias = payload.removePrefix("[MARK_MUTUAL:").removeSuffix("]").ifBlank { senderAlias }
-                val currentReal = _realDiscoveredPeople.value.toMutableList()
-                val idx = currentReal.indexOfFirst {
-                    cleanId(it.id) == cleanSender || cleanId(it.technicalIdentityHash) == cleanSender ||
-                    (callerAlias.isNotBlank() && !it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(callerAlias, ignoreCase = true))
-                }
-
-                val targetPeer = if (idx != -1) currentReal[idx] else null
-                val hashId = cleanId(targetPeer?.technicalIdentityHash?.ifBlank { cleanSender } ?: cleanSender)
-                val pId = cleanId(targetPeer?.id ?: cleanSender)
-                val aliasId = cleanId(callerAlias)
-
-                val keys = listOfNotNull(
-                    hashId.takeIf { it.isNotBlank() },
-                    pId.takeIf { it.isNotBlank() },
-                    cleanSender.takeIf { it.isNotBlank() }
-                ).distinct()
-
-                keys.forEach {
-                    savedMarkingMePeople.add(it)
-                    savedMarkedPeople.add(it)
-                    savedMutualPeople.add(it)
-                }
-                saveConnectionsToPrefs()
-
-                val updatedPeer = if (idx != -1) {
-                    val p = currentReal[idx]
-                    val updated = p.copy(
-                        id = cleanSender,
-                        technicalIdentityHash = cleanSender,
-                        alias = if (p.alias.startsWith("Pessoa Próxima #") && callerAlias.isNotBlank()) callerAlias else p.alias,
-                        isMarkedByMe = true,
-                        isMarkingMe = true,
-                        isMutualConnection = true,
-                        isPhotoVisible = true,
-                        lastSeenEpochMs = System.currentTimeMillis()
-                    )
-                    currentReal[idx] = updated
-                    updated
-                } else {
-                    val newPeer = NearbyPerson(
-                        id = cleanSender,
-                        technicalIdentityHash = cleanSender,
-                        alias = if (callerAlias.isNotBlank()) callerAlias else senderAlias,
-                        estimatedDistanceMeters = 500.0,
-                        proximityLabel = "Conexão Mútua • Ilimitada",
-                        isMarkedByMe = true,
-                        isMarkingMe = true,
-                        isMutualConnection = true,
-                        isPhotoVisible = true,
-                        avatarColorHex = 0xFF00E5FF,
-                        lastSeenEpochMs = System.currentTimeMillis()
-                    )
-                    currentReal.add(0, newPeer)
-                    newPeer
-                }
-                _realDiscoveredPeople.value = currentReal
-                updateUnifiedData()
-
-                proximitySimulator.receivePrivateMessage(
-                    cleanSender,
-                    "Sistema",
-                    "✨ Conexão Mútua Estabelecida com ${updatedPeer.alias}! Comunicação à distância, chamadas e mídia liberadas.",
-                    messageId
-                )
+                // Eventos legados ou atrasados não são prova de vínculo permanente.
+                // A conexão só é confirmada pelo evento oficial do servidor ou por /status.
+                Log.d("PessoasAqui", "Ignorando controle MARK_MUTUAL legado; aguardando confirmação do servidor")
             }
             payload.startsWith("[VAULT_STORE:") -> {
                 val b64 = payload.removePrefix("[VAULT_STORE:").removeSuffix("]")
@@ -1074,15 +1059,11 @@ class PessoasAquiRepository(
             }
             else -> {
                 val isPermanent = isPeerPermanent(cleanSender)
-                val isPresentInRadar = _realDiscoveredPeople.value.any {
-                    val cid = cleanId(it.technicalIdentityHash.ifBlank { it.id })
-                    cid == cleanSender
-                }
-                // Regra Fundamental dos Dois Modos:
-                // 1. Mensagens de conexões permanentes (Modo B) funcionam pela internet independente de Bluetooth.
-                // 2. Mensagens atrasadas de sessões temporárias (Modo A) de pares ausentes do radar são descartadas.
-                if (!isPermanent && !isPresentInRadar) {
-                    Log.d("PessoasAqui", "Mensagem atrasada de sessão temporária descartada para $cleanSender (sessão expirada/não presente no radar BLE)")
+                // Este método recebe somente payloads da INTERNET. Mensagens do Modo A
+                // devem chegar por onTemporaryMessageReceived (BLE), nunca pelo Render,
+                // mesmo que o contato esteja fisicamente presente no Radar.
+                if (!isPermanent) {
+                    Log.d("PessoasAqui", "Descartando mensagem de rede para contato temporário $cleanSender")
                     return
                 }
                 proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload, messageId)
@@ -1102,36 +1083,19 @@ class PessoasAquiRepository(
                     // 1. Envia Heartbeat HTTP para manter a presença viva no Render / Supabase
                     networkClient.sendPresenceHeartbeat(myId, myAlias, myIntent)
 
-                    // 2. Busca status de conexões mútuas no backend
+                    // 2. Primeiro envia revogações pendentes (pode ter sido solicitado offline).
+                    // Nunca repovoar o servidor com vínculos da memória: isso ressuscitava
+                    // relações desfeitas pela outra pessoa.
+                    for (peerId in pendingUnmarkPeople.toList()) {
+                        val result = networkClient.unmarkConnection(myId, peerId)
+                        if (result.getOrNull() == true) {
+                            pendingUnmarkPeople.remove(peerId)
+                            saveConnectionsToPrefs()
+                        }
+                    }
                     val statusResult = networkClient.fetchConnectionStatus(myId)
                     statusResult.getOrNull()?.let { st ->
-                        var changed = false
-                        val serverMutual = st.mutual.map { cleanId(it) }.toSet()
-                        val serverMarkedByMe = st.markedByMe.map { cleanId(it) }.toSet()
-                        val serverMarkingMe = st.markingMe.map { cleanId(it) }.toSet()
-
-                        serverMarkedByMe.forEach { cid ->
-                            if (savedMarkedPeople.add(cid)) changed = true
-                        }
-                        serverMarkingMe.forEach { cid ->
-                            if (savedMarkingMePeople.add(cid)) changed = true
-                        }
-                        serverMutual.forEach { cid ->
-                            if (savedMutualPeople.add(cid)) changed = true
-                            if (savedMarkedPeople.add(cid)) changed = true
-                            if (savedMarkingMePeople.add(cid)) changed = true
-                        }
-
-                        if (changed) {
-                            saveConnectionsToPrefs()
-                            updateUnifiedData()
-                        }
-
-                        // Sincroniza ativamente com o servidor para repovoar a memória do backend (resiliente a reinício de container no Render)
-                        if (savedMutualPeople.isNotEmpty()) {
-                            networkClient.syncMutualConnections(myId, savedMutualPeople.toList())
-                            networkClient.sendMutualSyncMessage(savedMutualPeople.toList())
-                        }
+                        reconcileConnectionStatus(st.markedByMe, st.markingMe, st.mutual)
                     }
 
                     // 3. Busca pessoas próximas registradas no backend
@@ -1187,69 +1151,37 @@ class PessoasAquiRepository(
                                 processIncomingPayload(cleanSender, senderAlias, payload, iv, msgId)
                             },
                             onMutualConnection = { partnerId, partnerAlias ->
-                                val cleanPartnerId = cleanId(partnerId)
-                                val resolvedAlias = partnerAlias.ifBlank { "Conexão Mútua" }
-                                savedMutualPeople.add(cleanPartnerId)
-                                savedMarkedPeople.add(cleanPartnerId)
-                                savedMarkingMePeople.add(cleanPartnerId)
-                                saveConnectionsToPrefs()
-
-                                val currentReal = _realDiscoveredPeople.value.toMutableList()
-                                val idx = currentReal.indexOfFirst { cleanId(it.id) == cleanPartnerId || cleanId(it.technicalIdentityHash) == cleanPartnerId }
-                                if (idx != -1) {
-                                    val p = currentReal[idx]
-                                    currentReal[idx] = p.copy(
-                                        alias = if (p.alias.startsWith("Pessoa Próxima #") || p.alias.isBlank()) resolvedAlias else p.alias,
-                                        isMarkedByMe = true,
-                                        isMarkingMe = true,
-                                        isMutualConnection = true,
-                                        isPhotoVisible = true
-                                    )
-                                } else {
-                                    val newPerson = NearbyPerson(
-                                        id = cleanPartnerId,
-                                        technicalIdentityHash = cleanPartnerId,
-                                        alias = resolvedAlias,
-                                        estimatedDistanceMeters = 500.0,
-                                        proximityLabel = "Conexão Mútua • Ilimitada",
-                                        isMarkedByMe = true,
-                                        isMarkingMe = true,
-                                        isMutualConnection = true,
-                                        isPhotoVisible = true,
-                                        lastSeenEpochMs = System.currentTimeMillis()
-                                    )
-                                    currentReal.add(0, applyConnectionState(newPerson))
+                                val cid = cleanId(partnerId)
+                                // O evento de socket pode chegar atrasado. Só o status bilateral
+                                // atual do servidor concede Modo B após consulta bem-sucedida.
+                                if (cid !in revokedMutualPeople) scope.launch {
+                                    val status = networkClient.fetchConnectionStatus(myId).getOrNull()
+                                    if (status != null) {
+                                        reconcileConnectionStatus(status.markedByMe, status.markingMe, status.mutual)
+                                        if (isPeerPermanent(cid)) {
+                                            val current = _realDiscoveredPeople.value.toMutableList()
+                                            val idx = current.indexOfFirst { cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cid }
+                                            if (idx >= 0 && current[idx].alias.startsWith("Pessoa Próxima #")) {
+                                                current[idx] = current[idx].copy(alias = partnerAlias)
+                                                _realDiscoveredPeople.value = current
+                                                updateUnifiedData()
+                                            }
+                                        }
+                                    }
                                 }
-                                _realDiscoveredPeople.value = currentReal
-                                updateUnifiedData()
-                                saveSavedContactsToPrefs()
-                                proximitySimulator.receivePrivateMessage(
-                                    cleanPartnerId,
-                                    "Sistema",
-                                    "✨ Conexão Mútua Estabelecida pelo Servidor! Comunicação à distância liberada.",
-                                    UUID.randomUUID().toString()
-                                )
+                            },
+                            onMutualConnectionBroken = { partnerId, _ ->
+                                revokeMutualLocally(partnerId)
                             },
                             onPeerMarkedYou = { markerId, _ ->
                                 val cleanMarker = cleanId(markerId)
                                 savedMarkingMePeople.add(cleanMarker)
-                                val isMutual = savedMarkedPeople.contains(cleanMarker)
-                                if (isMutual) {
-                                    savedMutualPeople.add(cleanMarker)
-                                }
                                 saveConnectionsToPrefs()
-
-                                val currentReal = _realDiscoveredPeople.value.toMutableList()
-                                val idx = currentReal.indexOfFirst { cleanId(it.id) == cleanMarker || cleanId(it.technicalIdentityHash) == cleanMarker }
-                                if (idx != -1) {
-                                    val p = currentReal[idx]
-                                    val updated = p.copy(
-                                        isMarkingMe = true,
-                                        isMutualConnection = isMutual || p.isFamily,
-                                        isPhotoVisible = isMutual || p.isFamily
-                                    )
-                                    currentReal[idx] = updated
-                                    _realDiscoveredPeople.value = currentReal
+                                val current = _realDiscoveredPeople.value.toMutableList()
+                                val idx = current.indexOfFirst { cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cleanMarker }
+                                if (idx >= 0) {
+                                    current[idx] = applyConnectionState(current[idx])
+                                    _realDiscoveredPeople.value = current
                                     updateUnifiedData()
                                 }
                             },
@@ -1291,6 +1223,7 @@ class PessoasAquiRepository(
      * - Suporta 200+ pessoas com estabilidade total e zero tremor.
      */
     fun sortWithHysteresis(peers: List<NearbyPerson>): List<NearbyPerson> {
+        if (peers.isEmpty()) return emptyList()
         val previousOrder = lastStablePeerOrder ?: emptyList()
         val prevIndexMap = previousOrder.withIndex().associate { it.value to it.index }
 
@@ -1364,13 +1297,8 @@ class PessoasAquiRepository(
             p.publicKeyBase64?.let { pubKey ->
                 E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
             }
-            if (p.isMutual) {
-                savedMutualPeople.add(cId)
-                savedMarkedPeople.add(cId)
-                savedMarkingMePeople.add(cId)
-            }
-            if (p.isMarkedByMe) savedMarkedPeople.add(cId)
-            if (p.isMarkingMe) savedMarkingMePeople.add(cId)
+            // Presença remota é telemetria, NÃO autorização de relacionamento.
+            // Somente /connections/status ou evento de confirmação do backend altera o vínculo.
 
             val safeIntent = try { UserIntent.valueOf(p.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
             val idx = current.indexOfFirst {
@@ -1387,7 +1315,7 @@ class PessoasAquiRepository(
                     intent = safeIntent,
                     lastSeenEpochMs = System.currentTimeMillis()
                 ))
-            } else if (p.isMutual || savedMutualPeople.contains(cId)) {
+            } else if (isPeerPermanent(cId)) {
                 // Presença remota de Conexão Mútua comprovada pré-existente
                 current.add(
                     applyConnectionState(NearbyPerson(
@@ -1431,14 +1359,7 @@ class PessoasAquiRepository(
             E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
         }
 
-        if (peer.isMutual) {
-            savedMutualPeople.add(cId)
-            savedMarkedPeople.add(cId)
-            savedMarkingMePeople.add(cId)
-            saveConnectionsToPrefs()
-        }
-        if (peer.isMarkedByMe) savedMarkedPeople.add(cId)
-        if (peer.isMarkingMe) savedMarkingMePeople.add(cId)
+        // Estado de presença não concede privilégios permanentes.
 
         val safeIntent = try { UserIntent.valueOf(peer.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
         val current = _realDiscoveredPeople.value.toMutableList()
@@ -1457,7 +1378,7 @@ class PessoasAquiRepository(
             ))
             _realDiscoveredPeople.value = current
             updateUnifiedData()
-        } else if (peer.isMutual || savedMutualPeople.contains(cId)) {
+        } else if (isPeerPermanent(cId)) {
             val newPeer = applyConnectionState(NearbyPerson(
                 id = cId,
                 technicalIdentityHash = cId,
@@ -1485,7 +1406,7 @@ class PessoasAquiRepository(
             val matches = cleanId(it.technicalIdentityHash) == cleanPeerHash || cleanId(it.id) == cleanPeerHash
             if (matches) {
                 // Conexões mútuas e familiares NUNCA desaparecem da lista ao desconectar ou trocar de rede
-                it.isMutualConnection || it.isFamily || isPeerMutual(it)
+                isPeerPermanent(it.technicalIdentityHash.ifBlank { it.id })
             } else {
                 true
             }
@@ -1714,39 +1635,30 @@ class PessoasAquiRepository(
             val pId = cleanId(current.id)
             val aliasId = cleanId(current.alias)
 
-            val keys = listOfNotNull(
-                hashId.takeIf { it.isNotBlank() },
-                pId.takeIf { it.isNotBlank() },
-                aliasId.takeIf { it.isNotBlank() && !it.startsWith("PESSOA") },
-                cleanTargetId.takeIf { it.isNotBlank() && !it.startsWith("PESSOA") }
-            ).distinct()
-
-            val wasMarkingMe = current.isMarkingMe || isPeerMarkingMe(current) || keys.any { savedMarkingMePeople.contains(it) }
+            // Identidade técnica é a chave de vínculo; nunca persistir apelido como autorização.
+            val keys = listOf(hashId, pId).filter { it.isNotBlank() }.distinct()
+            val targetId = hashId.ifBlank { cleanTargetId }
             val newMarkedByMe = mark
-            val isNowMutual = (newMarkedByMe && wasMarkingMe) || explicitMutual || current.isFamily
 
-            if (newMarkedByMe) {
+            if (mark) {
+                // A aprovação é unilateral até o servidor confirmar reciprocidade.
+                revokedMutualPeople.remove(targetId) // apenas uma nova ação explícita limpa o veto
                 keys.forEach { savedMarkedPeople.add(it) }
-                if (isNowMutual) {
-                    keys.forEach {
-                        savedMutualPeople.add(it)
-                        savedMarkingMePeople.add(it)
-                        promoteTemporarySessionToMutual(it)
-                    }
-                }
             } else {
+                // Revoga no aparelho AGORA; backend será notificado mesmo se estiver offline.
+                revokeMutualLocally(targetId, removeMyMark = true, queueRemoteUnmark = true)
                 keys.forEach {
                     savedMarkedPeople.remove(it)
                     savedMutualPeople.remove(it)
                 }
             }
             saveConnectionsToPrefs()
-            saveSavedContactsToPrefs()
 
+            val isNowMutual = isPeerPermanent(targetId)
             val updated = current.copy(
                 isMarkedByMe = newMarkedByMe,
-                isMarkingMe = wasMarkingMe || isNowMutual,
-                isMutualConnection = isNowMutual || current.isFamily,
+                isMarkingMe = targetId in savedMarkingMePeople,
+                isMutualConnection = isNowMutual,
                 isPhotoVisible = isNowMutual || current.isFamily,
                 lastSeenEpochMs = System.currentTimeMillis()
             )
@@ -1756,88 +1668,51 @@ class PessoasAquiRepository(
             updateUnifiedData()
 
             val myId = cryptoIdentityManager.getTechnicalIdentity()
-            val myAlias = _currentAlias.value
-
-            // 1. Envia sinal P2P cifrado em tempo real para o outro aparelho
-            if (newMarkedByMe) {
-                sendPrivateMessage(updated.technicalIdentityHash, "[MARK_ON:$myAlias]")
-                if (isNowMutual) {
-                    sendPrivateMessage(updated.technicalIdentityHash, "[MARK_MUTUAL:$myAlias]")
-                }
-            } else {
-                sendPrivateMessage(updated.technicalIdentityHash, "[MARK_OFF:$myAlias]")
-            }
-
-            // 2. Registra no backend Supabase / Render
-            scope.launch {
+            // Convite e revogação são eventos de relacionamento (internet), NÃO mensagens BLE.
+            // O chat temporário por Bluetooth não depende de convite/aceitação.
+            if (context != null) scope.launch {
                 try {
-                    if (newMarkedByMe) {
-                        val markResp = networkClient.markConnection(
-                            fromIdentity = myId,
-                            toIdentity = updated.technicalIdentityHash
-                        )
-                        markResp.getOrNull()?.let { backendIsMutual ->
-                            if (backendIsMutual || isNowMutual) {
-                                keys.forEach {
-                                    savedMutualPeople.add(it)
-                                    savedMarkedPeople.add(it)
-                                    savedMarkingMePeople.add(it)
-                                }
-                                saveConnectionsToPrefs()
-                                val cur = _realDiscoveredPeople.value.toMutableList()
-                                val i = cur.indexOfFirst {
-                                    cleanId(it.id) in keys || cleanId(it.technicalIdentityHash) in keys
-                                }
-                                if (i != -1) {
-                                    cur[i] = cur[i].copy(isMarkedByMe = true, isMarkingMe = true, isMutualConnection = true, isPhotoVisible = true)
-                                    _realDiscoveredPeople.value = cur
-                                    updateUnifiedData()
-                                    saveSavedContactsToPrefs()
-                                }
+                    if (mark) {
+                        // Se houve revogação offline anterior, ela deve ser entregue
+                        // antes de um pedido NOVO. Evita a corrida mark/unmark no servidor.
+                        if (targetId in pendingUnmarkPeople) {
+                            val unmark = networkClient.unmarkConnection(myId, targetId)
+                            if (unmark.getOrNull() != true) {
+                                Log.w("PessoasAqui", "Não foi possível confirmar revogação anterior; conexão permanece pendente")
+                                return@launch
                             }
+                            pendingUnmarkPeople.remove(targetId)
+                            saveConnectionsToPrefs()
+                        }
+                        val result = networkClient.markConnection(myId, targetId)
+                        if (result.getOrNull() == true && targetId !in revokedMutualPeople && targetId in savedMarkedPeople) {
+                            confirmMutualConnectionFromServer(targetId)
+                        } else if (result.isFailure) {
+                            Log.w("PessoasAqui", "Marcação não confirmada pelo servidor: ${result.exceptionOrNull()?.message}")
                         }
                     } else {
-                        // DESFAZER MARCAÇÃO: Remove marcação no servidor e assegura limpeza local
-                        networkClient.unmarkConnection(
-                            fromIdentity = myId,
-                            toIdentity = updated.technicalIdentityHash
-                        )
-                        keys.forEach {
-                            savedMutualPeople.remove(it)
-                            savedMarkedPeople.remove(it)
-                            savedMarkingMePeople.remove(it)
+                        val result = networkClient.unmarkConnection(myId, targetId)
+                        if (result.getOrNull() == true) {
+                            pendingUnmarkPeople.remove(targetId)
+                            saveConnectionsToPrefs()
+                        } else {
+                            Log.w("PessoasAqui", "Revogação pendente de sincronização com servidor")
                         }
-                        saveConnectionsToPrefs()
-                        saveSavedContactsToPrefs()
                     }
                 } catch (e: Exception) {
-                    Log.w("PessoasAqui", "Erro ao sincronizar marcação no backend: ${e.message}")
+                    Log.w("PessoasAqui", "Erro ao sincronizar vínculo com servidor: ${e.message}")
                 }
             }
 
-            // Mensagem de feedback no chat privado
-            if (isNowMutual) {
-                proximitySimulator.receivePrivateMessage(
-                    updated.technicalIdentityHash,
-                    "Sistema",
-                    "✨ Conexão Mútua Estabelecida com ${updated.alias}! Comunicação à distância, chamadas e mídia liberadas.",
-                    UUID.randomUUID().toString()
-                )
-            } else if (newMarkedByMe) {
-                proximitySimulator.receivePrivateMessage(
-                    updated.technicalIdentityHash,
-                    "Sistema",
-                    "★ Você marcou ${updated.alias}. Aguardando a outra pessoa marcar você de volta para confirmar a conexão mútua.",
-                    UUID.randomUUID().toString()
-                )
+            // Feedback local não deve anunciar vínculo permanente antes da confirmação.
+            val feedback = if (newMarkedByMe) {
+                "★ Você solicitou conexão com ${updated.alias}. A conversa temporária por Bluetooth continua disponível sem convite."
             } else {
-                proximitySimulator.receivePrivateMessage(
-                    updated.technicalIdentityHash,
-                    "Sistema",
-                    "Marcação removida para ${updated.alias}.",
-                    UUID.randomUUID().toString()
-                )
+                "Marcação removida para ${updated.alias}. A revogação será sincronizada com o servidor."
             }
+            proximitySimulator.receivePrivateMessage(
+                targetId, "Sistema", feedback, UUID.randomUUID().toString()
+            )
         }
 
         // Também atualiza o simulador se estiver em modo demo
@@ -1970,26 +1845,16 @@ class PessoasAquiRepository(
      */
     fun createOneTimeInviteLink(onResult: (String?) -> Unit) {
         scope.launch {
-            try {
-                val res = networkClient.createOneTimeInvite(getMyIdentity(), getMyAlias())
-                if (res.isSuccess) {
-                    onResult(res.getOrNull()?.inviteUrl)
-                } else {
-                    val invId = "inv_${UUID.randomUUID().toString().take(12)}"
-                    val token = UUID.randomUUID().toString()
-                    val myId = getMyIdentity()
-                    val alias = getMyAlias()
-                    val url = "https://pessoasaqui3.onrender.com/invite?id=$invId&token=$token&sender=$myId&alias=${java.net.URLEncoder.encode(alias, "UTF-8")}"
-                    onResult(url)
-                }
-            } catch (_: Exception) {
-                val invId = "inv_${UUID.randomUUID().toString().take(12)}"
-                val token = UUID.randomUUID().toString()
-                val myId = getMyIdentity()
-                val alias = getMyAlias()
-                val url = "https://pessoasaqui3.onrender.com/invite?id=$invId&token=$token&sender=$myId&alias=${java.net.URLEncoder.encode(alias, "UTF-8")}"
-                onResult(url)
+            val link = try {
+                // Convite válido só existe quando criado/assinado no backend.
+                // Nunca produzir um URL offline fictício nem expor token inventado.
+                networkClient.createOneTimeInvite(getMyIdentity(), getMyAlias())
+                    .getOrNull()?.inviteUrl
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Não foi possível criar convite seguro: ${e.message}")
+                null
             }
+            onResult(link)
         }
     }
 
@@ -2027,11 +1892,9 @@ class PessoasAquiRepository(
                 )
 
                 if (res.isSuccess) {
-                    savedMutualPeople.add(cleanSender)
-                    savedMarkedPeople.add(cleanSender)
-                    savedMarkingMePeople.add(cleanSender)
-                    promoteTemporarySessionToMutual(cleanSender)
-                    saveConnectionsToPrefs()
+                    // Resgate válido é nova aceitação explícita das duas partes.
+                    revokedMutualPeople.remove(cleanSender)
+                    confirmMutualConnectionFromServer(cleanSender)
 
                     val peer = NearbyPerson(
                         id = cleanSender,
@@ -2098,6 +1961,14 @@ class PessoasAquiRepository(
         val isPermanent = isPeerPermanent(cleanRecipient)
 
         if (!isPermanent) {
+            // O Modo A permite SOMENTE texto; mídia/chamadas são recursos permanentes.
+            // Nunca adiciona mídia à RAM nem tenta encaminhá-la ao BLE (máx. 4096 B).
+            if (isAudio || isImage || isDoc || text.startsWith("[CALL_")) {
+                return ContentModerationManager.ModerationResult(
+                    isAllowed = false,
+                    reason = "Fotos, áudios, arquivos e chamadas exigem vínculo permanente confirmado."
+                )
+            }
             // MODO A: Conversa Temporária
             // Criação local com status inicial PENDING até confirmação física por ACK
             if (!isSignaling && !isAudio && !isImage && !isDoc) {
@@ -2130,9 +2001,15 @@ class PessoasAquiRepository(
             // Roteamento exclusivamente via rádio Bluetooth BLE GATT direto.
             // Sem contato com a Internet / Render / WebSocket / HTTP.
             // Em caso de falha de rádio, NUNCA faz fallback para o servidor Render.
-            bleTransportCoordinator.sendTemporaryMessage(cleanRecipient, text, _currentAlias.value, messageUuid = msgId)
+            val accepted = bleTransportCoordinator.sendTemporaryMessage(cleanRecipient, text, _currentAlias.value, messageUuid = msgId)
+            if (!accepted && !isSignaling) {
+                proximitySimulator.updateMessageDeliveryStatus(
+                    cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                )
+            }
             updateUnifiedData()
-            return ContentModerationManager.ModerationResult(isAllowed = true)
+            return if (accepted) ContentModerationManager.ModerationResult(isAllowed = true)
+                   else ContentModerationManager.ModerationResult(isAllowed = false, reason = "Bluetooth indisponível ou pessoa fora de alcance.")
         }
 
         // MODO B: Conexão Mútua / Conexão Permanente
@@ -2168,7 +2045,18 @@ class PessoasAquiRepository(
         // Nunca utiliza Bluetooth BLE para conversas permanentes.
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         // Criptografia de Ponta a Ponta com AES-256-GCM e ECDH Zero-Knowledge
-        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, cryptoIdentityManager.getActivePrivateKey())
+        val (ciphertext, iv) = try {
+            E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, cryptoIdentityManager.getActivePrivateKey())
+        } catch (e: Exception) {
+            Log.e("PessoasAqui", "Falha na cifragem da mensagem permanente; envio cancelado", e)
+            if (!isSignaling && !isAudio && !isImage && !isDoc) {
+                proximitySimulator.updateMessageDeliveryStatus(
+                    cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                )
+            }
+            updateUnifiedData()
+            return ContentModerationManager.ModerationResult(isAllowed = false, reason = "Falha ao proteger mensagem criptograficamente.")
+        }
 
         // 1. Envio instantâneo prioritário via WebSocket (0ms latência)
         networkClient.sendE2eeEnvelope(
@@ -2252,7 +2140,8 @@ class PessoasAquiRepository(
         keys.forEach { curChats.remove(it) }
         _unifiedPrivateChats.value = curChats
 
-        // 2. Remove marcações e conexões mútuas em memória
+        // 2. Revoga privilégios; ação pendente será sincronizada mesmo se estiver offline.
+        revokeMutualLocally(cleanPeerId, removeMyMark = true, queueRemoteUnmark = true)
         keys.forEach {
             savedMutualPeople.remove(it)
             savedMarkedPeople.remove(it)
@@ -2272,15 +2161,17 @@ class PessoasAquiRepository(
 
         // 3. Notifica backend Supabase / Render para desmarcar conexão mútua
         val myId = cryptoIdentityManager.getTechnicalIdentity()
-        val myAlias = _currentAlias.value
-        scope.launch {
+        if (context != null) scope.launch {
             try {
-                networkClient.unmarkConnection(myId, cleanPeerId)
+                if (networkClient.unmarkConnection(myId, cleanPeerId).getOrNull() == true) {
+                    pendingUnmarkPeople.remove(cleanPeerId)
+                    saveConnectionsToPrefs()
+                }
             } catch (e: Exception) {
                 Log.w("PessoasAqui", "Erro ao desmarcar no backend: ${e.message}")
             }
         }
-        sendPrivateMessage(cleanPeerId, "[MARK_OFF:$myAlias]")
+        // Nunca usar o Modo A/Render como fallback implícito para controle do vínculo.
     }
 
     fun deleteMultipleConversations(peerIds: List<String>) {
@@ -2509,13 +2400,10 @@ class PessoasAquiRepository(
                 handlePeerOffline(peerHash)
             },
             onMutualConnection = { partnerId, _ ->
-                val cleanPartner = cleanId(partnerId)
-                savedMutualPeople.add(cleanPartner)
-                savedMarkedPeople.add(cleanPartner)
-                savedMarkingMePeople.add(cleanPartner)
-                saveConnectionsToPrefs()
-                saveSavedContactsToPrefs()
-                updateUnifiedData()
+                confirmMutualConnectionFromServer(partnerId)
+            },
+            onMutualConnectionBroken = { partnerId, _ ->
+                revokeMutualLocally(partnerId)
             },
             onPeerMarkedYou = { markerId, _ ->
                 savedMarkingMePeople.add(cleanId(markerId))
@@ -2530,14 +2418,7 @@ class PessoasAquiRepository(
             try {
                 val statusResult = networkClient.fetchConnectionStatus(cleanHash)
                 statusResult.getOrNull()?.let { st ->
-                    var changed = false
-                    st.mutual.forEach { if (savedMutualPeople.add(cleanId(it))) changed = true }
-                    st.markedByMe.forEach { if (savedMarkedPeople.add(cleanId(it))) changed = true }
-                    st.markingMe.forEach { if (savedMarkingMePeople.add(cleanId(it))) changed = true }
-                    if (changed) {
-                        saveConnectionsToPrefs()
-                        updateUnifiedData()
-                    }
+                    reconcileConnectionStatus(st.markedByMe, st.markingMe, st.mutual)
                 }
             } catch (e: Exception) {
                 Log.w("PessoasAqui", "Aviso ao sincronizar conexões da identidade recuperada: ${e.message}")
@@ -2876,9 +2757,8 @@ class PessoasAquiRepository(
             val fRole = c.familyRole?.let { roleName ->
                 try { FamilyRole.valueOf(roleName) } catch (_: Exception) { null }
             }
-            savedMutualPeople.add(cid)
-            savedMarkedPeople.add(cid)
-            savedMarkingMePeople.add(cid)
+            // Backup restaura os dados do contato, NÃO a aprovação mútua.
+            // O vínculo atual será revalidado com /connections/status do servidor.
             restoredPeople.add(
                 NearbyPerson(
                     id = cid,
@@ -2886,9 +2766,9 @@ class PessoasAquiRepository(
                     alias = c.alias,
                     estimatedDistanceMeters = 500.0,
                     proximityLabel = if (c.isFamily) "Família • Ilimitado" else "Conexão Mútua • Ilimitada",
-                    isMarkedByMe = true,
-                    isMarkingMe = true,
-                    isMutualConnection = c.isMutual,
+                    isMarkedByMe = cid in savedMarkedPeople && cid !in revokedMutualPeople,
+                    isMarkingMe = cid in savedMarkingMePeople && cid !in revokedMutualPeople,
+                    isMutualConnection = cid in savedMutualPeople && cid !in revokedMutualPeople,
                     isFamily = c.isFamily,
                     familyRole = fRole,
                     isPhotoVisible = true,
@@ -2906,12 +2786,8 @@ class PessoasAquiRepository(
         _realDiscoveredPeople.value = cur
         updateUnifiedData()
 
-        val myId = cryptoIdentityManager.getTechnicalIdentity()
-        scope.launch {
-            try {
-                networkClient.syncMutualConnections(myId, savedMutualPeople.toList())
-            } catch (_: Exception) {}
-        }
+        // NUNCA enviar contatos restaurados ao endpoint de sync que cria vínculos:
+        // o backup é dado histórico e não contém consentimento atual das duas partes.
     }
 
     /**

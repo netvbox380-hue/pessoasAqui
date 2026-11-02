@@ -185,6 +185,7 @@ class BleTemporaryChatIntegrationTest {
         val permanentPeerId = "A1B2C3D4"
         // Estabelece conexão mútua legítima (Modo B)
         repo.setMarkPerson(permanentPeerId, mark = true, explicitMutual = true)
+        repo.confirmMutualConnectionFromServer(permanentPeerId)
         assertTrue("Peer marcado mutuamente deve ser permanente (Modo B)", repo.isPeerPermanent(permanentPeerId))
 
         // Envia mensagem privada para conexão permanente (Modo B)
@@ -671,6 +672,7 @@ class BleTemporaryChatIntegrationTest {
 
         val permanentPeer = "PERMANENT_ADJACENT"
         repo.setMarkPerson(permanentPeer, mark = true, explicitMutual = true)
+        repo.confirmMutualConnectionFromServer(permanentPeer)
         assertTrue(repo.isPeerPermanent(permanentPeer))
 
         // Ambos estão fisicamente a 1.5 metros (adjacentes)
@@ -704,6 +706,7 @@ class BleTemporaryChatIntegrationTest {
 
             // 2. Estabelece Conexão Mútua legítima
             repo.setMarkPerson(peerId, mark = true, explicitMutual = true)
+            repo.confirmMutualConnectionFromServer(peerId)
             assertTrue(repo.isPeerPermanent(peerId))
 
             // 3. Executa Promoção Opção A (preserva histórico em memória no disco criptografado)
@@ -729,6 +732,7 @@ class BleTemporaryChatIntegrationTest {
 
         // Conecta mutuamente
         repo.setMarkPerson(peerId, mark = true, explicitMutual = true)
+        repo.confirmMutualConnectionFromServer(peerId)
         assertTrue(repo.isPeerPermanent(peerId))
 
         // Revoga conexão mútua
