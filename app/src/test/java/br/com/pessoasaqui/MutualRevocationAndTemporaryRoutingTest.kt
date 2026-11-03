@@ -15,13 +15,24 @@ import org.junit.Test
 class MutualRevocationAndTemporaryRoutingTest {
     private val peerId = "A1B2C3D4E5F60708"
 
+    // A marcação mútua gera uma mensagem legítima de sistema. Testes de chamada
+    // devem verificar apenas registros de chamada, sem apagar o histórico real.
+    private fun callRecords(repo: PessoasAquiRepository) =
+        repo.proximitySimulator.privateChats.value[peerId].orEmpty().filter { msg ->
+            msg.text.startsWith("📞 Chamada de voz ") ||
+                msg.text.startsWith("📹 Videochamada ")
+        }
+
     @Test fun corruptEncryptedCallSignalMustNotAppearAsChatBubble() {
         val repo = PessoasAquiRepository()
         repo.setMarkPerson(peerId, mark = true)
         repo.confirmMutualConnectionFromServer(peerId)
+        val historyBefore = repo.proximitySimulator.privateChats.value[peerId].orEmpty().toList()
         repo.processIncomingPayload(peerId, "Contato", "ENC_ECDH:not-valid-base64", "invalid-IV", "bad-call")
+        val historyAfter = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals("Envelope inválido não pode criar nem alterar uma mensagem", historyBefore, historyAfter)
         assertTrue("Nenhum conteúdo ENC_ECDH inválido pode aparecer no chat",
-            repo.proximitySimulator.privateChats.value[peerId].orEmpty().isEmpty())
+            historyAfter.none { it.text.startsWith("ENC_ECDH:") })
     }
 
     @Test fun unansweredIncomingCallBecomesOneMissedCallEntry() {
@@ -34,10 +45,10 @@ class MutualRevocationAndTemporaryRoutingTest {
         assertNotNull(repo.activeCallState.value)
         repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "call-end-01")
         repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "call-end-02")
-        val history = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
-        assertEquals("Uma ligação deve gerar somente um registro", 1, history.size)
-        assertTrue(history.single().text.contains("Chamada de voz perdida"))
-        assertEquals(br.com.pessoasaqui.domain.model.MessageType.SYSTEM, history.single().messageType)
+        val calls = callRecords(repo)
+        assertEquals("Uma ligação deve gerar somente um registro", 1, calls.size)
+        assertTrue(calls.single().text.contains("Chamada de voz perdida"))
+        assertEquals(br.com.pessoasaqui.domain.model.MessageType.SYSTEM, calls.single().messageType)
         assertNull(repo.activeCallState.value)
     }
 
@@ -50,9 +61,9 @@ class MutualRevocationAndTemporaryRoutingTest {
         assertFalse("O chamador não pode atender no lugar do destinatário",
             repo.activeCallState.value?.isConnected ?: true)
         repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "video-call-end")
-        val history = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
-        assertEquals(1, history.size)
-        assertTrue(history.single().text.contains("Videochamada perdida"))
+        val calls = callRecords(repo)
+        assertEquals(1, calls.size)
+        assertTrue(calls.single().text.contains("Videochamada perdida"))
         assertNull(repo.activeCallState.value)
     }
 
@@ -86,7 +97,7 @@ class MutualRevocationAndTemporaryRoutingTest {
         repo.processIncomingPayload(peerId, "Contato", "[CALL_END]#$second", "", "end-2")
         assertNull(repo.activeCallState.value)
 
-        val entries = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        val entries = callRecords(repo)
         assertEquals("Um registro por callId", 2, entries.size)
         repo.processIncomingPayload(peerId, "Contato",
             "[CALL_INIT:false:Contato:$second]", "", "delayed-replay")
@@ -107,7 +118,9 @@ class MutualRevocationAndTemporaryRoutingTest {
         assertFalse("Mídia e ACK nunca são consentimento de atendimento",
             repo.activeCallState.value?.isConnected ?: true)
         repo.processIncomingPayload(peerId, "Contato", "[CALL_END]#$id", "", "media-end")
-        assertEquals(1, repo.proximitySimulator.privateChats.value[peerId].orEmpty().size)
+        val calls = callRecords(repo)
+        assertEquals("Mídia não solicitada deve gerar apenas a chamada perdida", 1, calls.size)
+        assertTrue(calls.single().text.contains("Videochamada perdida"))
     }
 
     @Test fun wifiDisconnectMustNotRemoveNativeBleRadarPeer() {
