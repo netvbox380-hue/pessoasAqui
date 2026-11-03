@@ -177,15 +177,28 @@ fun ConversationsTab(
         }
 
         if (showDeleteConfirmDialog) {
+            val importantAtRisk = priority.orderedConversations
+                .filter { it.contact.id in selectedContactIds }
+                .sumOf { it.importantCount }
             AlertDialog(
                 onDismissRequest = { showDeleteConfirmDialog = false },
                 title = { Text("Excluir conversas?", color = TextPrimary, fontWeight = FontWeight.Bold) },
                 text = {
-                    Text(
-                        "Deseja excluir as ${selectedContactIds.size} conversa(s) selecionada(s)? Isso apagará todo o histórico de mensagens e desfará os vínculos no seu aparelho.",
-                        color = TextSecondary,
-                        fontSize = 13.sp
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Deseja excluir as ${selectedContactIds.size} conversa(s) selecionada(s)? Isso apagará todo o histórico de mensagens e desfará os vínculos no seu aparelho.",
+                            color = TextSecondary,
+                            fontSize = 13.sp
+                        )
+                        if (importantAtRisk > 0) {
+                            Text(
+                                "⚠️ Atenção: ${importantAtRisk} mensagem(ns) importante(s) marcada(s) com estrela também serão apagadas. Revise seus acordos e lembranças antes de continuar.",
+                                color = WarningAmber,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 },
                 confirmButton = {
                     Button(
