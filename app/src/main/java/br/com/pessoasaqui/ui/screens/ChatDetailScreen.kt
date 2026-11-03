@@ -2827,9 +2827,19 @@ fun ChatDetailScreen(
         if (showImportantMessagesDialog) {
             ImportantMessagesDialog(
                 peerAlias = person.alias,
-                importantMessages = messages.filter { it.isImportant },
+                importantMessages = messages.filter { it.isImportant && !it.isDeleted },
                 onUnmarkImportant = { msgId ->
                     onToggleImportantMessage?.invoke(person.technicalIdentityHash.ifBlank { person.id }, msgId)
+                },
+                onScheduleReminder = { msg ->
+                    reminderInitialText = when (msg.messageType) {
+                        MessageType.AUDIO -> "🎤 Áudio importante"
+                        MessageType.IMAGE -> "📷 Imagem importante"
+                        MessageType.DOCUMENT -> "📄 ${msg.fileName ?: "Documento importante"}"
+                        else -> msg.safeDisplayText
+                    }
+                    showImportantMessagesDialog = false
+                    showRemindersDialog = true
                 },
                 onDismiss = { showImportantMessagesDialog = false }
             )
