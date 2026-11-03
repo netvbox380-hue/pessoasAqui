@@ -92,7 +92,8 @@ internal class CallSessionMachine {
 
     private var current: Session? = null
     private val completed = LinkedHashMap<String, Long>()
-    val active: Session? @Synchronized get() = current
+    val active: Session?
+        @Synchronized get() = current
 
     @Synchronized
     fun outgoing(peer: String, video: Boolean): Session? {
