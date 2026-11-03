@@ -976,18 +976,27 @@ class PessoasAquiRepository(
                 )
             }
             payload.startsWith("[CALL_ACCEPT]") -> {
-                val current = _activeCallState.value
-                val callId = activeCallGeneration
-                if (current != null && !current.isIncoming && !current.isConnected &&
-                    cleanId(current.peerHash) == cleanSender &&
-                    CallSignalingProtocol.belongsToCall(payload, CallSignalingProtocol.Command.ACCEPT, callId) &&
-                    callLifecycle.accept(callId!!, cleanSender, byLocalUser = false)) {
-                    callRingtoneWakeManager?.stopAllCallAlerts()
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
-                    markActiveCallConnected()
-                    callMediaEngine?.startCallMedia(current.isVideo)
-                    sendPrivateMessage(current.peerHash,
-                        CallSignalingProtocol.encode(CallSignalingProtocol.Command.ACK, callId!!))
+                // Aceite e timeout competem entre callbacks de rede diferentes.
+                // A transição e o estado visível devem mudar atomicamente.
+                val accepted = synchronized(callStateLock) {
+                    val current = _activeCallState.value
+                    val callId = activeCallGeneration
+                    if (current != null && !current.isIncoming && !current.isConnected &&
+                        cleanId(current.peerHash) == cleanSender &&
+                        CallSignalingProtocol.belongsToCall(payload, CallSignalingProtocol.Command.ACCEPT, callId) &&
+                        callLifecycle.accept(callId!!, cleanSender, byLocalUser = false)) {
+                        _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+                        markActiveCallConnected()
+                        Pair(current, callId!!)
+                    } else null
+                }
+                accepted?.let { (current, callId) ->
+                    if (activeCallGeneration == callId) {
+                        callRingtoneWakeManager?.stopAllCallAlerts()
+                        callMediaEngine?.startCallMedia(current.isVideo)
+                        sendPrivateMessage(current.peerHash,
+                            CallSignalingProtocol.encode(CallSignalingProtocol.Command.ACK, callId))
+                    }
                 }
             }
             payload.startsWith("[CALL_ACK]") -> {
@@ -2402,16 +2411,20 @@ class PessoasAquiRepository(
     }
 
     fun answerCall() {
-        val current = _activeCallState.value ?: return
-        if (!current.isIncoming || current.isConnected) return
-        val generation = activeCallGeneration ?: return
-        if (!callLifecycle.accept(generation, cleanId(current.peerHash), byLocalUser = true)) return
+        val accepted = synchronized(callStateLock) {
+            val current = _activeCallState.value ?: return
+            val generation = activeCallGeneration ?: return
+            if (!current.isIncoming || current.isConnected ||
+                !callLifecycle.accept(generation, cleanId(current.peerHash), byLocalUser = true)) return
+            _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+            markActiveCallConnected()
+            Pair(current, generation)
+        }
+        val (current, generation) = accepted
+        if (activeCallGeneration != generation) return
         callRingtoneWakeManager?.stopAllCallAlerts()
-        _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
-        markActiveCallConnected()
         callMediaEngine?.startCallMedia(current.isVideo)
 
-        // Envio prioritário imediato
         val acceptSignal = CallSignalingProtocol.encode(CallSignalingProtocol.Command.ACCEPT, generation)
         sendPrivateMessage(current.peerHash, acceptSignal)
 
