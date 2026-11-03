@@ -14,6 +14,7 @@ import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.media.DocumentViewerHelper
 import br.com.pessoasaqui.core.media.ImageSearchHelper
 import br.com.pessoasaqui.core.chat.StickerPersistenceManager
+import br.com.pessoasaqui.core.chat.SafeChatImageDecoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.animation.AnimatedVisibility
@@ -1324,14 +1325,13 @@ fun ChatDetailScreen(
                                         val stickerRaw = if (msg.text.startsWith("[STICKER:")) msg.text else msg.mediaBase64 ?: ""
                                         val stickerB64 = if (isSticker) stickerRaw.removePrefix("[STICKER:").removeSuffix("]").trim() else null
 
-                                        val bitmap = remember(msg.mediaBase64, msg.text) {
-                                            try {
-                                                val b64 = if (isSticker) stickerB64 else msg.mediaBase64
-                                                if (!b64.isNullOrBlank()) {
-                                                    val decoded = Base64.decode(b64, Base64.DEFAULT)
-                                                    BitmapFactory.decodeByteArray(decoded, 0, decoded.size)?.asImageBitmap()
-                                                } else null
-                                            } catch (_: Exception) { null }
+                                        val imagePayload = if (isSticker) stickerB64 else msg.mediaBase64
+                                        val bitmap by produceState<ImageBitmap?>(
+                                            initialValue = null, key1 = imagePayload
+                                        ) {
+                                            value = withContext(Dispatchers.Default) {
+                                                SafeChatImageDecoder.decode(imagePayload)?.asImageBitmap()
+                                            }
                                         }
 
                                         if (bitmap != null) {
