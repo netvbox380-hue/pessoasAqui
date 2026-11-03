@@ -91,15 +91,27 @@ class PessoasAquiRepository(
         CallMediaEngine(
             context = ctx,
             onSendAudioFrame = { b64Frame ->
-                val peer = _activeCallState.value?.peerHash
-                if (!peer.isNullOrBlank()) {
-                    sendPrivateMessage(peer, "[CALL_AUDIO_FRAME:$b64Frame]")
+                val current = _activeCallState.value
+                val session = callSessions.active
+                if (current?.isConnected == true && session?.stage == CallSessionMachine.Stage.ACTIVE &&
+                    session.peerId == cleanId(current.peerHash)
+                ) {
+                    val frame = if (session.peerSupportsV2) {
+                        "[CALL_AUDIO_FRAME:${session.id}:$b64Frame]"
+                    } else "[CALL_AUDIO_FRAME:$b64Frame]"
+                    sendPrivateMessage(session.peerId, frame)
                 }
             },
             onSendVideoFrame = { b64Frame ->
-                val peer = _activeCallState.value?.peerHash
-                if (!peer.isNullOrBlank()) {
-                    sendPrivateMessage(peer, "[CALL_VIDEO_FRAME:$b64Frame]")
+                val current = _activeCallState.value
+                val session = callSessions.active
+                if (current?.isConnected == true && session?.stage == CallSessionMachine.Stage.ACTIVE &&
+                    session.peerId == cleanId(current.peerHash)
+                ) {
+                    val frame = if (session.peerSupportsV2) {
+                        "[CALL_VIDEO_FRAME:${session.id}:$b64Frame]"
+                    } else "[CALL_VIDEO_FRAME:$b64Frame]"
+                    sendPrivateMessage(session.peerId, frame)
                 }
             }
         )
@@ -1052,11 +1064,17 @@ class PessoasAquiRepository(
                         cleanId(current.peerHash) == cleanSender
                 }
                 if (!allowed) return
-                val b64 = payload.removePrefix("[CALL_AUDIO_FRAME:").removeSuffix("]")
+                val rawFrame = payload.removePrefix("[CALL_AUDIO_FRAME:").removeSuffix("]")
+                val session = callSessions.active ?: return
+                val b64 = if (session.peerSupportsV2) {
+                    val prefix = "${session.id}:"
+                    if (!rawFrame.startsWith(prefix)) return
+                    rawFrame.removePrefix(prefix)
+                } else rawFrame
                 callMediaEngine?.playRemoteAudioFrame(b64)
             }
             payload.startsWith("[CALL_VIDEO_FRAME:") -> {
-                val b64 = payload.removePrefix("[CALL_VIDEO_FRAME:").removeSuffix("]")
+                val rawFrame = payload.removePrefix("[CALL_VIDEO_FRAME:").removeSuffix("]")
                 synchronized(this) {
                     val current = _activeCallState.value ?: return
                     val session = callSessions.active ?: return
@@ -1064,6 +1082,11 @@ class PessoasAquiRepository(
                         session.stage != CallSessionMachine.Stage.ACTIVE ||
                         cleanId(current.peerHash) != cleanSender
                     ) return
+                    val b64 = if (session.peerSupportsV2) {
+                        val prefix = "${session.id}:"
+                        if (!rawFrame.startsWith(prefix)) return
+                        rawFrame.removePrefix(prefix)
+                    } else rawFrame
                     _activeCallState.value = current.copy(remoteVideoFrameBase64 = b64)
                 }
             }
