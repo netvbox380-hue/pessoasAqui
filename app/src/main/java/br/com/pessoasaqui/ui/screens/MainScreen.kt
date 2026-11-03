@@ -390,7 +390,18 @@ fun MainScreen(
                 }
             }
 
-            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            Box(
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                contentAlignment = Alignment.TopCenter
+            ) {
+            // Limita a largura das áreas de conteúdo em tablets/desktop sem
+            // impor zoom ou densidade artificial a telas pequenas.
+            Box(
+                modifier = Modifier
+                    .widthIn(max = if (selectedTabIndex == 1) 980.dp else 1120.dp)
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+            ) {
             // Se a identidade deste aparelho foi transferida para outro aparelho (Seção 18)
             if (isSessionRevoked) {
                 Box(
@@ -814,6 +825,7 @@ fun MainScreen(
                     },
                     onDismiss = { showRemindersDialog = false }
                 )
+            }
             }
             }
         }
