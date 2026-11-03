@@ -67,7 +67,7 @@ object InviteLinkParser {
                 !identityRegex.matches(sender)) return null
             val alias = (params["alias"] ?: params["senderAlias"] ?: "Pessoa Convidante")
                 .trim().take(64)
-                .filter { !it.isISOControl() }
+                .filter { !Character.isISOControl(it) }
                 .ifBlank { "Pessoa Convidante" }
             val signature = params["sig"] ?: params["signature"]
             if (signature != null && !signatureRegex.matches(signature)) return null
