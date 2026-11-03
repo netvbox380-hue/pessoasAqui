@@ -42,6 +42,20 @@ class CallSessionStateMachineTest {
         assertNull("Repeated END must not produce a second history record", fsm.finish("new", peer))
     }
 
+    @Test fun busyAndDeclinedHaveDifferentTerminalOutcomes() {
+        val declined = CallSessionStateMachine()
+        assertTrue(declined.begin("reject-1", peer, false, false))
+        assertEquals(FinishReason.DECLINED,
+            declined.finish("reject-1", peer, byRemotePeer = true, remoteDeclined = true))
+        assertEquals(Phase.IDLE, declined.phase())
+
+        val busy = CallSessionStateMachine()
+        assertTrue(busy.begin("busy-1", peer, true, false))
+        assertEquals(FinishReason.BUSY,
+            busy.finish("busy-1", peer, byRemotePeer = true, remoteBusy = true))
+        assertEquals(Phase.IDLE, busy.phase())
+    }
+
     @Test fun busyDeviceRejectsSecondCallWithoutOverwritingFirst() {
         val fsm = CallSessionStateMachine()
         assertTrue(fsm.begin("one", peer, false, true))
