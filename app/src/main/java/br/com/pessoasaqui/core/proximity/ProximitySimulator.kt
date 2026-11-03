@@ -419,6 +419,9 @@ class ProximitySimulator(
      * Recebe mensagem privada entregue de outro dispositivo
      */
     fun receivePrivateMessage(senderId: String, senderAlias: String, text: String, messageId: String = "") {
+        // Defesa adicional: mesmo que outro fluxo ignore o roteador de controle,
+        // envelopes cifrados e sinais de chamada nunca se tornam mensagens.
+        if (text.startsWith("ENC_ECDH:") || text.startsWith("ENC:") || text.startsWith("[CALL_")) return
         val cleanId = senderId.removePrefix("peer-")
         val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
 
