@@ -13,6 +13,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const { initDatabase, localStore, isPostgres, query } = require('./db');
 const { hashPin, verifyPinHash, generateNonce, calculateLockoutDurationSeconds } = require('./crypto');
+const { makeInviteLifecycle } = require('./inviteLifecycle');
 
 function verifyClientEcdsaSignature(publicKeyBase64, dataString, signatureBase64) {
   if (!publicKeyBase64 || !signatureBase64) return false;
@@ -33,30 +34,10 @@ function verifyClientEcdsaSignature(publicKeyBase64, dataString, signatureBase64
 
 const registeredDevicePublicKeys = new Map(); // identityKey -> publicKeyBase64
 
-const INVITE_SECRET = process.env.INVITE_SECRET || process.env.SESSION_SECRET || 'pessoasaqui_invite_crypto_secret_key_2026';
-
-function signInvitePayload(inviteId, token, senderIdentity, expiresAt) {
-  const cleanInvId = (inviteId || '').replace(/^peer-/, '').trim().toLowerCase();
-  const cleanTok = (token || '').trim();
-  const cleanSender = (senderIdentity || '').replace(/^peer-/, '').trim().toLowerCase();
-  const exp = String(expiresAt || '');
-  return crypto.createHmac('sha256', INVITE_SECRET)
-    .update(`${cleanInvId}:${cleanTok}:${cleanSender}:${exp}`)
-    .digest('hex');
-}
-
-function verifyInvitePayloadSignature(inviteId, token, senderIdentity, expiresAt, signature) {
-  if (!signature) return false;
-  try {
-    const expected = signInvitePayload(inviteId, token, senderIdentity, expiresAt);
-    const sigBuf = Buffer.from(signature, 'hex');
-    const expBuf = Buffer.from(expected, 'hex');
-    if (sigBuf.length !== expBuf.length) return false;
-    return crypto.timingSafeEqual(sigBuf, expBuf);
-  } catch (_) {
-    return false;
-  }
-}
+// Em produção, uma chave secreta aleatória configurada no ambiente é obrigatória.
+// O token é um segredo bearer transmitido por HTTPS: não é conteúdo cifrado.
+const INVITE_SECRET = process.env.INVITE_SECRET || process.env.SESSION_SECRET ||
+  (process.env.DATABASE_URL ? null : 'dev-local-only-invite-secret');
 
 const app = express();
 const server = http.createServer(app);
@@ -145,7 +126,14 @@ const activePresence = new Map();
 // Mapa de ofertas e divulgações locais ativas: offerId -> offerData
 const activeOffers = new Map();
 // Mapa de convites criptografados de uso único: inviteId -> inviteData
-const activeInvites = new Map();
+const activeInvites = new Map(); // histórico legado; resgates não dependem deste cache
+const inviteLifecycle = makeInviteLifecycle({
+  query,
+  isPostgres,
+  databaseConfigured: () => Boolean(process.env.DATABASE_URL),
+  memoryStore: localStore.invites,
+  secret: INVITE_SECRET
+});
 // Fila de mensagens pendentes para entrega garantida: recipientHash -> [messages]
 const pendingMessages = new Map();
 // Cache de deduplicação de mensagens (evita mensagens repetidas/duplicadas)
@@ -1068,177 +1056,51 @@ app.post('/api/connections/unmark', async (req, res) => {
  * Geração de Convite Criptografado de Uso Único para Conexão Mútua à Distância
  */
 app.post('/api/invites/create', async (req, res) => {
-  const { senderIdentity, senderAlias } = req.body;
-  const sender = cleanId(senderIdentity);
-  if (!sender) {
-    return res.status(400).json({ error: 'Identidade do remetente obrigatória.' });
+  const sender = cleanId(req.body.senderIdentity);
+  const alias = String(req.body.senderAlias || 'Usuário').trim().slice(0, 64);
+  // Limites curtos e dados do banco autoritativos reduzem o alcance de ataques.
+  const created = await inviteLifecycle.create({ sender, alias });
+  if (!created.invite) return res.status(created.status).json({ error: created.error });
+  const { inviteId, token, signature, expiresAt } = created.invite;
+  // Nunca confiar no cabeçalho Host para construir URL de capacidade.
+  const configuredBase = process.env.BASE_URL || 'https://pessoasaqui3.onrender.com';
+  if (!/^https:\/\/[a-z0-9.-]+(?::443)?\/?$/i.test(configuredBase)) {
+    return res.status(503).json({ error: 'BASE_URL de convites deve ser HTTPS.' });
   }
-
-  const inviteId = `inv_${generateNonce().slice(0, 12).toLowerCase()}`;
-  const token = generateNonce().slice(0, 32);
-  const alias = (senderAlias || 'Usuário').trim();
-  const createdAt = Date.now();
-  const expiresAt = createdAt + (7 * 24 * 60 * 60 * 1000); // 7 dias de validade
-  const signature = signInvitePayload(inviteId, token, sender, expiresAt);
-
-  const inviteData = {
-    inviteId,
-    token,
-    senderIdentity: sender,
-    senderAlias: alias,
-    signature,
-    isUsed: false,
-    usedBy: null,
-    usedAt: null,
-    createdAt,
-    expiresAt
-  };
-
-  activeInvites.set(inviteId, inviteData);
-  if (localStore.invites) localStore.invites.set(inviteId, inviteData);
-
-  if (isPostgres()) {
-    try {
-      await query(
-        `INSERT INTO invites (id, token, sender_identity, sender_alias, signature, expires_at)
-         VALUES ($1, $2, $3, $4, $5, TO_TIMESTAMP($6 / 1000.0))
-         ON CONFLICT (id) DO UPDATE SET token = EXCLUDED.token, signature = EXCLUDED.signature, expires_at = EXCLUDED.expires_at`,
-        [inviteId, token, sender, alias, signature, expiresAt]
-      );
-    } catch (e) {
-      console.error('[DB] Erro ao gravar convite no PostgreSQL:', e.message);
-    }
-  }
-
-  const baseUrl = process.env.BASE_URL || (req.get('host') ? `${req.protocol}://${req.get('host')}` : 'https://pessoasaqui3.onrender.com');
+  const baseUrl = configuredBase.replace(/\/$/, '');
   const queryParams = `id=${encodeURIComponent(inviteId)}&token=${encodeURIComponent(token)}&sender=${encodeURIComponent(sender)}&alias=${encodeURIComponent(alias)}&sig=${encodeURIComponent(signature)}&exp=${expiresAt}`;
-  const inviteUrl = `${baseUrl}/invite?${queryParams}`;
-
-  console.log(`[Convite] Novo convite único gerado: ${inviteId} por ${alias} (${sender}) com assinatura segura`);
-
-  res.json({
-    success: true,
-    inviteId,
-    token,
-    signature,
-    inviteUrl,
-    senderIdentity: sender,
-    senderAlias: alias,
-    expiresAt
+  res.set('Cache-Control', 'no-store');
+  return res.json({
+    success: true, inviteId, token, signature,
+    inviteUrl: `${baseUrl}/invite?${queryParams}`,
+    senderIdentity: sender, senderAlias: alias, expiresAt
   });
 });
 
 /**
- * Resgate de Convite de Uso Único (Efetiva Conexão Mútua Instantânea à Distância)
+ * Validação autoritativa de uso único: PostgreSQL em uma instrução atômica,
+ * sem fallback por HMAC, e fail-closed quando o banco estiver indisponível.
  */
 app.post('/api/invites/redeem', async (req, res) => {
-  const { inviteId, token, receiverIdentity, receiverAlias, senderIdentity, senderAlias, signature, expiresAt } = req.body;
+  const { inviteId, token, receiverIdentity, receiverAlias } = req.body;
   const receiver = cleanId(receiverIdentity);
-  const recAlias = (receiverAlias || 'Usuário Convidado').trim();
-
-  if (!inviteId || !token || !receiver) {
-    return res.status(400).json({ error: 'Parâmetros de convite ou destinatário inválidos.' });
+  const recAlias = String(receiverAlias || 'Pessoa Convidada').trim().slice(0, 64);
+  const consumed = await inviteLifecycle.redeem({
+    inviteId, token, receiver, cleanId
+  });
+  if (!consumed.invite) {
+    return res.status(consumed.status).json({ error: consumed.error });
   }
 
-  let invite = activeInvites.get(inviteId) || (localStore.invites && localStore.invites.get(inviteId));
-
-  // Se não estiver na memória, busca no PostgreSQL persistente
-  if (!invite && isPostgres()) {
-    try {
-      const dbRes = await query(`SELECT * FROM invites WHERE id = $1`, [inviteId]);
-      if (dbRes.rows.length > 0) {
-        const row = dbRes.rows[0];
-        invite = {
-          inviteId: row.id,
-          token: row.token,
-          senderIdentity: row.sender_identity,
-          senderAlias: row.sender_alias,
-          signature: row.signature,
-          isUsed: row.is_used,
-          usedBy: row.used_by,
-          usedAt: row.used_at ? new Date(row.used_at).getTime() : null,
-          expiresAt: new Date(row.expires_at).getTime()
-        };
-        activeInvites.set(inviteId, invite);
-      }
-    } catch (e) {
-      console.error('[DB] Erro ao consultar convite no banco:', e.message);
-    }
-  }
-
-  // Fallback Criptográfico Seguro: Se o servidor foi reciclado ou o convite foi criado com assinatura válida
-  const candidateSender = cleanId(invite?.senderIdentity || senderIdentity);
-  const candidateExp = invite ? invite.expiresAt : Number(expiresAt || (Date.now() + 86400000));
-  const candidateSig = invite?.signature || signature;
-
-  const isCryptographicallyValid = verifyInvitePayloadSignature(inviteId, token, candidateSender, candidateExp, candidateSig);
-
-  if (!invite && !isCryptographicallyValid) {
-    return res.status(404).json({ error: 'Convite não encontrado ou inexistente.' });
-  }
-
-  if (invite) {
-    if (invite.token !== token) {
-      return res.status(403).json({ error: 'Token de convite inválido ou adulterado.' });
-    }
-    if (invite.isUsed) {
-      return res.status(410).json({ error: 'Este convite já foi utilizado e não pode ser reutilizado.' });
-    }
-    if (Date.now() > invite.expiresAt) {
-      return res.status(410).json({ error: 'Este convite expirou.' });
-    }
-  } else {
-    // Verificado via assinatura criptográfica sem registro prévio na RAM
-    if (Date.now() > candidateExp) {
-      return res.status(410).json({ error: 'Este convite expirou.' });
-    }
-    invite = {
-      inviteId,
-      token,
-      senderIdentity: candidateSender,
-      senderAlias: senderAlias || 'Usuário Remetente',
-      signature: candidateSig,
-      isUsed: false,
-      expiresAt: candidateExp
-    };
-    activeInvites.set(inviteId, invite);
-  }
-
+  const invite = consumed.invite;
   const sender = cleanId(invite.senderIdentity);
-  if (keyId(sender) === keyId(receiver)) {
-    return res.status(400).json({ error: 'Você não pode resgatar seu próprio convite.' });
-  }
-
-  // Marca convite como utilizado (USO ÚNICO GARANTIDO)
-  invite.isUsed = true;
-  invite.usedBy = receiver;
-  invite.usedAt = Date.now();
-
   const kSender = keyId(sender);
   const kReceiver = keyId(receiver);
-
-  // Estabelece Conexão Mútua Bidirecional Permanente (sempre em memória local + PostgreSQL se ativo)
-  localStore.connections.set(`${kSender}->${kReceiver}`, { fromIdentity: sender, toIdentity: receiver, isMutual: true });
-  localStore.connections.set(`${kReceiver}->${kSender}`, { fromIdentity: receiver, toIdentity: sender, isMutual: true });
-
-  if (isPostgres()) {
-    try {
-      await query(
-        `UPDATE invites SET is_used = TRUE, used_by = $1, used_at = NOW() WHERE id = $2`,
-        [receiver, inviteId]
-      );
-      await query(
-        `INSERT INTO connections (from_identity, to_identity, is_mutual)
-         VALUES ($1, $2, TRUE), ($2, $1, TRUE)
-         ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = TRUE`,
-        [sender, receiver]
-      );
-    } catch (e) {
-      console.error('[DB] Erro ao gravar conexão mútua por convite:', e.message);
-    }
-  }
-
-  console.log(`[Convite] Convite ${inviteId} resgatado com sucesso por ${recAlias} (${receiver}) com ${invite.senderAlias} (${sender})!`);
+  // Propagar ao cache somente após confirmação de consumo e conexão no DB.
+  localStore.connections.set(`${kSender}->${kReceiver}`,
+    { fromIdentity: sender, toIdentity: receiver, isMutual: true });
+  localStore.connections.set(`${kReceiver}->${kSender}`,
+    { fromIdentity: receiver, toIdentity: sender, isMutual: true });
 
   // Notifica ambos via WebSocket
   const senderWs = activeSockets.get(kSender);
@@ -1288,6 +1150,11 @@ app.post('/api/invites/redeem', async (req, res) => {
  * Landing Page Web do Convite (com suporte a Deep Link automático para o app PessoasAqui)
  */
 app.get('/invite', (req, res) => {
+  // Um link contém token confidencial de uso único. Sem cache e sem referrer
+  // para evitar vazamento involuntário a recursos web de terceiros.
+  res.set('Cache-Control', 'no-store');
+  res.set('Referrer-Policy', 'no-referrer');
+  res.set('X-Content-Type-Options', 'nosniff');
   const { id, token, sender, alias, fallback, sig, exp } = req.query;
   const safeAlias = (alias || 'Alguém').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const queryParams = `id=${encodeURIComponent(id || '')}&token=${encodeURIComponent(token || '')}&sender=${encodeURIComponent(sender || '')}&alias=${encodeURIComponent(alias || '')}&sig=${encodeURIComponent(sig || '')}&exp=${encodeURIComponent(exp || '')}`;
@@ -1422,7 +1289,7 @@ app.get('/invite', (req, res) => {
 </head>
 <body>
   <div class="card">
-    <div class="badge">🔒 Convite Criptografado de Uso Único</div>
+    <div class="badge">🔐 Convite Assinado de Uso Único</div>
     <h1>Conectar no PessoasAqui</h1>
     <p><span class="sender-name">${safeAlias}</span> convidou você para uma conexão mútua segura à distância com mensagens, chamadas e fotos criptografadas de ponta a ponta.</p>
     
@@ -1434,7 +1301,7 @@ app.get('/invite', (req, res) => {
       <strong style="color:#F0F6FC;">Dica de Conexão:</strong><br>
       Se o app não abrir automaticamente, você pode tocar em <strong>"Copiar Link do Convite"</strong>, abrir o aplicativo <strong>PessoasAqui</strong>, ir na aba <strong>Privado</strong> e tocar em <strong>"Colar Convite"</strong>.
     </div>
-    <div class="security-note">Este link é exclusivo e expira após o primeiro uso.</div>
+    <div class="security-note">Este link contém um token de acesso de uso único. Não o publique; ele expira após o primeiro resgate ou após 7 dias.</div>
   </div>
 </body>
 </html>`);
