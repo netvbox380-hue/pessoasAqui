@@ -344,6 +344,39 @@ class ProximitySimulator(
     }
 
     /**
+     * Registra localmente o resultado de uma chamada do Modo B.
+     * Não transmite comando de controle para a UI e reutiliza a persistência
+     * criptografada dos chats permanentes, sem alterar históricos existentes.
+     */
+    fun recordCallHistory(
+        peerId: String,
+        description: String,
+        outgoing: Boolean,
+        myAlias: String,
+        entryId: String = UUID.randomUUID().toString()
+    ) {
+        val cleanId = peerId.removePrefix("peer-")
+        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+        if (currentList.any { it.id == entryId }) return
+
+        val entry = ChatMessage(
+            id = entryId,
+            senderId = if (outgoing) "me" else cleanId,
+            senderAlias = if (outgoing) myAlias else "Chamadas",
+            text = description,
+            isFromMe = outgoing,
+            messageType = MessageType.SYSTEM,
+            isEncrypted = true
+        )
+        val updated = currentList + entry
+        val chats = _privateChats.value.toMutableMap()
+        chats[cleanId] = updated
+        chats["peer-$cleanId"] = updated
+        _privateChats.value = chats
+        persistPrivateChatIfEligible(cleanId, updated)
+    }
+
+    /**
      * Atualiza o status de entrega de uma mensagem (PENDENTE -> ENTREGUE ou FALHA).
      */
     fun updateMessageDeliveryStatus(
