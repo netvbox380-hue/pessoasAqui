@@ -700,7 +700,13 @@ class PessoasAquiRepository(
         }
     }
 
-    private fun finishActiveCall(timedOut: Boolean = false, remoteEnded: Boolean = false, notifyPeer: Boolean = !remoteEnded) {
+    private fun finishActiveCall(
+        timedOut: Boolean = false,
+        remoteEnded: Boolean = false,
+        notifyPeer: Boolean = !remoteEnded,
+        remoteDeclined: Boolean = false,
+        remoteBusy: Boolean = false
+    ) {
         val completed = synchronized(callStateLock) {
             val current = _activeCallState.value ?: return
             val durationSeconds = if (current.isConnected && callConnectedAtMs > 0L) {
@@ -708,7 +714,8 @@ class PessoasAquiRepository(
             } else 0L
             val callId = activeCallGeneration ?: CallSignalingProtocol.newCallId()
             val reason = callLifecycle.finish(callId, cleanId(current.peerHash),
-                byTimeout = timedOut, byRemotePeer = remoteEnded) ?: return
+                byTimeout = timedOut, byRemotePeer = remoteEnded,
+                remoteDeclined = remoteDeclined, remoteBusy = remoteBusy) ?: return
             callCleanupInProgress = true
             _activeCallState.value = null
             activeCallGeneration = null
@@ -730,6 +737,7 @@ class PessoasAquiRepository(
                 CallSessionStateMachine.FinishReason.DECLINED -> "recusada"
                 CallSessionStateMachine.FinishReason.MISSED -> "perdida"
                 CallSessionStateMachine.FinishReason.NO_ANSWER -> "não atendida"
+                CallSessionStateMachine.FinishReason.BUSY -> "ocupada"
             }
             val durationText = if (current.isConnected) " — ${durationSeconds / 60}min ${durationSeconds % 60}s" else ""
             proximitySimulator.recordCallHistory(
@@ -742,7 +750,8 @@ class PessoasAquiRepository(
             updateUnifiedData()
 
             if (notifyPeer) {
-                val endSignal = CallSignalingProtocol.encode(CallSignalingProtocol.Command.END, callId)
+                val terminal = CallSignalingProtocol.EndReason.valueOf(reason.name)
+                val endSignal = CallSignalingProtocol.encode(CallSignalingProtocol.Command.END, callId, terminal)
                 sendPrivateMessage(current.peerHash, endSignal)
                 scope.launch {
                     delay(200L)
@@ -954,13 +963,23 @@ class PessoasAquiRepository(
                 // Chamadas são exclusivas de vínculos permanentes. Retransmissões
                 // CALL_INIT não podem reiniciar o toque nem o timer da ligação.
                 if (!isPeerPermanent(cleanSender)) return
-                if (_activeCallState.value != null || callCleanupInProgress) return
+                val candidate = CallSignalingProtocol.invitationCallId(payload)
+                if (_activeCallState.value != null || callCleanupInProgress) {
+                    // Convite duplicado da mesma ligação: ignorar sem afetar
+                    // o telefone. Convite diferente: responder "ocupado".
+                    if (candidate != null && candidate != activeCallGeneration) {
+                        sendPrivateMessage(cleanSender,
+                            CallSignalingProtocol.encode(
+                                CallSignalingProtocol.Command.END, candidate,
+                                CallSignalingProtocol.EndReason.BUSY))
+                    }
+                    return
+                }
 
                 val parts = payload.removePrefix("[CALL_INIT:").removeSuffix("]").split(":")
                 val isVideo = parts.getOrNull(0)?.toBoolean() ?: false
                 val callerAlias = parts.getOrNull(1) ?: senderAlias
-                val generation = CallSignalingProtocol.invitationCallId(payload)
-                    ?: CallSignalingProtocol.newCallId()
+                val generation = candidate ?: CallSignalingProtocol.newCallId()
                 // O histórico do Modo B é persistido criptografado. Impede
                 // reabrir uma chamada concluída após morte/reinício do processo.
                 if (proximitySimulator.privateChats.value[cleanSender].orEmpty()
@@ -1017,7 +1036,13 @@ class PessoasAquiRepository(
                 val current = _activeCallState.value
                 if (current != null && cleanId(current.peerHash) == cleanSender &&
                     CallSignalingProtocol.belongsToCall(payload, CallSignalingProtocol.Command.END, activeCallGeneration)) {
-                    finishActiveCall(remoteEnded = true, notifyPeer = false)
+                    val terminal = CallSignalingProtocol.terminationReason(payload)
+                    finishActiveCall(
+                        remoteEnded = true,
+                        notifyPeer = false,
+                        remoteDeclined = terminal == CallSignalingProtocol.EndReason.DECLINED,
+                        remoteBusy = terminal == CallSignalingProtocol.EndReason.BUSY
+                    )
                 }
             }
             payload.startsWith("[FAMILY_REQ:") -> {
