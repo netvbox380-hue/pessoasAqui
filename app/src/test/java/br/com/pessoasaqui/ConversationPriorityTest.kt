@@ -68,6 +68,16 @@ class ConversationPriorityTest {
         assertEquals(0, result.orderedConversations.single().unreadCount)
     }
 
+    @Test fun starFlagSurvivesChatMessageSerializationAfterAppRestart() {
+        val original = message("agreement", 100, star = true, text = "Nosso acordo")
+        val stored = br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager.serializeMessage(original)
+        val restored = br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager.deserializeMessage(stored)
+        assertTrue(restored.isImportant)
+        assertEquals("agreement", restored.id)
+        val snapshot = ConversationPriority.build(listOf(person("C1")), mapOf("C1" to listOf(restored)))
+        assertEquals(1, snapshot.highlights.size)
+    }
+
     @Test fun anUnstarredMessageIsImmediatelyRemovedFromHighlights() {
         val p = person("A1")
         val original = message("m", 100, star = true)
