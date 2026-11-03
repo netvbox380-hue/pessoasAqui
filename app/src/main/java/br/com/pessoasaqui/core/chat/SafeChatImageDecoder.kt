@@ -26,7 +26,7 @@ object SafeChatImageDecoder {
             if (width !in 1..MAX_PIXEL_DIMENSION ||
                 height !in 1..MAX_PIXEL_DIMENSION) return null
             var sample = 1
-            while (maxOf(width, height) / (sample * 2) > MAX_RENDER_DIMENSION) {
+            while (maxOf(width, height) / sample > MAX_RENDER_DIMENSION) {
                 sample *= 2
             }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
