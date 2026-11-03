@@ -341,8 +341,8 @@ class BleManager(
         )
 
         try {
-            advertiserDriver.startAdvertising(params) { isSuccess, errorCode ->
-                if (generation != advertisingGeneration.get()) return@startAdvertising
+            advertiserDriver.startAdvertising(params) advertisingCallback@{ isSuccess, errorCode ->
+                if (generation != advertisingGeneration.get()) return@advertisingCallback
                 advertisingActive = isSuccess
                 if (isSuccess) {
                     Log.d(tag, "BLE Advertising conectável iniciado com sucesso para presença em 10m e transporte GATT.")
@@ -355,8 +355,8 @@ class BleManager(
                         try {
                             val ultraCompact = "$cleanMyId:${myIntent.ordinal}".toByteArray(StandardCharsets.UTF_8)
                             val fallbackParams = params.copy(primaryPayload = ultraCompact)
-                            advertiserDriver.startAdvertising(fallbackParams) { fbSuccess, fbErr ->
-                                if (generation != advertisingGeneration.get()) return@startAdvertising
+                            advertiserDriver.startAdvertising(fallbackParams) fallbackCallback@{ fbSuccess, fbErr ->
+                                if (generation != advertisingGeneration.get()) return@fallbackCallback
                                 advertisingActive = fbSuccess
                                 if (fbSuccess) {
                                     Log.d(tag, "BLE Advertising compacto conectável iniciado com sucesso.")
