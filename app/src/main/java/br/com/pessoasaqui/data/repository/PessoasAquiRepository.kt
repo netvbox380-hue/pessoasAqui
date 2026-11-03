@@ -1715,7 +1715,7 @@ class PessoasAquiRepository(
     }
 
     /** Recupera descoberta ao voltar ao app, sem forçar reinício do GATT ativo. */
-    fun ensureBleHealthOnForeground() {
+    fun ensureBleHealthOnForeground(forceRefresh: Boolean = false) {
         if (!_hasGrantedPermissions.value) return
         val ble = bleManager ?: return
         if (!ble.isBluetoothEnabled) return
@@ -1723,7 +1723,11 @@ class PessoasAquiRepository(
             if (!bleTransportCoordinator.serverManager.isServerRunning) {
                 bleTransportCoordinator.start()
             }
-            ble.ensureDiscoveryContinuity()
+            if (forceRefresh) {
+                ble.refreshDiscoveryOnForeground()
+            } else {
+                ble.ensureDiscoveryContinuity()
+            }
         } catch (e: Exception) {
             Log.w("PessoasAqui", "Falha ao verificar BLE ao voltar ao app: ${e.message}")
         }
