@@ -17,6 +17,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import br.com.pessoasaqui.core.subscription.SubscriptionTier
 import br.com.pessoasaqui.data.repository.PessoasAquiRepository
+import br.com.pessoasaqui.core.qrcode.InviteLinkParser
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.barcode.common.Barcode
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.ui.screens.*
@@ -173,24 +177,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun parseDeepLink(intent: Intent?) {
-        val uri = intent?.data ?: return
-        val id = uri.getQueryParameter("id") ?: uri.getQueryParameter("inviteId")
-        val token = uri.getQueryParameter("token")
-        val sender = uri.getQueryParameter("sender") ?: uri.getQueryParameter("senderIdentity")
-        val alias = uri.getQueryParameter("alias") ?: uri.getQueryParameter("senderAlias") ?: "Usuário"
-        val sig = uri.getQueryParameter("sig") ?: uri.getQueryParameter("signature")
-        val exp = uri.getQueryParameter("exp")?.toLongOrNull() ?: uri.getQueryParameter("expiresAt")?.toLongOrNull()
-
-        if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
-            incomingInvite.value = IncomingInvite(
-                inviteId = id.trim(),
-                token = token.trim(),
-                senderIdentity = sender.trim(),
-                senderAlias = alias.trim(),
-                signature = sig?.trim(),
-                expiresAt = exp
-            )
-        }
+        val url = intent?.dataString ?: return
+        val invite = InviteLinkParser.parse(url) ?: return
+        incomingInvite.value = IncomingInvite(
+            inviteId = invite.inviteId,
+            token = invite.token,
+            senderIdentity = invite.senderIdentity,
+            senderAlias = invite.senderAlias,
+            signature = invite.signature,
+            expiresAt = invite.expiresAt
+        )
     }
 }
 
@@ -256,6 +252,75 @@ fun PessoasAquiNavHost(
     var currentMainTab by remember { mutableIntStateOf(0) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
     var isCreatingInvite by remember { mutableStateOf(false) }
+    var generatedInviteUrl by remember { mutableStateOf<String?>(null) }
+    var invitationError by remember { mutableStateOf<String?>(null) }
+    var scannedInvite by remember { mutableStateOf<IncomingInvite?>(null) }
+    var isScanningInvite by remember { mutableStateOf(false) }
+
+    fun generateInvite() {
+        if (isCreatingInvite) return
+        isCreatingInvite = true
+        repository.createOneTimeInviteLink { url ->
+            isCreatingInvite = false
+            if (url != null && InviteLinkParser.parse(url) != null) {
+                generatedInviteUrl = url
+            } else {
+                invitationError = "Não foi possível criar um convite seguro. Verifique a internet e tente novamente."
+            }
+        }
+    }
+
+    fun scanInvitationQr() {
+        if (isScanningInvite) return
+        isScanningInvite = true
+        try {
+            val options = GmsBarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .enableAutoZoom()
+                .build()
+            GmsBarcodeScanning.getClient(context, options).startScan()
+                .addOnSuccessListener { code ->
+                    val parsed = InviteLinkParser.parse(code.rawValue.orEmpty())
+                    if (parsed == null) {
+                        invitationError = "Este QR não contém um convite válido do PessoasAqui. Você também pode colar um link na aba Conversas."
+                    } else {
+                        scannedInvite = IncomingInvite(
+                            inviteId = parsed.inviteId,
+                            token = parsed.token,
+                            senderIdentity = parsed.senderIdentity,
+                            senderAlias = parsed.senderAlias,
+                            signature = parsed.signature,
+                            expiresAt = parsed.expiresAt
+                        )
+                    }
+                }
+                .addOnFailureListener {
+                    invitationError = "Leitor de QR indisponível. Verifique o Google Play Services ou utilize Colar Link."
+                }
+                .addOnCompleteListener { isScanningInvite = false }
+        } catch (_: Exception) {
+            isScanningInvite = false
+            invitationError = "Não foi possível abrir a câmera de leitura. Utilize Colar Link."
+        }
+    }
+
+    fun redeemInviteText(raw: String, onResult: (Boolean, String?, NearbyPerson?) -> Unit) {
+        val invite = InviteLinkParser.parse(raw)
+        if (invite == null) {
+            onResult(false, "O link não é um convite válido do PessoasAqui ou já expirou.", null)
+            return
+        }
+        repository.redeemOneTimeInvite(
+            inviteId = invite.inviteId,
+            token = invite.token,
+            senderIdentity = invite.senderIdentity,
+            senderAlias = invite.senderAlias,
+            signature = invite.signature,
+            expiresAt = invite.expiresAt
+        ) { success, message, peer ->
+            onResult(success, message, peer)
+        }
+    }
     var showVipDialog by remember { mutableStateOf(false) }
 
     val enableBluetoothLauncher = rememberLauncherForActivityResult(
@@ -326,7 +391,11 @@ fun PessoasAquiNavHost(
                 onEnableBluetooth = {
                     val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                     enableBluetoothLauncher.launch(enableBtIntent)
-                }
+                },
+                isCreatingInvite = isCreatingInvite,
+                onCreateInviteLink = { generateInvite() },
+                onScanInviteQr = { scanInvitationQr() },
+                onRedeemInviteText = { raw, onResult -> redeemInviteText(raw, onResult) }
             )
         }
 
@@ -438,72 +507,10 @@ fun PessoasAquiNavHost(
                     }
                 },
                 isCreatingInvite = isCreatingInvite,
-                onCreateInviteLink = {
-                    if (!isCreatingInvite) {
-                        isCreatingInvite = true
-                        repository.createOneTimeInviteLink { url ->
-                            isCreatingInvite = false
-                            if (url != null) {
-                                val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                    putExtra(android.content.Intent.EXTRA_SUBJECT, "Convite Seguro - PessoasAqui")
-                                    putExtra(
-                                        android.content.Intent.EXTRA_TEXT,
-                                        "Olá! Estou te convidando para nos conectarmos no PessoasAqui com conversa privada, chamadas de voz e vídeo criptografadas à distância.\n\nToque no link abaixo para aceitar meu convite de conexão mútua (link seguro de uso único):\n$url"
-                                    )
-                                    type = "text/plain"
-                                }
-                                val shareIntent = android.content.Intent.createChooser(sendIntent, "Compartilhar Convite Seguro")
-                                context.startActivity(shareIntent)
-                            }
-                        }
-                    }
-                },
+                onCreateInviteLink = { generateInvite() },
+                onScanInviteQr = { scanInvitationQr() },
                 onRedeemInviteLink = { rawInput, onResult ->
-                    val text = rawInput.trim()
-                    val urlPattern = Regex("""(https?://[^\s]+|pessoasaqui://[^\s]+)""")
-                    val matchedUrl = urlPattern.find(text)?.value ?: text
-                    val parsedUri = try { android.net.Uri.parse(matchedUrl) } catch (_: Exception) { null }
-
-                    val id = parsedUri?.getQueryParameter("id")
-                        ?: parsedUri?.getQueryParameter("inviteId")
-                        ?: Regex("""[?&](?:id|inviteId)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                    val token = parsedUri?.getQueryParameter("token")
-                        ?: Regex("""[?&]token=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                    val sender = parsedUri?.getQueryParameter("sender")
-                        ?: parsedUri?.getQueryParameter("senderIdentity")
-                        ?: Regex("""[?&](?:sender|senderIdentity)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                    val rawAlias = parsedUri?.getQueryParameter("alias")
-                        ?: parsedUri?.getQueryParameter("senderAlias")
-                        ?: Regex("""[?&](?:alias|senderAlias)=([^&\s]+)""").find(text)?.groupValues?.get(1)
-                    val alias = rawAlias?.let {
-                        try { java.net.URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it }
-                    } ?: "Usuário"
-
-                    val sig = parsedUri?.getQueryParameter("sig")
-                        ?: parsedUri?.getQueryParameter("signature")
-                        ?: Regex("""[?&](?:sig|signature)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                    val exp = parsedUri?.getQueryParameter("exp")?.toLongOrNull()
-                        ?: parsedUri?.getQueryParameter("expiresAt")?.toLongOrNull()
-                        ?: Regex("""[?&](?:exp|expiresAt)=([0-9]+)""").find(text)?.groupValues?.get(1)?.toLongOrNull()
-
-                    if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
-                        repository.redeemOneTimeInvite(
-                            inviteId = id.trim(),
-                            token = token.trim(),
-                            senderIdentity = sender.trim(),
-                            senderAlias = alias.trim(),
-                            signature = sig?.trim(),
-                            expiresAt = exp
-                        ) { success, msg, peer ->
-                            onResult(success, msg, peer)
-                        }
-                    } else {
-                        onResult(false, "Link ou formato de convite inválido.", null)
-                    }
+                    redeemInviteText(rawInput, onResult)
                 },
                 isVip = true, // Recursos VIP pré-ativados conforme diretriz do usuário
                 onUpgradeToVip = { showVipDialog = true },
@@ -571,14 +578,35 @@ fun PessoasAquiNavHost(
         )
     }
 
-    // Diálogo de Convite de Conexão Mútua Recebido via Deep Link (Uso Único)
-    incomingInvite?.let { invite ->
+    // Convites criados em Conversas e dentro do chat utilizam o mesmo modal.
+    generatedInviteUrl?.let { link ->
+        InviteShareQrDialog(link, onDismiss = { generatedInviteUrl = null })
+    }
+    invitationError?.let { error ->
+        AlertDialog(
+            onDismissRequest = { invitationError = null },
+            title = { Text("Convites do PessoasAqui", color = TextPrimary) },
+            text = { Text(error, color = TextSecondary) },
+            confirmButton = {
+                TextButton(onClick = { invitationError = null }) {
+                    Text("Entendi", color = RadarCyan)
+                }
+            },
+            containerColor = DarkSurface
+        )
+    }
+
+    // QR e App Links sempre exigem confirmação da pessoa antes de consumir.
+    (scannedInvite ?: incomingInvite)?.let { invite ->
+        val clearInvite = {
+            if (scannedInvite != null) scannedInvite = null else onClearIncomingInvite()
+        }
         var isRedeeming by remember(invite.inviteId) { mutableStateOf(false) }
         var errorMessage by remember(invite.inviteId) { mutableStateOf<String?>(null) }
 
         AlertDialog(
             onDismissRequest = {
-                if (!isRedeeming) onClearIncomingInvite()
+                if (!isRedeeming) clearInvite()
             },
             icon = {
                 Icon(
@@ -634,7 +662,7 @@ fun PessoasAquiNavHost(
                         ) { success, msg, peer ->
                             isRedeeming = false
                             if (success && peer != null) {
-                                onClearIncomingInvite()
+                                clearInvite()
                                 currentScreen = Screen.Chat(peer)
                             } else {
                                 errorMessage = msg
@@ -662,7 +690,7 @@ fun PessoasAquiNavHost(
             },
             dismissButton = {
                 TextButton(
-                    onClick = onClearIncomingInvite,
+                    onClick = clearInvite,
                     enabled = !isRedeeming
                 ) {
                     Text("Recusar", color = TextSecondary)
