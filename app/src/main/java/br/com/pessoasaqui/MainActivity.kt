@@ -94,6 +94,10 @@ class MainActivity : ComponentActivity() {
         repo?.callRingtoneWakeManager?.isAppInForeground = true
         repo?.playBillingManager?.queryActivePurchases()
         repo?.bleManager?.setAppInForeground(true)
+        // Activity visível é ponto seguro para iniciar FGS Android 12+.
+        if (repo?.hasGrantedPermissions?.value == true) {
+            br.com.pessoasaqui.core.service.PessoasAquiForegroundService.startServiceSafely(this)
+        }
         repo?.ensureBleHealthOnForeground()
 
         // Após suspensão prolongada, alguns chipsets mantêm scan marcado como
