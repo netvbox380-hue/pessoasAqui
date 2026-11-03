@@ -41,6 +41,10 @@ internal object CallSessionProtocol {
                 if (parts.size < 3 || (parts[1] != "true" && parts[1] != "false")) return null
                 // Compatibilidade: INIT legado (sem ID), v2 anterior (ID
                 // final) ou v2 com tempo de emissão para bloquear replay.
+                if (parts.size >= 5 &&
+                    validId(parts[parts.lastIndex - 1]) != null &&
+                    parts.last().toLongOrNull() == null
+                ) return null // v2 com carimbo adulterado: nunca tratar como v1
                 val issuedAt = if (parts.size >= 5) parts.last().toLongOrNull() else null
                 val timestampedId = if (issuedAt != null) validId(parts[parts.lastIndex - 1]) else null
                 val id = timestampedId ?: if (parts.size >= 4) validId(parts.last()) else null
