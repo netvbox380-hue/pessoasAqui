@@ -9,6 +9,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.ParcelUuid
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.UserIntent
@@ -220,6 +222,53 @@ class BleManager(
     @Volatile private var advertisingActive = false
     @Volatile private var lastRecoveryAttemptMs = 0L
     private val advertisingGeneration = AtomicLong(0L)
+    // Retentativas só depois de callback de falha real; backoff limita consumo.
+    private val recoveryHandler = if (context != null) Handler(Looper.getMainLooper()) else null
+    private var scanRetryTask: Runnable? = null
+    private var advertisingRetryTask: Runnable? = null
+    private var scanFailureCount = 0
+    private var advertisingFailureCount = 0
+
+    private fun backoffMs(failures: Int): Long =
+        (5_000L * (1L shl (failures.coerceIn(1, 5) - 1))).coerceAtMost(120_000L)
+
+    private fun cancelScanRetry() {
+        scanRetryTask?.let { recoveryHandler?.removeCallbacks(it) }
+        scanRetryTask = null
+    }
+
+    private fun cancelAdvertisingRetry() {
+        advertisingRetryTask?.let { recoveryHandler?.removeCallbacks(it) }
+        advertisingRetryTask = null
+    }
+
+    private fun scheduleScanRecovery() {
+        cancelScanRetry()
+        if (!isBluetoothEnabled) return
+        val cb = lastScanCallback ?: return
+        val delayMs = backoffMs(++scanFailureCount)
+        val task = Runnable {
+            scanRetryTask = null
+            if (isBluetoothEnabled && discoveryState == DiscoveryState.FAILED) startScanning(cb)
+        }
+        scanRetryTask = task
+        recoveryHandler?.postDelayed(task, delayMs)
+    }
+
+    private fun scheduleAdvertisingRecovery() {
+        cancelAdvertisingRetry()
+        if (!isBluetoothEnabled) return
+        val id = lastIdentityHash ?: return
+        val delayMs = backoffMs(++advertisingFailureCount)
+        val task = Runnable {
+            advertisingRetryTask = null
+            if (isBluetoothEnabled && !advertisingActive) {
+                startAdvertising(id, lastAlias ?: "", lastIntent ?: UserIntent.QUERO_CONVERSAR)
+            }
+        }
+        advertisingRetryTask = task
+        recoveryHandler?.postDelayed(task, delayMs)
+    }
     internal val currentDiscoveryState: DiscoveryState get() = discoveryState
 
     private var lastIdentityHash: String? = null
@@ -300,6 +349,8 @@ class BleManager(
                                 stopScanning()
                                 discoveryState = DiscoveryState.RADIO_OFF
                                 stopAdvertising()
+                                cancelScanRetry()
+                                cancelAdvertisingRetry()
                                 onBluetoothStateChanged?.invoke(false)
                             }
                             BluetoothAdapter.STATE_ON -> {
@@ -368,11 +419,16 @@ class BleManager(
                 if (generation != advertisingGeneration.get()) return@advertisingCallback
                 advertisingActive = isSuccess
                 if (isSuccess) {
+                    advertisingFailureCount = 0
+                    cancelAdvertisingRetry()
                     Log.d(tag, "BLE Advertising conectável iniciado com sucesso para presença em 10m e transporte GATT.")
                     onAdvertisingStateChanged?.invoke(true, null)
                 } else {
                     Log.w(tag, "Falha ao iniciar BLE Advertising. Código: $errorCode")
                     onAdvertisingStateChanged?.invoke(false, errorCode)
+                    if (errorCode != AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
+                        scheduleAdvertisingRecovery()
+                    }
                     if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
                         // Fallback para carga ultra-compacta conectável (18 bytes -> 25 bytes total no pacote físico)
                         try {
@@ -382,9 +438,12 @@ class BleManager(
                                 if (generation != advertisingGeneration.get()) return@fallbackCallback
                                 advertisingActive = fbSuccess
                                 if (fbSuccess) {
+                                    advertisingFailureCount = 0
+                                    cancelAdvertisingRetry()
                                     Log.d(tag, "BLE Advertising compacto conectável iniciado com sucesso.")
                                 } else {
                                     Log.e(tag, "Falha no fallback de BLE advertising: $fbErr")
+                                    scheduleAdvertisingRecovery()
                                 }
                                 onAdvertisingStateChanged?.invoke(fbSuccess, fbErr)
                             }
@@ -396,6 +455,7 @@ class BleManager(
             }
         } catch (e: Exception) {
             advertisingActive = false
+            scheduleAdvertisingRecovery()
             Log.e(tag, "Erro ao iniciar advertising BLE: ${e.message}")
             onAdvertisingStateChanged?.invoke(false, -1)
         }
@@ -408,6 +468,7 @@ class BleManager(
     fun stopAdvertising() {
         advertisingGeneration.incrementAndGet()
         advertisingActive = false
+        cancelAdvertisingRetry()
         try {
             advertiserDriver.stopAdvertising()
         } catch (e: Exception) {
@@ -465,18 +526,24 @@ class BleManager(
                     scanningActive = false
                     discoveryState = DiscoveryState.FAILED
                     Log.e(tag, "Falha no escaneamento BLE. Código: $errorCode")
+                    scheduleScanRecovery()
                 }
             }
         }
 
         try {
             scanner?.startScan(listOf(serviceFilter), settings, scanCallback)
-            scanningActive = true
-            discoveryState = DiscoveryState.SCANNING
+            if (discoveryState != DiscoveryState.FAILED) {
+                scanningActive = true
+                discoveryState = DiscoveryState.SCANNING
+                scanFailureCount = 0
+                cancelScanRetry()
+            }
             Log.d(tag, "BLE scan filtrado iniciado; foreground=$foreground")
         } catch (e: Exception) {
             scanningActive = false
             discoveryState = DiscoveryState.FAILED
+            scheduleScanRecovery()
             Log.e(tag, "Erro ao iniciar scanner BLE: ${e.message}")
         }
     }
