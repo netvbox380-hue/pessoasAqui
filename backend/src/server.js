@@ -1267,12 +1267,18 @@ app.post('/api/invites/redeem', async (req, res) => {
  * Landing Page Web do Convite (com suporte a Deep Link automático para o app PessoasAqui)
  */
 app.get('/invite', (req, res) => {
+  // Link contém segredo bearer: jamais permitir cache, indexação ou envio
+  // de URL como Referer ao navegar para sites externos.
+  res.set('Cache-Control', 'no-store, max-age=0');
+  res.set('Referrer-Policy', 'no-referrer');
+  res.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
   const { id, token, sender, alias, fallback, sig, exp } = req.query;
-  const safeAlias = (alias || 'Alguém').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeAlias = String(alias || 'Alguém').slice(0, 64)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const queryParams = `id=${encodeURIComponent(id || '')}&token=${encodeURIComponent(token || '')}&sender=${encodeURIComponent(sender || '')}&alias=${encodeURIComponent(alias || '')}&sig=${encodeURIComponent(sig || '')}&exp=${encodeURIComponent(exp || '')}`;
   const appDeepLink = `pessoasaqui://invite?${queryParams}`;
-  const currentHost = req.get('host') || 'pessoasaqui3.onrender.com';
-  const fallbackUrl = `${req.protocol}://${currentHost}/invite?${queryParams}&fallback=true`;
+  const fallbackUrl = `https://pessoasaqui3.onrender.com/invite?${queryParams}&fallback=true`;
   const chromeIntentLink = `intent://invite?${queryParams}#Intent;scheme=pessoasaqui;package=br.com.pessoasaqui;S.browser_fallback_url=${encodeURIComponent(fallbackUrl)};end`;
 
   res.send(`<!DOCTYPE html>
@@ -1401,7 +1407,7 @@ app.get('/invite', (req, res) => {
 </head>
 <body>
   <div class="card">
-    <div class="badge">🔒 Convite Criptografado de Uso Único</div>
+    <div class="badge">🔒 Convite pessoal de uso único</div>
     <h1>Conectar no PessoasAqui</h1>
     <p><span class="sender-name">${safeAlias}</span> convidou você para uma conexão mútua segura à distância com mensagens, chamadas e fotos criptografadas de ponta a ponta.</p>
     
@@ -1411,7 +1417,7 @@ app.get('/invite', (req, res) => {
 
     <div class="instructions">
       <strong style="color:#F0F6FC;">Dica de Conexão:</strong><br>
-      Se o app não abrir automaticamente, você pode tocar em <strong>"Copiar Link do Convite"</strong>, abrir o aplicativo <strong>PessoasAqui</strong>, ir na aba <strong>Privado</strong> e tocar em <strong>"Colar Convite"</strong>.
+      Se o app não abrir automaticamente, você pode tocar em <strong>"Copiar Link do Convite"</strong>, abrir o aplicativo <strong>PessoasAqui</strong>, ir na aba <strong>Conversas</strong> e tocar em <strong>"Colar Convite"</strong>.
     </div>
     <div class="security-note">Este link é exclusivo e expira após o primeiro uso.</div>
   </div>
