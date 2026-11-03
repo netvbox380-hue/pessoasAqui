@@ -1012,11 +1012,8 @@ class PessoasAquiRepository(
             startBleMaintenanceLoop()
         }
 
-        // Se o perfil já estiver configurado, registra identidade no Supabase / Render
-        if (_hasCompletedProfile.value) {
-            registerIdentityOnBackend()
-            scope.launch { refreshMySupportTickets() }
-        }
+        // Sincronização de perfil remoto é iniciada apenas quando o usuário
+        // abre a Activity ou existe um ForegroundService real, não pelo BLE.
 
         if (_hasGrantedPermissions.value) {
             // O processo pode nascer por broadcast de scanner em segundo plano.
@@ -1316,6 +1313,10 @@ class PessoasAquiRepository(
     fun ensureInternetPresenceStarted() {
         if (context == null || presencePollingStarted) return
         presencePollingStarted = true
+        if (_hasCompletedProfile.value) {
+            registerIdentityOnBackend()
+            scope.launch { refreshMySupportTickets() }
+        }
         startPresencePollingLoop()
     }
 
