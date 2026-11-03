@@ -108,7 +108,8 @@ fun MainScreen(
                 },
                 actions = {
                     // Badge indicadora de Assinante VIP
-                    if (subscriptionTier == SubscriptionTier.PRO_VIP) {
+                    if ((useNavigationRail || maxWidth >= 470.dp) &&
+                        subscriptionTier == SubscriptionTier.PRO_VIP) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = WarningAmber.copy(alpha = 0.15f),
@@ -141,8 +142,9 @@ fun MainScreen(
                         }
                     }
 
-                    // Chip com o perfil do usuário ativo neste aparelho
-                    Surface(
+                    // Em janelas estreitas a ação permanece no menu de opções;
+                    // não comprimir o título nem cortar as ações da barra.
+                    if (useNavigationRail || maxWidth >= 390.dp) Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = RadarCyan.copy(alpha = 0.12f),
                         modifier = Modifier
@@ -192,6 +194,25 @@ fun MainScreen(
                             modifier = Modifier.background(DarkSurface)
                         ) {
                             if (selectedTabIndex == 1) {
+                                // Recursos continuam acessíveis quando os chips
+                                // não cabem na barra superior de um aparelho pequeno.
+                                DropdownMenuItem(
+                                    text = { Text("Editar Meu Apelido", color = TextPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = RadarCyan) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        tempAliasInput = currentAlias
+                                        showEditProfileDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Plano VIP", color = WarningAmber) },
+                                    leadingIcon = { Icon(Icons.Default.WorkspacePremium, contentDescription = null, tint = WarningAmber) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showVipDialog = true
+                                    }
+                                )
                                 // Menu contextual da tela de Conversas: Lembretes e Transmissão
                                 DropdownMenuItem(
                                     text = { Text("Agendar Lembrete", color = TextPrimary) },
