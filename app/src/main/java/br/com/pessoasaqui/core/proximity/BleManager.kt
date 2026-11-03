@@ -515,8 +515,20 @@ class BleManager(
             if (pending != null) {
                 pendingScanIntent = pending
                 scanningWithPendingIntent = true
-                val error = scanner?.startScan(filters, settings, pending)
+                var error = scanner?.startScan(filters, settings, pending)
                     ?: ScanCallback.SCAN_FAILED_INTERNAL_ERROR
+                if (error == ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED &&
+                    settings.reportDelayMillis > 0L
+                ) {
+                    // Alguns chipsets não oferecem batching de scan em firmware.
+                    // Retentar sem batching mantendo filtro e PendingIntent.
+                    val fallback = ScanSettings.Builder()
+                        .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
+                        .setReportDelay(0L)
+                        .build()
+                    error = scanner?.startScan(filters, fallback, pending)
+                        ?: ScanCallback.SCAN_FAILED_INTERNAL_ERROR
+                }
                 if (error != 0 && error != ScanCallback.SCAN_FAILED_ALREADY_STARTED) {
                     scanningWithPendingIntent = false
                     scanLifecycle.failed()
