@@ -146,6 +146,7 @@ fun AgeGateScreen(
     ) {
         Card(
             modifier = Modifier
+                .widthIn(max = 600.dp)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
             shape = RoundedCornerShape(20.dp),
