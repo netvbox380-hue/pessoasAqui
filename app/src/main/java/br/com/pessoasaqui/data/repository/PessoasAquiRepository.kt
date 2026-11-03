@@ -8,6 +8,7 @@ import br.com.pessoasaqui.core.crypto.E2eeCryptoEngine
 import br.com.pessoasaqui.core.crypto.PinSecurityManager
 import br.com.pessoasaqui.core.media.CallMediaEngine
 import br.com.pessoasaqui.core.media.CallSignalingProtocol
+import br.com.pessoasaqui.core.media.CallSessionStateMachine
 import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.moderation.ContentModerationManager
 import br.com.pessoasaqui.core.proximity.BleManager
@@ -244,9 +245,7 @@ class PessoasAquiRepository(
         if (removeMyMark) savedMarkedPeople.remove(cid)
         if (queueRemoteUnmark) pendingUnmarkPeople.add(cid)
         if (_activeCallState.value?.peerHash?.let(::cleanId) == cid) {
-            callRingtoneWakeManager?.stopAllCallAlerts()
-            callMediaEngine?.stopCallMedia()
-            _activeCallState.value = null
+            finishActiveCall(notifyPeer = false)
         }
         _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
             if (cleanId(peer.technicalIdentityHash.ifBlank { peer.id }) == cid) {
@@ -689,7 +688,7 @@ class PessoasAquiRepository(
     @Volatile private var activeCallGeneration: String? = null
     private var callConnectedAtMs: Long = 0L
     private var outgoingCallTimeoutJob: Job? = null
-    private val completedCallIds = LinkedHashSet<String>()
+    private val callLifecycle = CallSessionStateMachine()
 
     private fun markActiveCallConnected() {
         synchronized(callStateLock) {
@@ -706,8 +705,8 @@ class PessoasAquiRepository(
                 ((System.currentTimeMillis() - callConnectedAtMs) / 1000L).coerceAtLeast(0L)
             } else 0L
             val callId = activeCallGeneration ?: CallSignalingProtocol.newCallId()
-            completedCallIds.add(callId)
-            if (completedCallIds.size > 128) completedCallIds.remove(completedCallIds.first())
+            val reason = callLifecycle.finish(callId, cleanId(current.peerHash),
+                byTimeout = timedOut, byRemotePeer = remoteEnded) ?: return
             _activeCallState.value = null
             activeCallGeneration = null
             callConnectedAtMs = 0L
@@ -720,13 +719,12 @@ class PessoasAquiRepository(
         callMediaEngine?.stopCallMedia()
 
         val type = if (current.isVideo) "📹 Videochamada" else "📞 Chamada de voz"
-        val outcome = when {
-            current.isConnected && current.isIncoming -> "recebida"
-            current.isConnected -> "realizada"
-            current.isIncoming && (timedOut || remoteEnded) -> "perdida"
-            current.isIncoming -> "recusada"
-            timedOut || remoteEnded -> "não atendida"
-            else -> "cancelada"
+        val outcome = when (reason) {
+            CallSessionStateMachine.FinishReason.COMPLETED -> if (current.isIncoming) "recebida" else "realizada"
+            CallSessionStateMachine.FinishReason.CANCELLED -> "cancelada"
+            CallSessionStateMachine.FinishReason.DECLINED -> "recusada"
+            CallSessionStateMachine.FinishReason.MISSED -> "perdida"
+            CallSessionStateMachine.FinishReason.NO_ANSWER -> "não atendida"
         }
         val durationText = if (current.isConnected) " — ${durationSeconds / 60}min ${durationSeconds % 60}s" else ""
         proximitySimulator.recordCallHistory(
@@ -956,7 +954,7 @@ class PessoasAquiRepository(
                 val generation = CallSignalingProtocol.invitationCallId(payload)
                     ?: CallSignalingProtocol.newCallId()
                 synchronized(callStateLock) {
-                    if (generation in completedCallIds) return
+                    if (!callLifecycle.begin(generation, cleanSender, isVideo, incoming = true)) return
                     activeCallGeneration = generation
                     callConnectedAtMs = 0L
                 }
@@ -981,7 +979,8 @@ class PessoasAquiRepository(
                 val callId = activeCallGeneration
                 if (current != null && !current.isIncoming && !current.isConnected &&
                     cleanId(current.peerHash) == cleanSender &&
-                    CallSignalingProtocol.belongsToCall(payload, CallSignalingProtocol.Command.ACCEPT, callId)) {
+                    CallSignalingProtocol.belongsToCall(payload, CallSignalingProtocol.Command.ACCEPT, callId) &&
+                    callLifecycle.accept(callId!!, cleanSender, byLocalUser = false)) {
                     callRingtoneWakeManager?.stopAllCallAlerts()
                     _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
                     markActiveCallConnected()
@@ -2363,6 +2362,7 @@ class PessoasAquiRepository(
         if (!isPeerPermanent(cleanHash) || _activeCallState.value != null) return
         val generation = CallSignalingProtocol.newCallId()
         synchronized(callStateLock) {
+            if (!callLifecycle.begin(generation, cleanHash, isVideo, incoming = false)) return
             activeCallGeneration = generation
             callConnectedAtMs = 0L
             outgoingCallTimeoutJob?.cancel()
@@ -2403,13 +2403,14 @@ class PessoasAquiRepository(
     fun answerCall() {
         val current = _activeCallState.value ?: return
         if (!current.isIncoming || current.isConnected) return
+        val generation = activeCallGeneration ?: return
+        if (!callLifecycle.accept(generation, cleanId(current.peerHash), byLocalUser = true)) return
         callRingtoneWakeManager?.stopAllCallAlerts()
         _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
         markActiveCallConnected()
         callMediaEngine?.startCallMedia(current.isVideo)
 
         // Envio prioritário imediato
-        val generation = activeCallGeneration ?: return
         val acceptSignal = CallSignalingProtocol.encode(CallSignalingProtocol.Command.ACCEPT, generation)
         sendPrivateMessage(current.peerHash, acceptSignal)
 
