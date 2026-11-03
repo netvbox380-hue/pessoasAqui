@@ -1007,7 +1007,8 @@ class PessoasAquiRepository(
         // Objetos criados nos testes JVM (sem Context Android) não devem
         // executar polling real e consumir recursos do Render.
         if (context != null) {
-            startPresencePollingLoop()
+            // Recriação pelo PendingIntent BLE não deve acordar nem consumir
+            // quota do Render. O polling inicia ao abrir UI ou no serviço ativo.
             startBleMaintenanceLoop()
         }
 
@@ -1307,6 +1308,15 @@ class PessoasAquiRepository(
                 }
             }
         }
+    }
+
+    @Volatile private var presencePollingStarted = false
+
+    @Synchronized
+    fun ensureInternetPresenceStarted() {
+        if (context == null || presencePollingStarted) return
+        presencePollingStarted = true
+        startPresencePollingLoop()
     }
 
     private fun startPresencePollingLoop() {
