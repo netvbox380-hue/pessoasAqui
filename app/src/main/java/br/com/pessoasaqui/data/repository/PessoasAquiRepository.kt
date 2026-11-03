@@ -684,6 +684,66 @@ class PessoasAquiRepository(
     private val _activeCallState = MutableStateFlow<ActiveCallState?>(null)
     val activeCallState: StateFlow<ActiveCallState?> = _activeCallState.asStateFlow()
 
+    private val callStateLock = Any()
+    private var activeCallGeneration: String? = null
+    private var callConnectedAtMs: Long = 0L
+    private var outgoingCallTimeoutJob: Job? = null
+
+    private fun markActiveCallConnected() {
+        synchronized(callStateLock) {
+            if (callConnectedAtMs == 0L) callConnectedAtMs = System.currentTimeMillis()
+            outgoingCallTimeoutJob?.cancel()
+            outgoingCallTimeoutJob = null
+        }
+    }
+
+    private fun finishActiveCall(timedOut: Boolean = false, remoteEnded: Boolean = false, notifyPeer: Boolean = !remoteEnded) {
+        val completed = synchronized(callStateLock) {
+            val current = _activeCallState.value ?: return
+            val durationSeconds = if (current.isConnected && callConnectedAtMs > 0L) {
+                ((System.currentTimeMillis() - callConnectedAtMs) / 1000L).coerceAtLeast(0L)
+            } else 0L
+            val callId = activeCallGeneration ?: UUID.randomUUID().toString()
+            _activeCallState.value = null
+            activeCallGeneration = null
+            callConnectedAtMs = 0L
+            outgoingCallTimeoutJob?.cancel()
+            outgoingCallTimeoutJob = null
+            Triple(current, durationSeconds, callId)
+        }
+        val (current, durationSeconds, callId) = completed
+        callRingtoneWakeManager?.stopAllCallAlerts()
+        callMediaEngine?.stopCallMedia()
+
+        val type = if (current.isVideo) "📹 Videochamada" else "📞 Chamada de voz"
+        val outcome = when {
+            current.isConnected && current.isIncoming -> "recebida"
+            current.isConnected -> "realizada"
+            current.isIncoming && (timedOut || remoteEnded) -> "perdida"
+            current.isIncoming -> "recusada"
+            timedOut || remoteEnded -> "não atendida"
+            else -> "cancelada"
+        }
+        val durationText = if (current.isConnected) " — ${durationSeconds / 60}min ${durationSeconds % 60}s" else ""
+        proximitySimulator.recordCallHistory(
+            peerId = current.peerHash,
+            description = "$type $outcome$durationText",
+            outgoing = !current.isIncoming,
+            myAlias = _currentAlias.value,
+            entryId = "call-$callId"
+        )
+        updateUnifiedData()
+
+        if (notifyPeer) {
+            sendPrivateMessage(current.peerHash, "[CALL_END]")
+            // Compatibilidade com o protocolo existente: reenvio idempotente.
+            scope.launch {
+                delay(200L)
+                sendPrivateMessage(current.peerHash, "[CALL_END]")
+            }
+        }
+    }
+
     private val _pendingFamilyRequest = MutableStateFlow<Pair<NearbyPerson, FamilyRole>?>(null)
     val pendingFamilyRequest: StateFlow<Pair<NearbyPerson, FamilyRole>?> = _pendingFamilyRequest.asStateFlow()
 
@@ -873,6 +933,7 @@ class PessoasAquiRepository(
                 if (current != null && !current.isConnected && !current.isIncoming) {
                     callRingtoneWakeManager?.stopAllCallAlerts()
                     _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+                    markActiveCallConnected()
                     callMediaEngine?.startCallMedia(current.isVideo)
                     sendPrivateMessage(current.peerHash, "[CALL_ACK]")
                 }
@@ -886,6 +947,7 @@ class PessoasAquiRepository(
                 if (current != null && !current.isConnected && !current.isIncoming) {
                     callRingtoneWakeManager?.stopAllCallAlerts()
                     _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = true, remoteVideoFrameBase64 = b64)
+                    markActiveCallConnected()
                     callMediaEngine?.startCallMedia(true)
                     sendPrivateMessage(current.peerHash, "[CALL_ACK]")
                 } else {
@@ -893,9 +955,19 @@ class PessoasAquiRepository(
                 }
             }
             payload.startsWith("[CALL_INIT:") -> {
+                // Chamadas são exclusivas de vínculos permanentes. Retransmissões
+                // CALL_INIT não podem reiniciar o toque nem o timer da ligação.
+                if (!isPeerPermanent(cleanSender)) return
+                if (_activeCallState.value != null) return
+
                 val parts = payload.removePrefix("[CALL_INIT:").removeSuffix("]").split(":")
                 val isVideo = parts.getOrNull(0)?.toBoolean() ?: false
                 val callerAlias = parts.getOrNull(1) ?: senderAlias
+                val generation = UUID.randomUUID().toString()
+                synchronized(callStateLock) {
+                    activeCallGeneration = generation
+                    callConnectedAtMs = 0L
+                }
                 _activeCallState.value = ActiveCallState(
                     isIncoming = true,
                     peerHash = cleanSender,
@@ -907,14 +979,17 @@ class PessoasAquiRepository(
                     callerHash = cleanSender,
                     callerAlias = callerAlias,
                     isVideo = isVideo,
-                    onAutoTimeout = { endCall() }
+                    onAutoTimeout = {
+                        if (activeCallGeneration == generation) finishActiveCall(timedOut = true)
+                    }
                 )
             }
             payload.startsWith("[CALL_ACCEPT]") -> {
                 callRingtoneWakeManager?.stopAllCallAlerts()
                 val current = _activeCallState.value
-                if (current != null && !current.isConnected) {
+                if (current != null && !current.isConnected && cleanId(current.peerHash) == cleanSender) {
                     _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+                    markActiveCallConnected()
                     callMediaEngine?.startCallMedia(current.isVideo)
                     // Confirmação de recebimento (handshake bidirecional)
                     sendPrivateMessage(current.peerHash, "[CALL_ACK]")
@@ -923,15 +998,16 @@ class PessoasAquiRepository(
             payload.startsWith("[CALL_ACK]") -> {
                 callRingtoneWakeManager?.stopAllCallAlerts()
                 val current = _activeCallState.value
-                if (current != null && !current.isConnected) {
+                if (current != null && !current.isConnected && cleanId(current.peerHash) == cleanSender) {
                     _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+                    markActiveCallConnected()
                     callMediaEngine?.startCallMedia(current.isVideo)
                 }
             }
             payload.startsWith("[CALL_END]") -> {
-                callRingtoneWakeManager?.stopAllCallAlerts()
-                callMediaEngine?.stopCallMedia()
-                _activeCallState.value = null
+                if (_activeCallState.value?.peerHash?.let(::cleanId) == cleanSender) {
+                    finishActiveCall(remoteEnded = true, notifyPeer = false)
+                }
             }
             payload.startsWith("[FAMILY_REQ:") -> {
                 val parts = payload.removePrefix("[FAMILY_REQ:").removeSuffix("]").split(":")
@@ -2282,7 +2358,15 @@ class PessoasAquiRepository(
     }
 
     fun startCall(person: NearbyPerson, isVideo: Boolean) {
-        val cleanHash = person.technicalIdentityHash.removePrefix("peer-")
+        val cleanHash = cleanId(person.technicalIdentityHash.ifBlank { person.id })
+        // O Modo A é texto BLE: nunca abrir chamada sem conexão confirmada.
+        if (!isPeerPermanent(cleanHash) || _activeCallState.value != null) return
+        val generation = UUID.randomUUID().toString()
+        synchronized(callStateLock) {
+            activeCallGeneration = generation
+            callConnectedAtMs = 0L
+            outgoingCallTimeoutJob?.cancel()
+        }
         _activeCallState.value = ActiveCallState(
             isIncoming = false,
             peerHash = cleanHash,
@@ -2293,6 +2377,16 @@ class PessoasAquiRepository(
         )
         callRingtoneWakeManager?.startOutgoingRingbackTone()
         sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
+
+        // Chamadas não atendidas precisam terminar automaticamente no chamador.
+        outgoingCallTimeoutJob = scope.launch {
+            delay(45_000L)
+            if (activeCallGeneration == generation &&
+                _activeCallState.value?.let { !it.isIncoming && !it.isConnected } == true
+            ) {
+                finishActiveCall(timedOut = true)
+            }
+        }
 
         // Retransmissão preventiva de CALL_INIT após 800ms para garantir toque caso haja oscilação inicial
         scope.launch {
@@ -2306,8 +2400,10 @@ class PessoasAquiRepository(
 
     fun answerCall() {
         val current = _activeCallState.value ?: return
+        if (!current.isIncoming || current.isConnected) return
         callRingtoneWakeManager?.stopAllCallAlerts()
         _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+        markActiveCallConnected()
         callMediaEngine?.startCallMedia(current.isVideo)
 
         // Envio prioritário imediato
@@ -2326,18 +2422,7 @@ class PessoasAquiRepository(
     }
 
     fun endCall() {
-        callRingtoneWakeManager?.stopAllCallAlerts()
-        val current = _activeCallState.value ?: return
-        val peer = current.peerHash
-        callMediaEngine?.stopCallMedia()
-        _activeCallState.value = null
-        sendPrivateMessage(peer, "[CALL_END]")
-
-        // Envio repetido de garantia para desligamento instantâneo em ambos os aparelhos
-        scope.launch {
-            delay(200)
-            sendPrivateMessage(peer, "[CALL_END]")
-        }
+        finishActiveCall()
     }
 
     fun toggleCallMute() {
