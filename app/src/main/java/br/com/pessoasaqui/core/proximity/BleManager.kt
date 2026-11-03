@@ -489,12 +489,13 @@ class BleManager(
         }
 
         // O advertising envia Service Data do UUID 0xFA01, NÃO Service UUID.
-        // setServiceData(uuid, null) filtra a existência da chave sem filtrar
-        // o conteúdo variável (identidade/intenção) transmitido por cada peer.
+        // setServiceData(uuid, byteArrayOf()) exige a presença do serviço
+        // mas aceita qualquer payload variável. Null é inválido na rotina
+        // matchesPartialData de algumas versões AOSP.
         // Scan filtrado evita a suspensão automática da busca sem filtros na
         // tela apagada, conforme BluetoothLeScanner do Android.
         val filters = listOf(
-            ScanFilter.Builder().setServiceData(ParcelUuid(BleConstants.SERVICE_UUID), null).build()
+            ScanFilter.Builder().setServiceData(ParcelUuid(BleConstants.SERVICE_UUID), byteArrayOf()).build()
         )
         val settings = ScanSettings.Builder()
             .setScanMode(if (appInForeground) ScanSettings.SCAN_MODE_LOW_LATENCY else ScanSettings.SCAN_MODE_BALANCED)
