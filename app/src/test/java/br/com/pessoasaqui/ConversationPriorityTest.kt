@@ -59,6 +59,15 @@ class ConversationPriorityTest {
         assertEquals(1, snapshot.orderedConversations.size)
     }
 
+    @Test fun systemCallEventsDoNotRaiseUnreadCounter() {
+        val p = person("C1")
+        val system = message("call", 90, read = false)
+            .copy(messageType = br.com.pessoasaqui.domain.model.MessageType.SYSTEM,
+                  text = "📞 Chamada de voz perdida")
+        val result = ConversationPriority.build(listOf(p), mapOf("C1" to listOf(system)))
+        assertEquals(0, result.orderedConversations.single().unreadCount)
+    }
+
     @Test fun anUnstarredMessageIsImmediatelyRemovedFromHighlights() {
         val p = person("A1")
         val original = message("m", 100, star = true)
