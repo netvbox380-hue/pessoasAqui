@@ -227,7 +227,7 @@ fun RecurringRemindersDialog(
     ) {
         Surface(
             modifier = Modifier
-                .widthIn(min = 320.dp, max = 540.dp)
+                .widthIn(max = 680.dp)
                 .fillMaxWidth(0.95f)
                 .heightIn(max = 700.dp)
                 .fillMaxHeight(0.92f)
