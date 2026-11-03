@@ -1685,7 +1685,34 @@ class PessoasAquiRepository(
         startNativeBleHardware()
     }
 
+    /**
+     * Concessão persistida não equivale a autorização do Android: usuário pode
+     * revogar Nearby Devices/localização a qualquer momento em Configurações.
+     */
+    fun reconcileRuntimeBlePermissions(): Boolean {
+        val ctx = context ?: return true
+        val required = mutableListOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            required.add(android.Manifest.permission.BLUETOOTH_SCAN)
+            required.add(android.Manifest.permission.BLUETOOTH_ADVERTISE)
+            required.add(android.Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        val granted = required.all {
+            androidx.core.content.ContextCompat.checkSelfPermission(ctx, it) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (!granted && _hasGrantedPermissions.value) {
+            _hasGrantedPermissions.value = false
+            prefs?.edit()?.putBoolean("has_granted_permissions", false)?.apply()
+            bleManager?.stopScanning()
+            bleManager?.stopAdvertising()
+            bleTransportCoordinator.stop()
+        }
+        return granted
+    }
+
     fun completePermissions() {
+        if (!reconcileRuntimeBlePermissions()) return
         _hasGrantedPermissions.value = true
         prefs?.edit()?.putBoolean("has_granted_permissions", true)?.apply()
         startNativeBleHardware()
