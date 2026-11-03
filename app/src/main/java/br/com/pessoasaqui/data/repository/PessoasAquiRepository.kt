@@ -689,6 +689,8 @@ class PessoasAquiRepository(
     private var callConnectedAtMs: Long = 0L
     private var outgoingCallTimeoutJob: Job? = null
     private val callLifecycle = CallSessionStateMachine()
+    // Impede nova chamada entre a transição terminal e a liberação da mídia.
+    @Volatile private var callCleanupInProgress = false
 
     private fun markActiveCallConnected() {
         synchronized(callStateLock) {
@@ -707,6 +709,7 @@ class PessoasAquiRepository(
             val callId = activeCallGeneration ?: CallSignalingProtocol.newCallId()
             val reason = callLifecycle.finish(callId, cleanId(current.peerHash),
                 byTimeout = timedOut, byRemotePeer = remoteEnded) ?: return
+            callCleanupInProgress = true
             _activeCallState.value = null
             activeCallGeneration = null
             callConnectedAtMs = 0L
@@ -716,34 +719,38 @@ class PessoasAquiRepository(
         }
         val (callDetails, reason) = completed
         val (current, durationSeconds, callId) = callDetails
-        callRingtoneWakeManager?.stopAllCallAlerts()
-        callMediaEngine?.stopCallMedia()
+        try {
+            callRingtoneWakeManager?.stopAllCallAlerts()
+            callMediaEngine?.stopCallMedia()
 
-        val type = if (current.isVideo) "📹 Videochamada" else "📞 Chamada de voz"
-        val outcome = when (reason) {
-            CallSessionStateMachine.FinishReason.COMPLETED -> if (current.isIncoming) "recebida" else "realizada"
-            CallSessionStateMachine.FinishReason.CANCELLED -> "cancelada"
-            CallSessionStateMachine.FinishReason.DECLINED -> "recusada"
-            CallSessionStateMachine.FinishReason.MISSED -> "perdida"
-            CallSessionStateMachine.FinishReason.NO_ANSWER -> "não atendida"
-        }
-        val durationText = if (current.isConnected) " — ${durationSeconds / 60}min ${durationSeconds % 60}s" else ""
-        proximitySimulator.recordCallHistory(
-            peerId = current.peerHash,
-            description = "$type $outcome$durationText",
-            outgoing = !current.isIncoming,
-            myAlias = _currentAlias.value,
-            entryId = "call-$callId"
-        )
-        updateUnifiedData()
-
-        if (notifyPeer) {
-            val endSignal = CallSignalingProtocol.encode(CallSignalingProtocol.Command.END, callId)
-            sendPrivateMessage(current.peerHash, endSignal)
-            scope.launch {
-                delay(200L)
-                sendPrivateMessage(current.peerHash, endSignal)
+            val type = if (current.isVideo) "📹 Videochamada" else "📞 Chamada de voz"
+            val outcome = when (reason) {
+                CallSessionStateMachine.FinishReason.COMPLETED -> if (current.isIncoming) "recebida" else "realizada"
+                CallSessionStateMachine.FinishReason.CANCELLED -> "cancelada"
+                CallSessionStateMachine.FinishReason.DECLINED -> "recusada"
+                CallSessionStateMachine.FinishReason.MISSED -> "perdida"
+                CallSessionStateMachine.FinishReason.NO_ANSWER -> "não atendida"
             }
+            val durationText = if (current.isConnected) " — ${durationSeconds / 60}min ${durationSeconds % 60}s" else ""
+            proximitySimulator.recordCallHistory(
+                peerId = current.peerHash,
+                description = "$type $outcome$durationText",
+                outgoing = !current.isIncoming,
+                myAlias = _currentAlias.value,
+                entryId = "call-$callId"
+            )
+            updateUnifiedData()
+
+            if (notifyPeer) {
+                val endSignal = CallSignalingProtocol.encode(CallSignalingProtocol.Command.END, callId)
+                sendPrivateMessage(current.peerHash, endSignal)
+                scope.launch {
+                    delay(200L)
+                    sendPrivateMessage(current.peerHash, endSignal)
+                }
+            }
+        } finally {
+            callCleanupInProgress = false
         }
     }
 
@@ -947,7 +954,7 @@ class PessoasAquiRepository(
                 // Chamadas são exclusivas de vínculos permanentes. Retransmissões
                 // CALL_INIT não podem reiniciar o toque nem o timer da ligação.
                 if (!isPeerPermanent(cleanSender)) return
-                if (_activeCallState.value != null) return
+                if (_activeCallState.value != null || callCleanupInProgress) return
 
                 val parts = payload.removePrefix("[CALL_INIT:").removeSuffix("]").split(":")
                 val isVideo = parts.getOrNull(0)?.toBoolean() ?: false
@@ -2369,7 +2376,7 @@ class PessoasAquiRepository(
     fun startCall(person: NearbyPerson, isVideo: Boolean) {
         val cleanHash = cleanId(person.technicalIdentityHash.ifBlank { person.id })
         // O Modo A é texto BLE: nunca abrir chamada sem conexão confirmada.
-        if (!isPeerPermanent(cleanHash) || _activeCallState.value != null) return
+        if (!isPeerPermanent(cleanHash) || _activeCallState.value != null || callCleanupInProgress) return
         val generation = CallSignalingProtocol.newCallId()
         synchronized(callStateLock) {
             if (!callLifecycle.begin(generation, cleanHash, isVideo, incoming = false)) return
