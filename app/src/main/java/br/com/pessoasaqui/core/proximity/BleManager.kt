@@ -500,7 +500,8 @@ class BleManager(
         )
         val settings = ScanSettings.Builder()
             .setScanMode(if (appInForeground) ScanSettings.SCAN_MODE_LOW_LATENCY else ScanSettings.SCAN_MODE_BALANCED)
-            .setReportDelay(0)
+            // No segundo plano agrupar descobertas para reduzir wakes do processo.
+            .setReportDelay(if (appInForeground) 0L else 5_000L)
             .build()
         scanLifecycle.starting()
 
