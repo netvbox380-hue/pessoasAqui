@@ -804,6 +804,20 @@ class PessoasAquiRepository(
         bleManager?.onDeviceAddressDiscovered = { peerHash, address ->
             bleTransportCoordinator.recordPeerDeviceAddress(peerHash, address)
         }
+        bleManager?.onBluetoothStateChanged = { enabled ->
+            try {
+                if (!enabled) {
+                    // O Android encerra conexões GATT ao desligar o adaptador:
+                    // descartar handles antigos antes da próxima inicialização.
+                    bleTransportCoordinator.stop()
+                } else if (_hasGrantedPermissions.value) {
+                    // A ordem importa: servidor GATT primeiro, anúncios e scanner depois.
+                    bleTransportCoordinator.start()
+                }
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Falha ao sincronizar GATT com estado do Bluetooth: ${e.message}")
+            }
+        }
 
         // Objetos criados nos testes JVM (sem Context Android) não devem
         // executar polling real e consumir recursos do Render.
@@ -1082,6 +1096,32 @@ class PessoasAquiRepository(
                 }
                 proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload, messageId)
                 callRingtoneWakeManager?.notifyIncomingMessageIfBackground(senderAlias, payload)
+            }
+        }
+    }
+
+    /**
+     * Manutenção BLE independente do backend. Ao perder Wi-Fi/Render, o Radar
+     * continua limpando sessões físicas expiradas e recuperando scan/advertise.
+     * Não reinicia o servidor GATT durante sessões já autenticadas.
+     */
+    private fun startBleMaintenanceLoop() {
+        val ble = bleManager ?: return
+        scope.launch {
+            var lastHealthCheckMs = 0L
+            while (true) {
+                delay(5000L)
+                if (!_hasGrantedPermissions.value) continue
+                try {
+                    cleanupExpiredTemporarySessions()
+                    val now = System.currentTimeMillis()
+                    if (ble.isBluetoothEnabled && now - lastHealthCheckMs >= 30_000L) {
+                        lastHealthCheckMs = now
+                        ble.ensureDiscoveryContinuity(now)
+                    }
+                } catch (e: Exception) {
+                    Log.w("PessoasAqui", "Monitor independente do BLE: ${e.message}")
+                }
             }
         }
     }
@@ -1588,6 +1628,21 @@ class PessoasAquiRepository(
 
     fun restartBleHardware() {
         startNativeBleHardware()
+    }
+
+    /** Recupera descoberta ao voltar ao app, sem forçar reinício do GATT ativo. */
+    fun ensureBleHealthOnForeground() {
+        if (!_hasGrantedPermissions.value) return
+        val ble = bleManager ?: return
+        if (!ble.isBluetoothEnabled) return
+        try {
+            if (!bleTransportCoordinator.serverManager.isServerRunning) {
+                bleTransportCoordinator.start()
+            }
+            ble.ensureDiscoveryContinuity()
+        } catch (e: Exception) {
+            Log.w("PessoasAqui", "Falha ao verificar BLE ao voltar ao app: ${e.message}")
+        }
     }
 
     fun setAlias(newAlias: String): Boolean {
