@@ -527,9 +527,8 @@ class BleManager(
         if (identityHash.equals(myCleanId, ignoreCase = true)) {
             return
         }
-        if (!peerAlias.isNullOrBlank() && !lastAlias.isNullOrBlank() && peerAlias.equals(lastAlias, ignoreCase = true)) {
-            return
-        }
+        // Apelidos não são identificadores únicos: duas pessoas podem usar o
+        // mesmo nome. A supressão do próprio aparelho usa apenas a identidade.
 
         // Suavização do RSSI por aparelho via EMA (Exponential Moving Average):
         // Elimina oscilações instantâneas de radiofrequência que faziam contatos saltarem de posição
