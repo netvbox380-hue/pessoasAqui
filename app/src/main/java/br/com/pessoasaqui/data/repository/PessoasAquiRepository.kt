@@ -7,6 +7,7 @@ import br.com.pessoasaqui.core.crypto.DeviceSessionManager
 import br.com.pessoasaqui.core.crypto.E2eeCryptoEngine
 import br.com.pessoasaqui.core.crypto.PinSecurityManager
 import br.com.pessoasaqui.core.media.CallMediaEngine
+import br.com.pessoasaqui.core.media.CallSignalingProtocol
 import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.moderation.ContentModerationManager
 import br.com.pessoasaqui.core.proximity.BleManager
@@ -688,6 +689,7 @@ class PessoasAquiRepository(
     @Volatile private var activeCallGeneration: String? = null
     private var callConnectedAtMs: Long = 0L
     private var outgoingCallTimeoutJob: Job? = null
+    private val completedCallIds = LinkedHashSet<String>()
 
     private fun markActiveCallConnected() {
         synchronized(callStateLock) {
@@ -703,7 +705,9 @@ class PessoasAquiRepository(
             val durationSeconds = if (current.isConnected && callConnectedAtMs > 0L) {
                 ((System.currentTimeMillis() - callConnectedAtMs) / 1000L).coerceAtLeast(0L)
             } else 0L
-            val callId = activeCallGeneration ?: UUID.randomUUID().toString()
+            val callId = activeCallGeneration ?: CallSignalingProtocol.newCallId()
+            completedCallIds.add(callId)
+            if (completedCallIds.size > 128) completedCallIds.remove(completedCallIds.first())
             _activeCallState.value = null
             activeCallGeneration = null
             callConnectedAtMs = 0L
@@ -735,11 +739,11 @@ class PessoasAquiRepository(
         updateUnifiedData()
 
         if (notifyPeer) {
-            sendPrivateMessage(current.peerHash, "[CALL_END]")
-            // Compatibilidade com o protocolo existente: reenvio idempotente.
+            val endSignal = CallSignalingProtocol.encode(CallSignalingProtocol.Command.END, callId)
+            sendPrivateMessage(current.peerHash, endSignal)
             scope.launch {
                 delay(200L)
-                sendPrivateMessage(current.peerHash, "[CALL_END]")
+                sendPrivateMessage(current.peerHash, endSignal)
             }
         }
     }
@@ -926,32 +930,18 @@ class PessoasAquiRepository(
 
         when {
             payload.startsWith("[CALL_AUDIO_FRAME:") -> {
-                val b64 = payload.removePrefix("[CALL_AUDIO_FRAME:").removeSuffix("]")
-                // Se o chamador recebe áudio do destinatário mas seu estado ainda marca 'não conectado',
-                // significa que o destinatário atendeu! Conecta imediatamente e inicia sua mídia.
-                val current = _activeCallState.value
-                if (current != null && !current.isConnected && !current.isIncoming) {
-                    callRingtoneWakeManager?.stopAllCallAlerts()
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
-                    markActiveCallConnected()
-                    callMediaEngine?.startCallMedia(current.isVideo)
-                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
+                // Mídia não constitui aceitação: o usuário precisa atender.
+                val active = _activeCallState.value
+                if (active?.isConnected == true && cleanId(active.peerHash) == cleanSender) {
+                    callMediaEngine?.playRemoteAudioFrame(payload.removePrefix("[CALL_AUDIO_FRAME:").removeSuffix("]"))
                 }
-                callMediaEngine?.playRemoteAudioFrame(b64)
             }
             payload.startsWith("[CALL_VIDEO_FRAME:") -> {
-                val b64 = payload.removePrefix("[CALL_VIDEO_FRAME:").removeSuffix("]")
-                // Se o chamador recebe vídeo do destinatário mas seu estado ainda marca 'não conectado',
-                // conecta imediatamente e inicia sua transmissão.
-                val current = _activeCallState.value
-                if (current != null && !current.isConnected && !current.isIncoming) {
-                    callRingtoneWakeManager?.stopAllCallAlerts()
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = true, remoteVideoFrameBase64 = b64)
-                    markActiveCallConnected()
-                    callMediaEngine?.startCallMedia(true)
-                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
-                } else {
-                    _activeCallState.value = _activeCallState.value?.copy(remoteVideoFrameBase64 = b64)
+                val active = _activeCallState.value
+                if (active?.isConnected == true && active.isVideo &&
+                    cleanId(active.peerHash) == cleanSender) {
+                    val frame = payload.removePrefix("[CALL_VIDEO_FRAME:").removeSuffix("]")
+                    _activeCallState.value = active.copy(remoteVideoFrameBase64 = frame)
                 }
             }
             payload.startsWith("[CALL_INIT:") -> {
@@ -963,8 +953,10 @@ class PessoasAquiRepository(
                 val parts = payload.removePrefix("[CALL_INIT:").removeSuffix("]").split(":")
                 val isVideo = parts.getOrNull(0)?.toBoolean() ?: false
                 val callerAlias = parts.getOrNull(1) ?: senderAlias
-                val generation = UUID.randomUUID().toString()
+                val generation = CallSignalingProtocol.invitationCallId(payload)
+                    ?: CallSignalingProtocol.newCallId()
                 synchronized(callStateLock) {
+                    if (generation in completedCallIds) return
                     activeCallGeneration = generation
                     callConnectedAtMs = 0L
                 }
@@ -985,27 +977,26 @@ class PessoasAquiRepository(
                 )
             }
             payload.startsWith("[CALL_ACCEPT]") -> {
-                callRingtoneWakeManager?.stopAllCallAlerts()
                 val current = _activeCallState.value
-                if (current != null && !current.isIncoming && !current.isConnected && cleanId(current.peerHash) == cleanSender) {
+                val callId = activeCallGeneration
+                if (current != null && !current.isIncoming && !current.isConnected &&
+                    cleanId(current.peerHash) == cleanSender &&
+                    CallSignalingProtocol.belongsToCall(payload, CallSignalingProtocol.Command.ACCEPT, callId)) {
+                    callRingtoneWakeManager?.stopAllCallAlerts()
                     _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
                     markActiveCallConnected()
                     callMediaEngine?.startCallMedia(current.isVideo)
-                    // Confirmação de recebimento (handshake bidirecional)
-                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
+                    sendPrivateMessage(current.peerHash,
+                        CallSignalingProtocol.encode(CallSignalingProtocol.Command.ACK, callId!!))
                 }
             }
             payload.startsWith("[CALL_ACK]") -> {
-                callRingtoneWakeManager?.stopAllCallAlerts()
-                val current = _activeCallState.value
-                if (current != null && !current.isIncoming && !current.isConnected && cleanId(current.peerHash) == cleanSender) {
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
-                    markActiveCallConnected()
-                    callMediaEngine?.startCallMedia(current.isVideo)
-                }
+                // ACK é confirmação de sinalização, jamais aceite.
             }
             payload.startsWith("[CALL_END]") -> {
-                if (_activeCallState.value?.peerHash?.let(::cleanId) == cleanSender) {
+                val current = _activeCallState.value
+                if (current != null && cleanId(current.peerHash) == cleanSender &&
+                    CallSignalingProtocol.belongsToCall(payload, CallSignalingProtocol.Command.END, activeCallGeneration)) {
                     finishActiveCall(remoteEnded = true, notifyPeer = false)
                 }
             }
@@ -2370,7 +2361,7 @@ class PessoasAquiRepository(
         val cleanHash = cleanId(person.technicalIdentityHash.ifBlank { person.id })
         // O Modo A é texto BLE: nunca abrir chamada sem conexão confirmada.
         if (!isPeerPermanent(cleanHash) || _activeCallState.value != null) return
-        val generation = UUID.randomUUID().toString()
+        val generation = CallSignalingProtocol.newCallId()
         synchronized(callStateLock) {
             activeCallGeneration = generation
             callConnectedAtMs = 0L
@@ -2385,7 +2376,8 @@ class PessoasAquiRepository(
             isSpeakerphoneOn = isVideo
         )
         callRingtoneWakeManager?.startOutgoingRingbackTone()
-        sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
+        val inviteSignal = CallSignalingProtocol.invite(isVideo, _currentAlias.value, generation)
+        sendPrivateMessage(cleanHash, inviteSignal)
 
         // Chamadas não atendidas precisam terminar automaticamente no chamador.
         outgoingCallTimeoutJob = scope.launch {
@@ -2401,8 +2393,9 @@ class PessoasAquiRepository(
         scope.launch {
             delay(800)
             val cur = _activeCallState.value
-            if (cur != null && !cur.isConnected && !cur.isIncoming && cur.peerHash == cleanHash) {
-                sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
+            if (activeCallGeneration == generation && cur != null &&
+                !cur.isConnected && !cur.isIncoming && cur.peerHash == cleanHash) {
+                sendPrivateMessage(cleanHash, inviteSignal)
             }
         }
     }
@@ -2416,15 +2409,17 @@ class PessoasAquiRepository(
         callMediaEngine?.startCallMedia(current.isVideo)
 
         // Envio prioritário imediato
-        sendPrivateMessage(current.peerHash, "[CALL_ACCEPT]")
+        val generation = activeCallGeneration ?: return
+        val acceptSignal = CallSignalingProtocol.encode(CallSignalingProtocol.Command.ACCEPT, generation)
+        sendPrivateMessage(current.peerHash, acceptSignal)
 
-        // Retransmissão redundante anti-perda de pacotes (3 envios a cada 300ms)
         val peer = current.peerHash
         scope.launch {
             repeat(3) {
                 delay(300)
-                if (_activeCallState.value?.isConnected == true) {
-                    sendPrivateMessage(peer, "[CALL_ACCEPT]")
+                if (activeCallGeneration == generation &&
+                    _activeCallState.value?.let { it.isConnected && it.isIncoming && it.peerHash == peer } == true) {
+                    sendPrivateMessage(peer, acceptSignal)
                 }
             }
         }
