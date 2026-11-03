@@ -97,6 +97,7 @@ dependencies {
 
     // QR Code Generation & Scanning
     implementation(libs.zxing.core)
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 
     // Google Play Billing In-App Purchases & Subscriptions
     implementation(libs.google.billing.ktx)
