@@ -32,7 +32,11 @@ fun MainScreen(
     onTabSelected: (Int) -> Unit = {},
     onOpenEntreNaSua: () -> Unit,
     onOpenChat: (NearbyPerson) -> Unit,
-    onEnableBluetooth: () -> Unit = {}
+    onEnableBluetooth: () -> Unit = {},
+    isCreatingInvite: Boolean = false,
+    onCreateInviteLink: () -> Unit = {},
+    onScanInviteQr: () -> Unit = {},
+    onRedeemInviteText: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var selectedTabIndex by remember(selectedTab) { mutableIntStateOf(selectedTab) }
@@ -42,7 +46,6 @@ fun MainScreen(
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var tempAliasInput by remember { mutableStateOf("") }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
-    var isCreatingInvite by remember { mutableStateOf(false) }
     var showSupportDialog by remember { mutableStateOf(false) }
 
     val people by repository.discoveredPeople.collectAsState()
@@ -504,74 +507,12 @@ fun MainScreen(
                             repository.deleteMultipleConversations(list)
                         },
                         isCreatingInvite = isCreatingInvite,
-                        onCreateInviteLink = {
-                            if (!isCreatingInvite) {
-                                isCreatingInvite = true
-                                repository.createOneTimeInviteLink { url ->
-                                    isCreatingInvite = false
-                                    if (url != null) {
-                                        val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                            putExtra(android.content.Intent.EXTRA_SUBJECT, "Convite Seguro - PessoasAqui")
-                                            putExtra(
-                                                android.content.Intent.EXTRA_TEXT,
-                                                "Olá! Estou te convidando para nos conectarmos no PessoasAqui com conversa privada, chamadas de voz e vídeo criptografadas à distância.\n\nToque no link abaixo para aceitar meu convite de conexão mútua (link seguro de uso único):\n$url"
-                                            )
-                                            type = "text/plain"
-                                        }
-                                        val shareIntent = android.content.Intent.createChooser(sendIntent, "Compartilhar Convite Seguro")
-                                        context.startActivity(shareIntent)
-                                    }
-                                }
-                            }
-                        },
-                        onRedeemInviteLink = { rawInput, onResult ->
-                            val text = rawInput.trim()
-
-                            // Extrai a URL caso o usuário tenha colado a mensagem completa do WhatsApp ou outros apps
-                            val urlPattern = Regex("""(https?://[^\s]+|pessoasaqui://[^\s]+)""")
-                            val matchedUrl = urlPattern.find(text)?.value ?: text
-                            val parsedUri = try { android.net.Uri.parse(matchedUrl) } catch (_: Exception) { null }
-
-                            val id = parsedUri?.getQueryParameter("id")
-                                ?: parsedUri?.getQueryParameter("inviteId")
-                                ?: Regex("""[?&](?:id|inviteId)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val token = parsedUri?.getQueryParameter("token")
-                                ?: Regex("""[?&]token=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val sender = parsedUri?.getQueryParameter("sender")
-                                ?: parsedUri?.getQueryParameter("senderIdentity")
-                                ?: Regex("""[?&](?:sender|senderIdentity)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val rawAlias = parsedUri?.getQueryParameter("alias")
-                                ?: parsedUri?.getQueryParameter("senderAlias")
-                                ?: Regex("""[?&](?:alias|senderAlias)=([^&\s]+)""").find(text)?.groupValues?.get(1)
-                            val alias = rawAlias?.let {
-                                try { java.net.URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it }
-                            } ?: "Usuário"
-
-                            val sig = parsedUri?.getQueryParameter("sig")
-                                ?: parsedUri?.getQueryParameter("signature")
-                                ?: Regex("""[?&](?:sig|signature)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val exp = parsedUri?.getQueryParameter("exp")?.toLongOrNull()
-                                ?: parsedUri?.getQueryParameter("expiresAt")?.toLongOrNull()
-                                ?: Regex("""[?&](?:exp|expiresAt)=([0-9]+)""").find(text)?.groupValues?.get(1)?.toLongOrNull()
-
-                            if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
-                                repository.redeemOneTimeInvite(
-                                    inviteId = id.trim(),
-                                    token = token.trim(),
-                                    senderIdentity = sender.trim(),
-                                    senderAlias = alias.trim(),
-                                    signature = sig?.trim(),
-                                    expiresAt = exp
-                                ) { success, msg, peer ->
-                                    onResult(success, msg, peer)
-                                }
-                            } else {
-                                onResult(false, "Link ou formato de convite inválido.", null)
-                            }
+                        onCreateInviteLink = onCreateInviteLink,
+                        onScanInviteQr = onScanInviteQr,
+                        onRedeemInviteLink = { text, onResult ->
+                            val handler = onRedeemInviteText
+                            if (handler != null) handler(text, onResult)
+                            else onResult(false, "Validação de convites indisponível.", null)
                         },
                         contactTags = contactTags,
                         contactTagAssignments = contactTagAssignments
