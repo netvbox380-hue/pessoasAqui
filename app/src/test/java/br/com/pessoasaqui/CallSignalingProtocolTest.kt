@@ -34,6 +34,23 @@ class CallSignalingProtocolTest {
         assertFalse(CallSignalingProtocol.belongsToCall("[CALL_ACCEPT]garbage", Command.ACCEPT, newId))
     }
 
+    @Test fun busyAndDeclineReasonsRemainLegacyCompatible() {
+        val id = CallSignalingProtocol.newCallId()
+        val other = CallSignalingProtocol.newCallId()
+        val declined = CallSignalingProtocol.encode(
+            Command.END, id, CallSignalingProtocol.EndReason.DECLINED
+        )
+        assertTrue(declined.startsWith("[CALL_END]"))
+        assertTrue(CallSignalingProtocol.belongsToCall(declined, Command.END, id))
+        assertFalse(CallSignalingProtocol.belongsToCall(declined, Command.END, other))
+        assertEquals(CallSignalingProtocol.EndReason.DECLINED,
+            CallSignalingProtocol.terminationReason(declined))
+        assertEquals(CallSignalingProtocol.EndReason.BUSY,
+            CallSignalingProtocol.terminationReason(
+                CallSignalingProtocol.encode(Command.END, id, CallSignalingProtocol.EndReason.BUSY)))
+        assertNull(CallSignalingProtocol.terminationReason("[CALL_END]"))
+    }
+
     @Test fun trueLegacyEventsWorkOnlyWithinActiveCall() {
         val id = CallSignalingProtocol.newCallId()
         assertTrue(CallSignalingProtocol.belongsToCall("[CALL_ACCEPT]", Command.ACCEPT, id))
