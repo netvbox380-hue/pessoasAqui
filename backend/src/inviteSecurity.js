@@ -1,7 +1,8 @@
 const crypto = require('crypto');
 
 const INVITE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
-const INVITE_ID_RE = /^inv_[a-f0-9]{24}$/i;
+// Convites históricos usam 12 hex; convites novos, 24 hex.
+const INVITE_ID_RE = /^inv_(?:[a-f0-9]{12}|[a-f0-9]{24})$/i;
 const TOKEN_RE = /^[a-f0-9]{32,64}$/i;
 
 function tokenDigest(token) {
