@@ -84,6 +84,10 @@ fun MainScreen(
         }
     }
 
+    // A adaptação considera os limites atuais da janela (multiwindow/dobráveis).
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    val useNavigationRail = maxWidth >= 600.dp
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -142,6 +146,7 @@ fun MainScreen(
                         shape = RoundedCornerShape(20.dp),
                         color = RadarCyan.copy(alpha = 0.12f),
                         modifier = Modifier
+                            .widthIn(max = if (useNavigationRail) 240.dp else 120.dp)
                             .clickable {
                                 tempAliasInput = currentAlias
                                 showEditProfileDialog = true
@@ -165,7 +170,8 @@ fun MainScreen(
                                     fontWeight = FontWeight.Bold,
                                     color = RadarCyan
                                 ),
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -283,7 +289,7 @@ fun MainScreen(
             )
         },
         bottomBar = {
-            NavigationBar(
+            if (!useNavigationRail) NavigationBar(
                 containerColor = DarkSurface,
                 tonalElevation = 8.dp
             ) {
@@ -356,11 +362,35 @@ fun MainScreen(
         },
         containerColor = DeepBlack
     ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
+        Row(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            if (useNavigationRail) {
+                NavigationRail(containerColor = DarkSurface) {
+                    Spacer(Modifier.height(12.dp))
+                    listOf(
+                        Triple(0, Icons.Default.People, "Pessoas"),
+                        Triple(1, Icons.Default.ChatBubble, "Conversas"),
+                        Triple(2, Icons.Default.Campaign, "Ofertas")
+                    ).forEach { (tab, icon, title) ->
+                        NavigationRailItem(
+                            selected = selectedTabIndex == tab,
+                            onClick = {
+                                selectedTabIndex = tab
+                                onTabSelected(tab)
+                            },
+                            icon = { Icon(icon, contentDescription = title) },
+                            label = { Text(title) },
+                            colors = NavigationRailItemDefaults.colors(
+                                selectedIconColor = RadarCyan,
+                                selectedTextColor = RadarCyan,
+                                unselectedIconColor = TextSecondary,
+                                unselectedTextColor = TextSecondary
+                            )
+                        )
+                    }
+                }
+            }
+
+            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
             // Se a identidade deste aparelho foi transferida para outro aparelho (Seção 18)
             if (isSessionRevoked) {
                 Box(
@@ -785,6 +815,8 @@ fun MainScreen(
                     onDismiss = { showRemindersDialog = false }
                 )
             }
+            }
         }
+    }
     }
 }
