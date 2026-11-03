@@ -1044,23 +1044,28 @@ class PessoasAquiRepository(
             payload.startsWith("[CALL_AUDIO_FRAME:") -> {
                 // Mídia não pode atender chamadas por efeito colateral.
                 // Aceite autenticado e sessão ACTIVE são pré-condições.
-                val current = _activeCallState.value ?: return
-                val session = callSessions.active ?: return
-                if (!current.isConnected || session.stage != CallSessionMachine.Stage.ACTIVE ||
-                    cleanId(current.peerHash) != cleanSender
-                ) return
+                val allowed = synchronized(this) {
+                    val current = _activeCallState.value
+                    val session = callSessions.active
+                    current?.isConnected == true &&
+                        session?.stage == CallSessionMachine.Stage.ACTIVE &&
+                        cleanId(current.peerHash) == cleanSender
+                }
+                if (!allowed) return
                 val b64 = payload.removePrefix("[CALL_AUDIO_FRAME:").removeSuffix("]")
                 callMediaEngine?.playRemoteAudioFrame(b64)
             }
             payload.startsWith("[CALL_VIDEO_FRAME:") -> {
-                val current = _activeCallState.value ?: return
-                val session = callSessions.active ?: return
-                if (!current.isConnected || !current.isVideo ||
-                    session.stage != CallSessionMachine.Stage.ACTIVE ||
-                    cleanId(current.peerHash) != cleanSender
-                ) return
                 val b64 = payload.removePrefix("[CALL_VIDEO_FRAME:").removeSuffix("]")
-                _activeCallState.value = current.copy(remoteVideoFrameBase64 = b64)
+                synchronized(this) {
+                    val current = _activeCallState.value ?: return
+                    val session = callSessions.active ?: return
+                    if (!current.isConnected || !current.isVideo ||
+                        session.stage != CallSessionMachine.Stage.ACTIVE ||
+                        cleanId(current.peerHash) != cleanSender
+                    ) return
+                    _activeCallState.value = current.copy(remoteVideoFrameBase64 = b64)
+                }
             }
             payload.startsWith("[FAMILY_REQ:") -> {
                 val parts = payload.removePrefix("[FAMILY_REQ:").removeSuffix("]").split(":")
