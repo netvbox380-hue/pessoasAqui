@@ -139,6 +139,9 @@ class StickerPersistenceManager(private val context: Context) {
             // Recupera uma gravação interrompida antes de abrir a biblioteca.
             val backup = File(stickersDir, "$id.bak")
             if (!file.exists() && backup.exists()) backup.renameTo(file)
+            // Recuperação após falha entre a renomeação e o commit de exclusão.
+            val pendingDelete = File(stickersDir, "$id.deletePending")
+            if (!file.exists() && pendingDelete.exists()) pendingDelete.renameTo(file)
             if (!file.isFile || file.length() <= 0L || file.length() > MAX_STORED_BYTES) return null
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(file.absolutePath, bounds)
@@ -160,12 +163,21 @@ class StickerPersistenceManager(private val context: Context) {
 
     @Synchronized
     fun deleteSticker(id: String): Boolean {
-        if (!SAFE_ID.matches(id) || id !in getStickerIds()) return false
-        val target = stickerFile(id)
+        if (!SAFE_ID.matches(id)) return false
         val previous = getStickerIds()
+        if (id !in previous) return false
+        val target = stickerFile(id)
+        val pending = File(stickersDir, "$id.deletePending")
+        if (pending.exists()) pending.delete()
+        // A exclusão só é definitiva depois que o índice estiver confirmado.
+        if (target.exists() && !target.renameTo(pending)) return false
         val next = previous.filterNot { it == id }
-        // Só remover o índice após exclusão confirmada, evitando IDs órfãos.
-        if (target.exists() && !target.delete()) return false
-        return prefs.edit().putString("sticker_ids", next.joinToString(",")).commit()
+        return if (prefs.edit().putString("sticker_ids", next.joinToString(",")).commit()) {
+            if (pending.exists()) pending.delete()
+            true
+        } else {
+            if (pending.exists()) pending.renameTo(target)
+            false
+        }
     }
 }
