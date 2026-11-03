@@ -2406,7 +2406,8 @@ class PessoasAquiRepository(
         val cleanHash = cleanId(person.technicalIdentityHash.ifBlank { person.id })
         // O Modo A é texto BLE: nunca abrir chamada sem conexão confirmada.
         if (!isPeerPermanent(cleanHash) || _activeCallState.value != null) return
-        val generation = UUID.randomUUID().toString()
+        val session = callSessions.outgoing(cleanHash, isVideo) ?: return
+        val generation = session.id
         synchronized(callStateLock) {
             activeCallGeneration = generation
             callConnectedAtMs = 0L
@@ -2421,7 +2422,12 @@ class PessoasAquiRepository(
             isSpeakerphoneOn = isVideo
         )
         callRingtoneWakeManager?.startOutgoingRingbackTone()
-        sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
+        val invite = CallSessionProtocol.invite(isVideo, _currentAlias.value, generation)
+        val initialResult = sendPrivateMessage(cleanHash, invite)
+        if (!initialResult.isAllowed) {
+            finishActiveCall(notifyPeer = false, remoteReason = CallEndReason.FAILED)
+            return
+        }
 
         // Chamadas não atendidas precisam terminar automaticamente no chamador.
         outgoingCallTimeoutJob = scope.launch {
@@ -2438,7 +2444,8 @@ class PessoasAquiRepository(
             delay(800)
             val cur = _activeCallState.value
             if (cur != null && !cur.isConnected && !cur.isIncoming && cur.peerHash == cleanHash) {
-                sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
+                // Exatamente o mesmo callId: reenvio não inicia nova chamada.
+                sendPrivateMessage(cleanHash, invite)
             }
         }
     }
@@ -2446,21 +2453,24 @@ class PessoasAquiRepository(
     fun answerCall() {
         val current = _activeCallState.value ?: return
         if (!current.isIncoming || current.isConnected) return
+        val session = callSessions.answer() ?: return
         callRingtoneWakeManager?.stopAllCallAlerts()
         _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
         markActiveCallConnected()
         callMediaEngine?.startCallMedia(current.isVideo)
 
-        // Envio prioritário imediato
-        sendPrivateMessage(current.peerHash, "[CALL_ACCEPT]")
+        val response = if (session.peerSupportsV2) CallSessionProtocol.accept(session.id) else "[CALL_ACCEPT]"
+        sendPrivateMessage(current.peerHash, response)
 
-        // Retransmissão redundante anti-perda de pacotes (3 envios a cada 300ms)
+        // Retransmissão idempotente, limitada à sessão ainda ativa.
         val peer = current.peerHash
         scope.launch {
             repeat(3) {
                 delay(300)
-                if (_activeCallState.value?.isConnected == true) {
-                    sendPrivateMessage(peer, "[CALL_ACCEPT]")
+                if (callSessions.active?.id == session.id &&
+                    _activeCallState.value?.isConnected == true
+                ) {
+                    sendPrivateMessage(peer, response)
                 }
             }
         }
