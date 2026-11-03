@@ -63,6 +63,40 @@ class MutualRevocationAndTemporaryRoutingTest {
         assertNull(repo.activeCallState.value)
     }
 
+    @Test fun v2CallRejectsWrongIdLegacyEndAndReplay() {
+        // Explicitamente isolado da rede pública: nenhum teste envia ao Render.
+        val loopback = PessoasAquiNetworkClient(
+            baseUrl = "http://127.0.0.1:9", wsUrl = "ws://127.0.0.1:9"
+        )
+        val repo = PessoasAquiRepository(networkClient = loopback)
+        repo.setMarkPerson(peerId, mark = true)
+        repo.confirmMutualConnectionFromServer(peerId)
+
+        val id = java.util.UUID.randomUUID().toString()
+        val invite = br.com.pessoasaqui.core.media.CallSessionProtocol.invite(false, "Contato", id)
+        deliverEncryptedCall(repo, invite, "v2-offer")
+        assertNotNull(repo.activeCallState.value)
+
+        val wrong = br.com.pessoasaqui.core.media.CallSessionProtocol.end(
+            java.util.UUID.randomUUID().toString(),
+            br.com.pessoasaqui.core.media.CallEndReason.CANCELLED
+        )
+        deliverEncryptedCall(repo, wrong, "v2-wrong-end")
+        deliverEncryptedCall(repo, "[CALL_END]", "v2-stale-legacy-end")
+        assertNotNull("CallId diferente ou comando v1 não pode encerrar sessão v2",
+            repo.activeCallState.value)
+
+        deliverEncryptedCall(repo, br.com.pessoasaqui.core.media.CallSessionProtocol.end(
+            id, br.com.pessoasaqui.core.media.CallEndReason.TIMEOUT
+        ), "v2-right-end")
+        assertNull(repo.activeCallState.value)
+        assertEquals(1, repo.proximitySimulator.privateChats.value[peerId].orEmpty().size)
+
+        deliverEncryptedCall(repo, invite, "v2-replay")
+        assertNull("Reenvio da chamada encerrada não pode ressuscitar o toque",
+            repo.activeCallState.value)
+    }
+
     @Test fun callHistoryEntryIsDeduplicatedAndIsASystemRecord() {
         val sim = br.com.pessoasaqui.core.proximity.ProximitySimulator()
         sim.recordCallHistory(peerId, "📞 Chamada de voz não atendida", outgoing = true, myAlias = "Alice", entryId = "call-once")
