@@ -36,9 +36,21 @@ object CallSignalingProtocol {
         END("[CALL_END]")
     }
 
-    fun encode(command: Command, callId: String): String {
+    enum class EndReason { COMPLETED, CANCELLED, DECLINED, MISSED, NO_ANSWER, BUSY }
+
+    fun encode(command: Command, callId: String, reason: EndReason? = null): String {
         require(uuidPattern.matches(callId))
-        return "${command.legacyPrefix}#$callId"
+        // O motivo é extensão opcional somente para END. Clientes antigos
+        // continuam lendo o prefixo do comando e ignoram o sufixo.
+        val terminalReason = if (command == Command.END && reason != null) ":$reason" else ""
+        return "${command.legacyPrefix}#$callId$terminalReason"
+    }
+
+    fun terminationReason(payload: String): EndReason? {
+        if (!payload.startsWith(Command.END.legacyPrefix)) return null
+        val suffix = payload.removePrefix(Command.END.legacyPrefix)
+        val raw = suffix.substringAfter(':', "")
+        return EndReason.values().firstOrNull { it.name == raw }
     }
 
     /** null significa que o outro cliente usa o protocolo legado sem callId. */
@@ -46,7 +58,7 @@ object CallSignalingProtocol {
         if (!payload.startsWith(command.legacyPrefix)) return null
         val suffix = payload.removePrefix(command.legacyPrefix)
         if (suffix.isEmpty()) return null
-        return suffix.removePrefix("#").takeIf(uuidPattern::matches)
+        return suffix.removePrefix("#").substringBefore(':').takeIf(uuidPattern::matches)
     }
 
     /**
