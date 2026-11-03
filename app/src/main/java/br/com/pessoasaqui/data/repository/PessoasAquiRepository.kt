@@ -162,6 +162,14 @@ class PessoasAquiRepository(
 
     // Pessoas reais detectadas fisicamente via rádio BLE ou presença WebSocket
     private val _realDiscoveredPeople = MutableStateFlow<List<NearbyPerson>>(emptyList())
+    // Presença BLE física é independente da telemetria de presença WebSocket/Render.
+    // Um PEER_OFFLINE de rede nunca pode apagar alguém detectado no rádio.
+    private val lastNativeBleSeenMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    internal fun recordNativeBlePresence(peerId: String, seenAtMs: Long = System.currentTimeMillis()) {
+        val id = cleanId(peerId)
+        if (id.isNotBlank()) lastNativeBleSeenMs[id] = seenAtMs
+    }
     private var lastStablePeerOrder: List<String> = emptyList()
 
     // Conjuntos persistidos de marcações e conexões mútuas em SharedPreferences
@@ -336,6 +344,7 @@ class PessoasAquiRepository(
         expiredPeers.forEach { p ->
             val cid = cleanId(p.technicalIdentityHash.ifBlank { p.id })
             expiredIds.add(cid)
+            lastNativeBleSeenMs.remove(cid)
             proximitySimulator.clearPrivateChat(cid)
             // Preservação estrita: sessões temporárias existem apenas na memória RAM.
             // Históricos legados em disco NUNCA são apagados por timeout de afastamento BLE.
@@ -798,7 +807,10 @@ class PessoasAquiRepository(
 
         // Objetos criados nos testes JVM (sem Context Android) não devem
         // executar polling real e consumir recursos do Render.
-        if (context != null) startPresencePollingLoop()
+        if (context != null) {
+            startPresencePollingLoop()
+            startBleMaintenanceLoop()
+        }
 
         // Se o perfil já estiver configurado, registra identidade no Supabase / Render
         if (_hasCompletedProfile.value) {
@@ -1315,7 +1327,8 @@ class PessoasAquiRepository(
                     technicalIdentityHash = cId,
                     alias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) existing.alias else p.alias,
                     intent = safeIntent,
-                    lastSeenEpochMs = System.currentTimeMillis()
+                    // A nuvem não comprova proximidade: não renova o relógio BLE.
+                    lastSeenEpochMs = if (cId in lastNativeBleSeenMs) existing.lastSeenEpochMs else System.currentTimeMillis()
                 ))
             } else if (isPeerPermanent(cId)) {
                 // Presença remota de Conexão Mútua comprovada pré-existente
@@ -1376,7 +1389,8 @@ class PessoasAquiRepository(
                 technicalIdentityHash = cId,
                 alias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) existing.alias else peer.alias,
                 intent = safeIntent,
-                lastSeenEpochMs = System.currentTimeMillis()
+                // Eventos da internet não mantêm artificialmente o Radar ligado.
+                lastSeenEpochMs = if (cId in lastNativeBleSeenMs) existing.lastSeenEpochMs else System.currentTimeMillis()
             ))
             _realDiscoveredPeople.value = current
             updateUnifiedData()
@@ -1402,19 +1416,23 @@ class PessoasAquiRepository(
         // Estranhos online na nuvem são descartados: o radar local é restrito ao rádio BLE físico!
     }
 
-    private fun handlePeerOffline(peerHash: String) {
+    internal fun handlePeerOffline(peerHash: String) {
         val cleanPeerHash = cleanId(peerHash)
         val current = _realDiscoveredPeople.value.filter {
             val matches = cleanId(it.technicalIdentityHash) == cleanPeerHash || cleanId(it.id) == cleanPeerHash
             if (matches) {
-                // Conexões mútuas e familiares NUNCA desaparecem da lista ao desconectar ou trocar de rede
-                isPeerPermanent(it.technicalIdentityHash.ifBlank { it.id })
+                // Desconexão WebSocket NÃO significa saída dos 10 m: a validade do
+                // BLE só é determinada pelos anúncios de rádio e timeout próprio.
+                isPeerPermanent(it.technicalIdentityHash.ifBlank { it.id }) ||
+                    cleanPeerHash in lastNativeBleSeenMs
             } else {
                 true
             }
         }
-        _realDiscoveredPeople.value = current
-        updateUnifiedData()
+        if (current.size != _realDiscoveredPeople.value.size) {
+            _realDiscoveredPeople.value = current
+            updateUnifiedData()
+        }
     }
 
     fun addDiscoveredPeer(person: NearbyPerson) {
@@ -1502,6 +1520,7 @@ class PessoasAquiRepository(
                         val peerCleanId = cleanId(realPeer.technicalIdentityHash)
                         if (peerCleanId == myId || cleanId(realPeer.id) == myId) return@startScanning
                         if (realPeer.alias.isNotBlank() && myAlias.isNotBlank() && realPeer.alias.equals(myAlias, ignoreCase = true)) return@startScanning
+                        recordNativeBlePresence(peerCleanId, realPeer.lastSeenEpochMs)
 
                         val currentList = _realDiscoveredPeople.value.toMutableList()
                         val idx = currentList.indexOfFirst {
