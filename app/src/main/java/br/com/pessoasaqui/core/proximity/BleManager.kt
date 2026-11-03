@@ -127,6 +127,10 @@ class BleManager(
         const val FALLBACK_ULTRA_COMPACT_PAYLOAD_BYTES = 18  // 16 hex + 1 ':' + 1 ordinal = 18 bytes
         const val SCAN_REFRESH_INTERVAL_MS = 90_000L
         const val ADVERTISING_REFRESH_INTERVAL_MS = 240_000L
+        // Quando a Activity volta do segundo plano, recuperar mais cedo a
+        // descoberta: o Android pode ter suspendido callbacks sem onScanFailed.
+        const val FOREGROUND_SCAN_REFRESH_MS = 20_000L
+        const val FOREGROUND_ADVERTISING_REFRESH_MS = 90_000L
 
         /**
          * Calcula o tamanho total em bytes do pacote físico de anúncio.
@@ -252,6 +256,28 @@ class BleManager(
                 nowMs - lastScanStartMs >= SCAN_REFRESH_INTERVAL_MS)) {
             Log.i(tag, "Monitor BLE: renovando Scanner.")
             startScanning(callback)
+        }
+    }
+
+    /**
+     * Reentrada após tela bloqueada/app minimizado: forçar nova inscrição de
+     * scanner (e anúncio envelhecido), mesmo que o stack ainda reporte
+     * "ativo". Preserva o GATT e nunca altera o estado do adaptador.
+     */
+    @Synchronized
+    fun refreshDiscoveryOnForeground(nowMs: Long = System.currentTimeMillis()) {
+        if (!isBluetoothEnabled) return
+        val id = lastIdentityHash
+        if (!id.isNullOrBlank() &&
+            (!advertisingActive || nowMs - lastAdvertisingStartMs >= FOREGROUND_ADVERTISING_REFRESH_MS)
+        ) {
+            Log.i(tag, "Retorno ao app: renovando Advertising BLE")
+            startAdvertising(id, lastAlias ?: "", lastIntent ?: UserIntent.QUERO_CONVERSAR)
+        }
+        val cb = lastScanCallback
+        if (cb != null && (!scanningActive || nowMs - lastScanStartMs >= FOREGROUND_SCAN_REFRESH_MS)) {
+            Log.i(tag, "Retorno ao app: reiniciando Scanner BLE (sem desligar adaptador)")
+            startScanning(cb)
         }
     }
 
