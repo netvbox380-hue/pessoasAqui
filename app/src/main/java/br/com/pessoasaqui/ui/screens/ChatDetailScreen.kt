@@ -3911,9 +3911,16 @@ fun EmojiPickerPanel(
                         .fillMaxSize()
                         .padding(horizontal = 8.dp, vertical = 6.dp)
                 ) {
+                    Text(
+                        "Toque para enviar • Segure para editar ou excluir",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp),
+                        maxLines = 2
+                    )
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = 72.dp),
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
