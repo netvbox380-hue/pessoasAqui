@@ -84,6 +84,19 @@ class CallSessionProtocolTest {
         assertNull(fsm.active)
     }
 
+    @Test fun completedCallCannotReplayAcrossProcessRecreation() {
+        val first = CallSessionMachine()
+        val signal = CallSessionProtocol.parse(CallSessionProtocol.invite(
+            false, "Alice", id, issuedAtMs = 10_000L
+        ))!!
+        assertEquals(CallSessionMachine.OfferResult.NEW, first.incoming(alice, signal, 10_001L))
+        first.finish(10_005L)
+        val restored = CallSessionMachine()
+        restored.restoreTombstones(first.tombstones(), 10_010L)
+        assertEquals(CallSessionMachine.OfferResult.STALE, restored.incoming(alice, signal, 10_015L))
+        assertNull(restored.active)
+    }
+
     @Test fun incomingLegacyCallDoesNotRequireMutualProtocolV2() {
         val fsm = CallSessionMachine()
         val legacy = CallSessionProtocol.parse("[CALL_INIT:false:Old Phone]")!!
