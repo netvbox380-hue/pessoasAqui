@@ -842,18 +842,27 @@ class PessoasAquiRepository(
     private val processedMessageIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     internal fun processIncomingPayload(senderHash: String, senderAlias: String, rawPayload: String, iv: String = "", messageId: String = "") {
-        if (messageId.isNotBlank()) {
-            if (processedMessageIds.contains(messageId)) return
-            processedMessageIds.add(messageId)
-            if (processedMessageIds.size > 2000) {
-                processedMessageIds.clear()
-            }
-        }
-
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         val cleanSender = cleanId(senderHash)
-        // Decifra o payload E2EE se estiver protegido com AES-256-GCM ou ECDH
-        val payload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, cryptoIdentityManager.getActivePrivateKey())
+        // Uma falha de autenticação/decifragem nunca vira bolha de chat nem
+        // sinalização de chamada. Não marcar o ID como processado antes de
+        // validar a mensagem: uma retransmissão futura pode ter dados válidos.
+        val payload = try {
+            E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, cryptoIdentityManager.getActivePrivateKey())
+        } catch (_: SecurityException) {
+            Log.w("PessoasAqui", "Envelope E2EE não autenticado; descartado sem exibir dados cifrados")
+            return
+        }
+        if (payload.startsWith("ENC_ECDH:") || payload.startsWith("ENC:")) {
+            Log.w("PessoasAqui", "Envelope cifrado inesperado após decifragem; descartado")
+            return
+        }
+        if (messageId.isNotBlank()) {
+            synchronized(processedMessageIds) {
+                if (!processedMessageIds.add(messageId)) return
+                if (processedMessageIds.size > 2000) processedMessageIds.clear()
+            }
+        }
 
         when {
             payload.startsWith("[CALL_AUDIO_FRAME:") -> {
