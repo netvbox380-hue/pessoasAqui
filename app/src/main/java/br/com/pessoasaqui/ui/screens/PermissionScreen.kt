@@ -2,6 +2,12 @@ package br.com.pessoasaqui.ui.screens
 
 import android.Manifest
 import android.os.Build
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -29,6 +35,17 @@ import br.com.pessoasaqui.ui.theme.*
 fun PermissionScreen(
     onPermissionsGranted: () -> Unit
 ) {
+    val context = LocalContext.current
+    var missingRequiredPermissions by remember { mutableStateOf(false) }
+    val requiredPermissions = remember {
+        val list = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            list.add(Manifest.permission.BLUETOOTH_SCAN)
+            list.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            list.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        list
+    }
     val permissionsToRequest = remember {
         val list = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
@@ -50,7 +67,13 @@ fun PermissionScreen(
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
-        onPermissionsGranted()
+        // A caixa de permissões pode ser recusada ou parcialmente concedida.
+        // Sem BLUETOOTH_SCAN/ADVERTISE/CONNECT não existe Radar funcional.
+        val granted = requiredPermissions.all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        }
+        missingRequiredPermissions = !granted
+        if (granted) onPermissionsGranted()
     }
     Box(
         modifier = Modifier
@@ -152,9 +175,24 @@ fun PermissionScreen(
                 }
             }
 
+            if (missingRequiredPermissions) {
+                Text(
+                    text = "Para usar o Radar, permita Bluetooth e localização nas permissões do Android. Câmera e microfone são opcionais até realizar chamadas.",
+                    color = WarningAmber,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center
+                )
+            }
+
             Button(
                 onClick = {
-                    launcher.launch(permissionsToRequest)
+                    if (requiredPermissions.all {
+                            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                        }) {
+                        onPermissionsGranted()
+                    } else {
+                        launcher.launch(permissionsToRequest)
+                    }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
