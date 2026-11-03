@@ -86,7 +86,8 @@ fun MainScreen(
 
     // A adaptação considera os limites atuais da janela (multiwindow/dobráveis).
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-    val useNavigationRail = maxWidth >= 600.dp
+    val windowMaxWidth = maxWidth
+    val useNavigationRail = windowMaxWidth >= 600.dp
 
     Scaffold(
         topBar = {
@@ -108,7 +109,7 @@ fun MainScreen(
                 },
                 actions = {
                     // Badge indicadora de Assinante VIP
-                    if ((useNavigationRail || maxWidth >= 470.dp) &&
+                    if ((useNavigationRail || windowMaxWidth >= 470.dp) &&
                         subscriptionTier == SubscriptionTier.PRO_VIP) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
@@ -144,7 +145,7 @@ fun MainScreen(
 
                     // Em janelas estreitas a ação permanece no menu de opções;
                     // não comprimir o título nem cortar as ações da barra.
-                    if (useNavigationRail || maxWidth >= 390.dp) Surface(
+                    if (useNavigationRail || windowMaxWidth >= 390.dp) Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = RadarCyan.copy(alpha = 0.12f),
                         modifier = Modifier
