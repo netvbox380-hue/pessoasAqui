@@ -68,6 +68,12 @@
             android:exported="false"
             android:foregroundServiceType="dataSync|connectedDevice" />
 
+        <!-- BLE scan delivery without starting an FGS from a background broadcast. -->
+        <receiver
+            android:name=".core.proximity.BleScanResultReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
         <receiver
             android:name=".core.reminder.RecurringReminderReceiver"
             android:enabled="true"
