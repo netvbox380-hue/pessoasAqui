@@ -69,7 +69,9 @@ fun VipSubscriptionDialog(
     ) {
         Surface(
             modifier = Modifier
+                .widthIn(max = 700.dp)
                 .fillMaxWidth(0.92f)
+                .heightIn(max = 820.dp)
                 .fillMaxHeight(0.88f)
                 .clip(RoundedCornerShape(24.dp)),
             color = DarkCard,
