@@ -127,20 +127,33 @@ class StickerPersistenceManager(private val context: Context) {
         return raw.split(',').filter { SAFE_ID.matches(it) }.distinct()
     }
 
+    /** Miniaturas econômicas no picker; abre a imagem completa só ao usar/editar. */
     fun loadAllStickers(): List<Pair<String, Bitmap>> = getStickerIds()
         .take(MAX_STICKERS)
-        .mapNotNull { id ->
-            try {
-                val file = stickerFile(id)
-                if (!file.isFile || file.length() <= 0L || file.length() > MAX_STORED_BYTES) return@mapNotNull null
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(file.absolutePath, bounds)
-                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@mapNotNull null
-                val sampleSize = maxOf(1, (maxOf(bounds.outWidth, bounds.outHeight) / STICKER_SIZE_PX))
-                val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-                BitmapFactory.decodeFile(file.absolutePath, options)?.let { id to it }
-            } catch (_: Exception) { null }
-        }
+        .mapNotNull { id -> loadSticker(id, maxDimensionPx = 128)?.let { id to it } }
+
+    fun loadSticker(id: String, maxDimensionPx: Int = STICKER_SIZE_PX): Bitmap? {
+        if (!SAFE_ID.matches(id) || id !in getStickerIds()) return null
+        return try {
+            val file = stickerFile(id)
+            // Recupera uma gravação interrompida antes de abrir a biblioteca.
+            val backup = File(stickersDir, "$id.bak")
+            if (!file.exists() && backup.exists()) backup.renameTo(file)
+            if (!file.isFile || file.length() <= 0L || file.length() > MAX_STORED_BYTES) return null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0 ||
+                bounds.outWidth > 8192 || bounds.outHeight > 8192) return null
+            val target = maxDimensionPx.coerceIn(64, STICKER_SIZE_PX)
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) {
+                sample *= 2
+            }
+            BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply {
+                inSampleSize = sample
+            })
+        } catch (_: Exception) { null }
+    }
 
     fun bitmapToStickerPayload(bitmap: Bitmap): String =
         "[STICKER:${Base64.encodeToString(toPng(bitmap), Base64.NO_WRAP)}]"
