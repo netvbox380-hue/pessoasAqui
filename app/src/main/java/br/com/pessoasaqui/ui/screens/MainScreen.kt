@@ -605,7 +605,7 @@ fun MainScreen(
                                     java.util.Locale.getDefault()).format(java.util.Date(expires)),
                                     color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                             }
-                            Text("O link e o QR representam o mesmo convite; usar um invalida o outro.",
+                            Text("O link e o QR representam o mesmo convite; usar um invalida o outro. Fechar esta janela NÃO revoga o convite; ele continua válido até o resgate ou expiração.",
                                 color = RadarCyan, style = MaterialTheme.typography.labelSmall)
                         }
                     },
