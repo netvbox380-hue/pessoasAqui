@@ -310,13 +310,14 @@ class BleManager(
 
     /** Entrada exclusivamente por PendingIntent de scanner filtrado em segundo plano. */
     internal fun onBackgroundScanResults(results: List<ScanResult>, errorCode: Int?) {
+        // Broadcast atrasado de uma inscrição que já saiu do background.
+        if (appInForeground || !scanningWithPendingIntent || !isBluetoothEnabled) return
         if (errorCode != null && errorCode != 0) {
             scanningActive = false
             scanLifecycle.failed()
             Log.w(tag, "Scanner em segundo plano falhou ($errorCode), aguardando backoff")
             return
         }
-        if (appInForeground || !isBluetoothEnabled) return
         val receiver = lastScanCallback ?: return
         results.forEach { processScanResult(it, receiver) }
     }
@@ -515,12 +516,17 @@ class BleManager(
                 scanningWithPendingIntent = true
                 val error = scanner?.startScan(filters, settings, pending)
                     ?: ScanCallback.SCAN_FAILED_INTERNAL_ERROR
-                if (error != 0) {
+                if (error != 0 && error != ScanCallback.SCAN_FAILED_ALREADY_STARTED) {
                     scanningWithPendingIntent = false
                     scanLifecycle.failed()
                     scanningActive = false
                     Log.e(tag, "Falha ao iniciar PendingIntent scanner BLE: $error")
                     return
+                }
+                // Após recriar o processo, a assinatura PendingIntent pode
+                // continuar registrada na pilha Bluetooth do Android.
+                if (error == ScanCallback.SCAN_FAILED_ALREADY_STARTED) {
+                    Log.d(tag, "Scanner PendingIntent anterior ainda ativo; reutilizando")
                 }
             } else {
                 scanCallback = object : ScanCallback() {
