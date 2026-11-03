@@ -98,7 +98,7 @@ class MainActivity : ComponentActivity() {
         // Após suspensão prolongada, alguns chipsets mantêm scan marcado como
         // ativo mas sem callbacks. Renova-o após a Activity realmente voltar
         // ao primeiro plano; não interfere nas conexões GATT estabelecidas.
-        bleRecoveryTask?.let(bleRecoveryHandler::removeCallbacks)
+        bleRecoveryTask?.let { bleRecoveryHandler.removeCallbacks(it) }
         if (lastPausedAtMs > 0L && System.currentTimeMillis() - lastPausedAtMs >= 15_000L) {
             val recover = Runnable {
                 (application as? PessoasAquiApp)?.repository?.ensureBleHealthOnForeground(forceRefresh = true)
@@ -110,14 +110,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         lastPausedAtMs = System.currentTimeMillis()
-        bleRecoveryTask?.let(bleRecoveryHandler::removeCallbacks)
+        bleRecoveryTask?.let { bleRecoveryHandler.removeCallbacks(it) }
         bleRecoveryTask = null
         super.onPause()
         (application as? PessoasAquiApp)?.repository?.callRingtoneWakeManager?.isAppInForeground = false
     }
 
     override fun onDestroy() {
-        bleRecoveryTask?.let(bleRecoveryHandler::removeCallbacks)
+        bleRecoveryTask?.let { bleRecoveryHandler.removeCallbacks(it) }
         bleRecoveryTask = null
         super.onDestroy()
         (application as? PessoasAquiApp)?.repository?.playBillingManager?.destroy()
