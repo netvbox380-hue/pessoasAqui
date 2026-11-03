@@ -31,7 +31,8 @@ O comportamento em aparelhos físicos não está comprovado por testes JVM.
   convite, aceite, confirmação e encerramento.
 - Compatibilidade de wire com clientes existentes:
   - `[CALL_INIT:true:alias:callId]` (3º campo opcional);
-  - `[CALL_ACCEPT]#callId`, `[CALL_ACK]#callId`, `[CALL_END]#callId`.
+  - `[CALL_ACCEPT]#callId`, `[CALL_ACK]#callId`,
+    `[CALL_END]#callId:DECLINED` (motivo opcional).
   Clientes antigos continuam detectando os prefixos; clientes novos
   recusam eventos com callId não correspondente.
 - Máquina de estados de sessão valida direção, remetente, IDs e transições.
