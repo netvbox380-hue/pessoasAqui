@@ -47,6 +47,7 @@ fun ProfileSetupScreen(
     ) {
         Card(
             modifier = Modifier
+                .widthIn(max = 600.dp)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
             shape = RoundedCornerShape(22.dp),
