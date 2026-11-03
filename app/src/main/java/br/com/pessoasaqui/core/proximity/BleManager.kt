@@ -125,12 +125,8 @@ class BleManager(
         const val MAX_CONNECTABLE_PRIMARY_PAYLOAD_BYTES = 24 // 31 - 3 (Flags) - 4 (Cabeçalho) = 24 bytes
         const val MAX_SCAN_RESPONSE_PAYLOAD_BYTES = 27       // 31 - 4 (Cabeçalho, sem Flags) = 27 bytes
         const val FALLBACK_ULTRA_COMPACT_PAYLOAD_BYTES = 18  // 16 hex + 1 ':' + 1 ordinal = 18 bytes
-        const val SCAN_REFRESH_INTERVAL_MS = 90_000L
-        const val ADVERTISING_REFRESH_INTERVAL_MS = 240_000L
-        // Quando a Activity volta do segundo plano, recuperar mais cedo a
-        // descoberta: o Android pode ter suspendido callbacks sem onScanFailed.
-        const val FOREGROUND_SCAN_REFRESH_MS = 20_000L
-        const val FOREGROUND_ADVERTISING_REFRESH_MS = 90_000L
+        // Retentativas apenas após falha real, limitadas para não atingir throttling.
+        const val RECOVERY_MIN_INTERVAL_MS = 30_000L
 
         /**
          * Calcula o tamanho total em bytes do pacote físico de anúncio.
@@ -216,13 +212,15 @@ class BleManager(
     private var advertiseCallback: AdvertiseCallback? = null
     private var scanCallback: ScanCallback? = null
 
-    // startScan/startAdvertising podem deixar de funcionar após mudanças de rádio
-    // feitas pelo sistema. O monitor reativa cada operação de forma moderada.
+    /** Estados explícitos: estar inscrito no scanner não equivale a receber anúncios. */
+    enum class DiscoveryState { STOPPED, STARTING, SCANNING, FAILED, RADIO_OFF }
+    @Volatile private var discoveryState = DiscoveryState.STOPPED
+    @Volatile private var foreground = true
     @Volatile private var scanningActive = false
     @Volatile private var advertisingActive = false
-    @Volatile private var lastScanStartMs = 0L
-    @Volatile private var lastAdvertisingStartMs = 0L
+    @Volatile private var lastRecoveryAttemptMs = 0L
     private val advertisingGeneration = AtomicLong(0L)
+    internal val currentDiscoveryState: DiscoveryState get() = discoveryState
 
     private var lastIdentityHash: String? = null
     private var lastAlias: String? = null
@@ -238,47 +236,41 @@ class BleManager(
     internal val isAdvertisingActive: Boolean get() = advertisingActive
 
     /**
-     * Recuperação controlada de Scanner/Advertiser sem desligar o Bluetooth.
-     * Intervalos maiores que 30s evitam throttling do Android. Não interrompe GATT.
-     * Executada apenas com permissão e rádio ligados pelo repositório.
+     * Recuperação de estados com falha observada, não por reinícios periódicos.
+     * Um scanner saudável pode ficar horas sem ver ninguém; silêncio não é erro.
      */
     @Synchronized
     fun ensureDiscoveryContinuity(nowMs: Long = System.currentTimeMillis()) {
         if (!isBluetoothEnabled) return
-        val id = lastIdentityHash
-        if (!id.isNullOrBlank() && (!advertisingActive ||
-                nowMs - lastAdvertisingStartMs >= ADVERTISING_REFRESH_INTERVAL_MS)) {
-            Log.i(tag, "Monitor BLE: recuperando Advertising.")
-            startAdvertising(id, lastAlias ?: "", lastIntent ?: UserIntent.QUERO_CONVERSAR)
+        if (lastIdentityHash != null && !advertisingActive &&
+            (lastRecoveryAttemptMs == 0L || nowMs - lastRecoveryAttemptMs >= RECOVERY_MIN_INTERVAL_MS)) {
+            lastRecoveryAttemptMs = nowMs
+            startAdvertising(lastIdentityHash!!, lastAlias ?: "", lastIntent ?: UserIntent.QUERO_CONVERSAR)
         }
-        val callback = lastScanCallback
-        if (callback != null && (!scanningActive ||
-                nowMs - lastScanStartMs >= SCAN_REFRESH_INTERVAL_MS)) {
-            Log.i(tag, "Monitor BLE: renovando Scanner.")
-            startScanning(callback)
+        if (lastScanCallback != null && discoveryState == DiscoveryState.FAILED &&
+            (lastRecoveryAttemptMs == 0L || nowMs - lastRecoveryAttemptMs >= RECOVERY_MIN_INTERVAL_MS)) {
+            lastRecoveryAttemptMs = nowMs
+            startScanning(lastScanCallback!!)
         }
     }
 
     /**
-     * Reentrada após tela bloqueada/app minimizado: forçar nova inscrição de
-     * scanner (e anúncio envelhecido), mesmo que o stack ainda reporte
-     * "ativo". Preserva o GATT e nunca altera o estado do adaptador.
+     * O ciclo de vida da Activity troca o modo de descoberta exatamente uma vez.
+     * O filtro de service data permite ao Android gerenciar o scan de tela apagada.
      */
     @Synchronized
-    fun refreshDiscoveryOnForeground(nowMs: Long = System.currentTimeMillis()) {
+    fun setAppForeground(isForeground: Boolean) {
+        if (foreground == isForeground) return
+        foreground = isForeground
         if (!isBluetoothEnabled) return
-        val id = lastIdentityHash
-        if (!id.isNullOrBlank() &&
-            (!advertisingActive || nowMs - lastAdvertisingStartMs >= FOREGROUND_ADVERTISING_REFRESH_MS)
-        ) {
-            Log.i(tag, "Retorno ao app: renovando Advertising BLE")
-            startAdvertising(id, lastAlias ?: "", lastIntent ?: UserIntent.QUERO_CONVERSAR)
-        }
-        val cb = lastScanCallback
-        if (cb != null && (!scanningActive || nowMs - lastScanStartMs >= FOREGROUND_SCAN_REFRESH_MS)) {
-            Log.i(tag, "Retorno ao app: reiniciando Scanner BLE (sem desligar adaptador)")
-            startScanning(cb)
-        }
+        lastScanCallback?.let { startScanning(it) }
+        if (!advertisingActive) ensureDiscoveryContinuity()
+    }
+
+    /** Compatibilidade com a API do repositório: não reinicia rádio saudável. */
+    fun refreshDiscoveryOnForeground(nowMs: Long = System.currentTimeMillis()) {
+        setAppForeground(true)
+        ensureDiscoveryContinuity(nowMs)
     }
 
     var isMockBluetoothEnabled: Boolean? = null
@@ -306,6 +298,7 @@ class BleManager(
                             BluetoothAdapter.STATE_OFF -> {
                                 _isBluetoothEnabledFlow.value = false
                                 stopScanning()
+                                discoveryState = DiscoveryState.RADIO_OFF
                                 stopAdvertising()
                                 onBluetoothStateChanged?.invoke(false)
                             }
@@ -349,7 +342,6 @@ class BleManager(
 
         stopAdvertising()
         val generation = advertisingGeneration.get()
-        lastAdvertisingStartMs = System.currentTimeMillis()
 
         val cleanMyId = myIdentityHash.removePrefix("peer-").trim().uppercase()
 
@@ -430,18 +422,32 @@ class BleManager(
     @Synchronized
     fun startScanning(onPeerDiscovered: (NearbyPerson) -> Unit) {
         lastScanCallback = onPeerDiscovered
-        if (!isBluetoothEnabled) return
+        if (!isBluetoothEnabled) {
+            discoveryState = DiscoveryState.RADIO_OFF
+            return
+        }
         stopScanning()
+        discoveryState = DiscoveryState.STARTING
         scanner = try {
             bluetoothAdapter?.bluetoothLeScanner
         } catch (e: Throwable) {
             Log.w(tag, "Não foi possível obter scanner BLE: ${e.message}")
             null
-        } ?: return
+        } ?: run {
+            discoveryState = DiscoveryState.FAILED
+            return
+        }
 
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(if (foreground) ScanSettings.SCAN_MODE_LOW_LATENCY else ScanSettings.SCAN_MODE_BALANCED)
             .setReportDelay(0)
+            .build()
+
+        // Os anúncios do PessoasAqui carregam o UUID em SERVICE DATA, não na
+        // lista de UUIDs anunciados. Filtro correspondente sem exigir payload
+        // ou apelido específico, compatível com os pacotes legados existentes.
+        val serviceFilter = ScanFilter.Builder()
+            .setServiceData(ParcelUuid(BleConstants.SERVICE_UUID), byteArrayOf())
             .build()
 
         scanCallback = object : ScanCallback() {
@@ -455,19 +461,22 @@ class BleManager(
             }
 
             override fun onScanFailed(errorCode: Int) {
-                if (scanCallback === this) scanningActive = false
-                Log.e(tag, "Falha no escaneamento BLE. Código: $errorCode")
+                if (scanCallback === this) {
+                    scanningActive = false
+                    discoveryState = DiscoveryState.FAILED
+                    Log.e(tag, "Falha no escaneamento BLE. Código: $errorCode")
+                }
             }
         }
 
         try {
-            // Escaneia de forma abrangente para contornar limitações de chipsets em filtros de hardware
-            scanner?.startScan(null, settings, scanCallback)
+            scanner?.startScan(listOf(serviceFilter), settings, scanCallback)
             scanningActive = true
-            lastScanStartMs = System.currentTimeMillis()
-            Log.d(tag, "BLE Scanner ativado para filtro de 10m.")
+            discoveryState = DiscoveryState.SCANNING
+            Log.d(tag, "BLE scan filtrado iniciado; foreground=$foreground")
         } catch (e: Exception) {
             scanningActive = false
+            discoveryState = DiscoveryState.FAILED
             Log.e(tag, "Erro ao iniciar scanner BLE: ${e.message}")
         }
     }
@@ -478,6 +487,7 @@ class BleManager(
         val callback = scanCallback
         scanCallback = null
         scanningActive = false
+        discoveryState = DiscoveryState.STOPPED
         callback?.let {
             try {
                 scanner?.stopScan(it)
