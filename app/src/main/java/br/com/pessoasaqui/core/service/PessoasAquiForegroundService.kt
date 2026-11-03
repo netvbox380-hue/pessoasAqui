@@ -131,11 +131,18 @@ class PessoasAquiForegroundService : Service() {
                 .build()
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
+                val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        this, android.Manifest.permission.BLUETOOTH_SCAN
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) {
+                    // Serviço de presença/dispositivos BLE, sem ocupar o limite de
+                    // 6 horas do dataSync no Android 15+.
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                } else {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                )
+                }
+                startForeground(NOTIFICATION_ID, notification, type)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
