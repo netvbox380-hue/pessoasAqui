@@ -1019,90 +1019,34 @@ class PessoasAquiRepository(
             }
         }
 
+        // O controle de chamadas é interpretado antes das mensagens normais.
+        // IDs/estados inválidos não alcançam a interface nem a persistência.
+        CallSessionProtocol.parse(payload)?.let { control ->
+            handleCallControl(cleanSender, senderAlias, control)
+            return
+        }
+
         when {
             payload.startsWith("[CALL_AUDIO_FRAME:") -> {
+                // Mídia não pode atender chamadas por efeito colateral.
+                // Aceite autenticado e sessão ACTIVE são pré-condições.
+                val current = _activeCallState.value ?: return
+                val session = callSessions.active ?: return
+                if (!current.isConnected || session.stage != CallSessionMachine.Stage.ACTIVE ||
+                    cleanId(current.peerHash) != cleanSender
+                ) return
                 val b64 = payload.removePrefix("[CALL_AUDIO_FRAME:").removeSuffix("]")
-                // Se o chamador recebe áudio do destinatário mas seu estado ainda marca 'não conectado',
-                // significa que o destinatário atendeu! Conecta imediatamente e inicia sua mídia.
-                val current = _activeCallState.value
-                if (current != null && !current.isConnected && !current.isIncoming) {
-                    callRingtoneWakeManager?.stopAllCallAlerts()
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
-                    markActiveCallConnected()
-                    callMediaEngine?.startCallMedia(current.isVideo)
-                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
-                }
                 callMediaEngine?.playRemoteAudioFrame(b64)
             }
             payload.startsWith("[CALL_VIDEO_FRAME:") -> {
+                val current = _activeCallState.value ?: return
+                val session = callSessions.active ?: return
+                if (!current.isConnected || !current.isVideo ||
+                    session.stage != CallSessionMachine.Stage.ACTIVE ||
+                    cleanId(current.peerHash) != cleanSender
+                ) return
                 val b64 = payload.removePrefix("[CALL_VIDEO_FRAME:").removeSuffix("]")
-                // Se o chamador recebe vídeo do destinatário mas seu estado ainda marca 'não conectado',
-                // conecta imediatamente e inicia sua transmissão.
-                val current = _activeCallState.value
-                if (current != null && !current.isConnected && !current.isIncoming) {
-                    callRingtoneWakeManager?.stopAllCallAlerts()
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = true, remoteVideoFrameBase64 = b64)
-                    markActiveCallConnected()
-                    callMediaEngine?.startCallMedia(true)
-                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
-                } else {
-                    _activeCallState.value = _activeCallState.value?.copy(remoteVideoFrameBase64 = b64)
-                }
-            }
-            payload.startsWith("[CALL_INIT:") -> {
-                // Chamadas são exclusivas de vínculos permanentes. Retransmissões
-                // CALL_INIT não podem reiniciar o toque nem o timer da ligação.
-                if (!isPeerPermanent(cleanSender)) return
-                if (_activeCallState.value != null) return
-
-                val parts = payload.removePrefix("[CALL_INIT:").removeSuffix("]").split(":")
-                val isVideo = parts.getOrNull(0)?.toBoolean() ?: false
-                val callerAlias = parts.getOrNull(1) ?: senderAlias
-                val generation = UUID.randomUUID().toString()
-                synchronized(callStateLock) {
-                    activeCallGeneration = generation
-                    callConnectedAtMs = 0L
-                }
-                _activeCallState.value = ActiveCallState(
-                    isIncoming = true,
-                    peerHash = cleanSender,
-                    peerAlias = callerAlias,
-                    isVideo = isVideo,
-                    isConnected = false
-                )
-                callRingtoneWakeManager?.onIncomingCallReceived(
-                    callerHash = cleanSender,
-                    callerAlias = callerAlias,
-                    isVideo = isVideo,
-                    onAutoTimeout = {
-                        if (activeCallGeneration == generation) finishActiveCall(timedOut = true)
-                    }
-                )
-            }
-            payload.startsWith("[CALL_ACCEPT]") -> {
-                callRingtoneWakeManager?.stopAllCallAlerts()
-                val current = _activeCallState.value
-                if (current != null && !current.isIncoming && !current.isConnected && cleanId(current.peerHash) == cleanSender) {
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
-                    markActiveCallConnected()
-                    callMediaEngine?.startCallMedia(current.isVideo)
-                    // Confirmação de recebimento (handshake bidirecional)
-                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
-                }
-            }
-            payload.startsWith("[CALL_ACK]") -> {
-                callRingtoneWakeManager?.stopAllCallAlerts()
-                val current = _activeCallState.value
-                if (current != null && !current.isIncoming && !current.isConnected && cleanId(current.peerHash) == cleanSender) {
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
-                    markActiveCallConnected()
-                    callMediaEngine?.startCallMedia(current.isVideo)
-                }
-            }
-            payload.startsWith("[CALL_END]") -> {
-                if (_activeCallState.value?.peerHash?.let(::cleanId) == cleanSender) {
-                    finishActiveCall(remoteEnded = true, notifyPeer = false)
-                }
+                _activeCallState.value = current.copy(remoteVideoFrameBase64 = b64)
             }
             payload.startsWith("[FAMILY_REQ:") -> {
                 val parts = payload.removePrefix("[FAMILY_REQ:").removeSuffix("]").split(":")
