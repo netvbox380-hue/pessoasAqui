@@ -36,6 +36,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -1030,7 +1031,10 @@ fun ChatDetailScreen(
                             )
                         )
                         Spacer(modifier = Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             if (person.isMarkingMe && !person.isMarkedByMe) {
                                 Button(
                                     onClick = { onAcceptMutualConnection(person) },
@@ -1106,11 +1110,14 @@ fun ChatDetailScreen(
                 }
             }
 
-            // Lista de Mensagens
+            // A largura é calculada a partir da janela REAL: bolhas estreitas
+            // em telefone, mais largas sem esticar demais em tablet/dobráveis.
+            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+            val maxChatBubbleWidth = (maxWidth * 0.82f).coerceAtMost(560.dp)
             LazyColumn(
                 state = listState,
                 modifier = Modifier
-                    .weight(1f)
+                    .fillMaxSize()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -1168,7 +1175,7 @@ fun ChatDetailScreen(
                             color = if (isMsgSelected) DarkCardElevated else bubbleBgColor,
                             border = if (isMsgSelected) BorderStroke(2.dp, RadarCyan) else BorderStroke(0.5.dp, bubbleBorderColor),
                             modifier = Modifier
-                                .widthIn(max = 290.dp)
+                                .widthIn(max = maxChatBubbleWidth)
                                 .pointerInput(msg.id, selectedMessageIds.isNotEmpty()) {
                                     detectTapGestures(
                                         onLongPress = {
@@ -1636,6 +1643,7 @@ fun ChatDetailScreen(
                         }
                     }
                 }
+            }
             }
 
             // Barra de Gravação de Áudio Ativa Responsiva (Android 14 & 16)
@@ -3820,7 +3828,8 @@ fun EmojiPickerPanel(
         border = BorderStroke(1.dp, DarkCardElevated),
         modifier = modifier
             .fillMaxWidth()
-            .height(260.dp)
+            .heightIn(max = 260.dp)
+            .fillMaxHeight(0.35f)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Barra superior de categorias e controles
@@ -3832,11 +3841,12 @@ fun EmojiPickerPanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Categorias
-                Row(
+                LazyRow(
                     modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    categories.forEachIndexed { index, (icon, label) ->
+                    items(categories.size) { index ->
+                        val (icon, label) = categories[index]
                         val isSelected = selectedCategory == index
                         Surface(
                             shape = RoundedCornerShape(8.dp),
