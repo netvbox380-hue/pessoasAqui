@@ -100,7 +100,18 @@ data class ChatMessage(
     val editedTimestampMs: Long = 0L,
     val isDeleted: Boolean = false,
     val deliveryStatus: MessageDeliveryStatus = MessageDeliveryStatus.DELIVERED
-)
+) {
+    /**
+     * Protege a interface contra registros cifrados antigos gravados quando a
+     * decifragem falhava. Não altera nem apaga o histórico criptografado.
+     */
+    val safeDisplayText: String
+        get() = if (text.startsWith("ENC_ECDH:") || text.startsWith("ENC:")) {
+            "🔒 Conteúdo criptografado indisponível"
+        } else {
+            text
+        }
+}
 
 /**
  * Estado de Chamada Criptografada Ativa (Áudio / Vídeo)
