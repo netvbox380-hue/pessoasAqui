@@ -1194,21 +1194,17 @@ class PessoasAquiRepository(
      * Não reinicia o servidor GATT durante sessões já autenticadas.
      */
     private fun startBleMaintenanceLoop() {
-        val ble = bleManager ?: return
+        // A expiração de contatos é uma política de sessões, não um comando
+        // para reiniciar o rádio. O scanner é gerido por eventos do Android.
+        if (bleManager == null) return
         scope.launch {
-            var lastHealthCheckMs = 0L
             while (true) {
                 delay(5000L)
                 if (!_hasGrantedPermissions.value) continue
                 try {
                     cleanupExpiredTemporarySessions()
-                    val now = System.currentTimeMillis()
-                    if (ble.isBluetoothEnabled && now - lastHealthCheckMs >= 30_000L) {
-                        lastHealthCheckMs = now
-                        ble.ensureDiscoveryContinuity(now)
-                    }
                 } catch (e: Exception) {
-                    Log.w("PessoasAqui", "Monitor independente do BLE: ${e.message}")
+                    Log.w("PessoasAqui", "Manutenção de sessões BLE: ${e.message}")
                 }
             }
         }
@@ -1717,6 +1713,15 @@ class PessoasAquiRepository(
     }
 
     /** Recupera descoberta ao voltar ao app, sem forçar reinício do GATT ativo. */
+    fun setBleAppForeground(visible: Boolean) {
+        if (!_hasGrantedPermissions.value) return
+        try {
+            bleManager?.setAppForeground(visible)
+        } catch (e: Exception) {
+            Log.w("PessoasAqui", "Transição de visibilidade BLE: ${e.message}")
+        }
+    }
+
     fun ensureBleHealthOnForeground(forceRefresh: Boolean = false) {
         if (!_hasGrantedPermissions.value) return
         val ble = bleManager ?: return
@@ -1725,11 +1730,9 @@ class PessoasAquiRepository(
             if (!bleTransportCoordinator.serverManager.isServerRunning) {
                 bleTransportCoordinator.start()
             }
-            if (forceRefresh) {
-                ble.refreshDiscoveryOnForeground()
-            } else {
-                ble.ensureDiscoveryContinuity()
-            }
+            // forceRefresh apenas compatibilidade com a interface anterior:
+            // recuperação real ocorre por erro de rádio e mudanças de ciclo de vida.
+            ble.ensureDiscoveryContinuity()
         } catch (e: Exception) {
             Log.w("PessoasAqui", "Falha ao verificar BLE ao voltar ao app: ${e.message}")
         }
