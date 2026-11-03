@@ -629,7 +629,7 @@ fun ConversationsTab(
                                             Spacer(modifier = Modifier.height(4.dp))
 
                                             Text(
-                                                text = lastMsg.text,
+                                                text = lastMsg.safeDisplayText,
                                                 style = MaterialTheme.typography.bodySmall.copy(
                                                     color = EmeraldGreen,
                                                     fontWeight = FontWeight.Medium
@@ -775,7 +775,7 @@ fun ConversationsTab(
                                             lastMsg.messageType == MessageType.IMAGE -> "📷 Foto enviada"
                                             lastMsg.messageType == MessageType.AUDIO -> "🎤 Áudio (${lastMsg.audioDurationSeconds}s)"
                                             lastMsg.messageType == MessageType.DOCUMENT -> "📄 ${lastMsg.fileName ?: "Documento"}"
-                                            else -> lastMsg.text
+                                            else -> lastMsg.safeDisplayText
                                         }
 
                                         Text(
