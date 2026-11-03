@@ -46,7 +46,8 @@ class CallSessionStateMachine {
         val active = session ?: return false
         if (active.callId != callId || active.peerId != peerId) return false
         if (active.incoming != byLocalUser) return false
-        if (active.phase != if (active.incoming) Phase.INCOMING else Phase.OUTGOING) return false
+        val expected = if (active.incoming) Phase.INCOMING else Phase.OUTGOING
+        if (active.phase != expected) return false
         session = active.copy(phase = Phase.ACTIVE, connectedAtMs = nowMs)
         return true
     }
