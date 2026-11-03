@@ -1501,11 +1501,11 @@ fun ChatDetailScreen(
 
                                     else -> {
                                         // Mensagem de Texto Padrão (com suporte responsivo a badge de Transmissão)
-                                        val isBroadcast = msg.text.startsWith("📢 [Transmissão]: ") || msg.text.startsWith("📢 [Transmissao]: ")
+                                        val isBroadcast = msg.safeDisplayText.startsWith("📢 [Transmissão]: ") || msg.safeDisplayText.startsWith("📢 [Transmissao]: ")
                                         val cleanText = if (isBroadcast) {
-                                            msg.text.removePrefix("📢 [Transmissão]: ").removePrefix("📢 [Transmissao]: ").trim()
+                                            msg.safeDisplayText.removePrefix("📢 [Transmissão]: ").removePrefix("📢 [Transmissao]: ").trim()
                                         } else {
-                                            msg.text
+                                            msg.safeDisplayText
                                         }
 
                                         if (isBroadcast) {
@@ -2869,7 +2869,7 @@ fun ChatDetailScreen(
                                         if (canEdit) {
                                             if (isVip) {
                                                 editingMessage = msg
-                                                inputText = msg.text
+                                                inputText = msg.safeDisplayText
                                                 selectedMessageForActions = null
                                             } else {
                                                 selectedMessageForActions = null
@@ -2936,7 +2936,7 @@ fun ChatDetailScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(msg.text))
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(msg.safeDisplayText))
                                         selectedMessageForActions = null
                                         Toast.makeText(context, "Texto copiado!", Toast.LENGTH_SHORT).show()
                                     }
@@ -2961,7 +2961,7 @@ fun ChatDetailScreen(
                                     .fillMaxWidth()
                                     .clickable {
                                         selectedMessageForActions = null
-                                        reminderInitialText = msg.text
+                                        reminderInitialText = msg.safeDisplayText
                                         showRemindersDialog = true
                                     }
                             ) {
