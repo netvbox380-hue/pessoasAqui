@@ -317,6 +317,24 @@ class BleAdvertisingAndDiscoveryTest {
     }
 
     @Test
+    fun testDistinctPeerWithSameAliasStillAppearsInRadar() {
+        val driver = MockAdvertiserDriver()
+        val ble = BleManager(context = null, customAdvertiserDriver = driver)
+        ble.isMockBluetoothEnabled = true
+        ble.startAdvertising("1111222233334444", "Mesmo Nome", UserIntent.QUERO_CONVERSAR)
+
+        val discovered = mutableListOf<NearbyPerson>()
+        ble.processScanRecordData(
+            serviceData = "AAAA222233334444:0:Mesmo Nome".toByteArray(StandardCharsets.UTF_8),
+            macAddress = "11:22:33:44:55:66",
+            rawRssi = -55,
+            onPeerDiscovered = { discovered.add(it) }
+        )
+        assertEquals("Só o ID técnico identifica o próprio aparelho", 1, discovered.size)
+        assertEquals("AAAA222233334444", discovered.first().technicalIdentityHash)
+    }
+
+    @Test
     fun testProcessScanRecordDataRejectsSelfBroadcast() {
         val bleManager = BleManager(
             context = null,
