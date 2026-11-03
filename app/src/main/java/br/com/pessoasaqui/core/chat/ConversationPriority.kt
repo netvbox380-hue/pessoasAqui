@@ -1,6 +1,7 @@
 package br.com.pessoasaqui.core.chat
 
 import br.com.pessoasaqui.domain.model.ChatMessage
+import br.com.pessoasaqui.domain.model.MessageType
 import br.com.pessoasaqui.domain.model.NearbyPerson
 
 /**
@@ -55,7 +56,9 @@ object ConversationPriority {
                 contact = contact,
                 messages = messages,
                 importantCount = valid.count { it.isImportant },
-                unreadCount = valid.count { !it.isFromMe && !it.isRead },
+                unreadCount = valid.count {
+                    !it.isFromMe && !it.isRead && it.messageType != MessageType.SYSTEM
+                },
                 lastActivityMs = messages.maxOfOrNull { it.timestampMs } ?: 0L
             )
         }
