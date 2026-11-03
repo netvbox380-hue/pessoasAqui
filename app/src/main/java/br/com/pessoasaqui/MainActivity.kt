@@ -93,6 +93,7 @@ class MainActivity : ComponentActivity() {
         val repo = (application as? PessoasAquiApp)?.repository
         repo?.callRingtoneWakeManager?.isAppInForeground = true
         repo?.playBillingManager?.queryActivePurchases()
+        repo?.bleManager?.setAppInForeground(true)
         repo?.ensureBleHealthOnForeground()
 
         // Após suspensão prolongada, alguns chipsets mantêm scan marcado como
@@ -109,6 +110,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        (application as? PessoasAquiApp)?.repository?.bleManager?.setAppInForeground(false)
         lastPausedAtMs = System.currentTimeMillis()
         bleRecoveryTask?.let { bleRecoveryHandler.removeCallbacks(it) }
         bleRecoveryTask = null
