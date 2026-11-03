@@ -227,6 +227,23 @@ class BleAdvertisingAndDiscoveryTest {
     }
 
     @Test
+    fun testForegroundResumeRefreshesStaleAdvertisingWithoutTogglingBluetooth() {
+        val driver = MockAdvertiserDriver()
+        val ble = BleManager(context = null, customAdvertiserDriver = driver)
+        ble.isMockBluetoothEnabled = true
+        ble.startAdvertising("1122334455667788", "Teste", UserIntent.QUERO_CONVERSAR)
+        val startCount = driver.startAdvertisingCallCount
+
+        ble.refreshDiscoveryOnForeground()
+        assertEquals("Retorno rápido não deve reiniciar rádio", startCount, driver.startAdvertisingCallCount)
+
+        ble.refreshDiscoveryOnForeground(
+            System.currentTimeMillis() + BleManager.FOREGROUND_ADVERTISING_REFRESH_MS + 1000L
+        )
+        assertEquals("Retorno prolongado deve renovar anúncios", startCount + 1, driver.startAdvertisingCallCount)
+    }
+
+    @Test
     fun testStopAdvertisingInvokesDriver() {
         val mockDriver = MockAdvertiserDriver()
         val bleManager = BleManager(
