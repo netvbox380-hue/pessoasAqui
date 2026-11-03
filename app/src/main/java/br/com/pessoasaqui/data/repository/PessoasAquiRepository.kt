@@ -961,6 +961,10 @@ class PessoasAquiRepository(
                 val callerAlias = parts.getOrNull(1) ?: senderAlias
                 val generation = CallSignalingProtocol.invitationCallId(payload)
                     ?: CallSignalingProtocol.newCallId()
+                // O histórico do Modo B é persistido criptografado. Impede
+                // reabrir uma chamada concluída após morte/reinício do processo.
+                if (proximitySimulator.privateChats.value[cleanSender].orEmpty()
+                        .any { it.id == "call-$generation" }) return
                 synchronized(callStateLock) {
                     if (!callLifecycle.begin(generation, cleanSender, isVideo, incoming = true)) return
                     activeCallGeneration = generation
