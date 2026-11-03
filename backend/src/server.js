@@ -1167,9 +1167,12 @@ app.post('/api/invites/redeem', async (req, res) => {
             RETURNING sender_identity, sender_alias
          ), linked AS (
            INSERT INTO connections (from_identity, to_identity, is_mutual)
-           SELECT sender_identity, $3, TRUE FROM claimed
-           UNION ALL
-           SELECT $3, sender_identity, TRUE FROM claimed
+           SELECT pairs.from_identity, pairs.to_identity, TRUE
+             FROM claimed
+             CROSS JOIN LATERAL (
+               VALUES (claimed.sender_identity, $3::varchar),
+                      ($3::varchar, claimed.sender_identity)
+             ) AS pairs(from_identity, to_identity)
            ON CONFLICT (from_identity, to_identity)
              DO UPDATE SET is_mutual = TRUE
            RETURNING 1
