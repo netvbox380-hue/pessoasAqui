@@ -46,6 +46,7 @@ fun ConversationsTab(
     onDeleteConversations: (List<String>) -> Unit = {},
     isCreatingInvite: Boolean = false,
     onCreateInviteLink: () -> Unit = {},
+    onScanInviteQr: () -> Unit = {},
     onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null,
     contactTags: List<ContactTag> = emptyList(),
     contactTagAssignments: Map<String, Set<String>> = emptyMap()
@@ -322,8 +323,39 @@ fun ConversationsTab(
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("Criar Convite Criptografado", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
-                                    Text("Link seguro de uso único para compartilhar", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                    Text("Criar convite: link + QR", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Gere um código QR para perto e um link para longe", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                }
+                            }
+                        }
+
+                        // Leitura oficial de QR: não inicia resgate automático.
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                showConversationsDrawer = false
+                                onScanInviteQr()
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(modifier = Modifier.size(38.dp).clip(CircleShape)
+                                    .background(EmeraldGreen.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.QrCodeScanner,
+                                        contentDescription = null, tint = EmeraldGreen,
+                                        modifier = Modifier.size(22.dp))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("Ler QR de convite", color = TextPrimary,
+                                        fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text("Aproxime a câmera do QR da outra pessoa",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = TextSecondary, fontSize = 11.sp))
                                 }
                             }
                         }
@@ -560,7 +592,7 @@ fun ConversationsTab(
                                         ) {
                                             Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(14.dp))
                                             Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Criar Convite", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                            Text("Criar Link + QR", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                         }
 
                                         Button(
