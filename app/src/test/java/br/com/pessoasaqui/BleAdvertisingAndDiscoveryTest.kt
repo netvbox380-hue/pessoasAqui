@@ -208,8 +208,9 @@ class BleAdvertisingAndDiscoveryTest {
         assertEquals("Monitor não deve reiniciar advertising saudável antes do limite",
             started, driver.startAdvertisingCallCount)
 
-        ble.ensureDiscoveryContinuity(System.currentTimeMillis() + BleManager.ADVERTISING_REFRESH_INTERVAL_MS + 1000L)
-        assertEquals(started + 1, driver.startAdvertisingCallCount)
+        ble.ensureDiscoveryContinuity(System.currentTimeMillis() + 12 * 60 * 60 * 1000L)
+        assertEquals("Anúncio saudável não deve ser reiniciado só por tempo decorrido",
+            started, driver.startAdvertisingCallCount)
         assertTrue(ble.isAdvertisingActive)
     }
 
@@ -237,10 +238,10 @@ class BleAdvertisingAndDiscoveryTest {
         ble.refreshDiscoveryOnForeground()
         assertEquals("Retorno rápido não deve reiniciar rádio", startCount, driver.startAdvertisingCallCount)
 
-        ble.refreshDiscoveryOnForeground(
-            System.currentTimeMillis() + BleManager.FOREGROUND_ADVERTISING_REFRESH_MS + 1000L
-        )
-        assertEquals("Retorno prolongado deve renovar anúncios", startCount + 1, driver.startAdvertisingCallCount)
+        ble.setAppForeground(false)
+        ble.refreshDiscoveryOnForeground(System.currentTimeMillis() + 2 * 60 * 60 * 1000L)
+        assertEquals("Foreground deve mudar modo do scanner sem reiniciar anúncio saudável",
+            startCount, driver.startAdvertisingCallCount)
     }
 
     @Test
