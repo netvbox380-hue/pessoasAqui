@@ -23,6 +23,8 @@ class StickerPersistenceManager(private val context: Context) {
         const val MAX_STICKERS = 180
         private const val MAX_STORED_BYTES = 8L * 1024 * 1024
         private val SAFE_ID = Regex("^sticker_[A-Za-z0-9_-]{1,80}$")
+        /** A mesma validação usada para todos os caminhos pode ser testada em JVM. */
+        internal fun isValidStickerId(id: String): Boolean = SAFE_ID.matches(id)
     }
 
     private val stickersDir: File by lazy {
