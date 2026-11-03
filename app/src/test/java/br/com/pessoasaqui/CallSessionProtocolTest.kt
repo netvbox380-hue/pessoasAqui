@@ -62,7 +62,7 @@ class CallSessionProtocolTest {
 
     @Test fun replayedInviteAndSimultaneousCallsDoNotOverrideActiveSession() {
         val fsm = CallSessionMachine()
-        val event = CallSessionProtocol.parse(CallSessionProtocol.invite(false, "Alice", id))!!
+        val event = CallSessionProtocol.parse(CallSessionProtocol.invite(false, "Alice", id, issuedAtMs = 1000L))!!
         assertEquals(CallSessionMachine.OfferResult.NEW, fsm.incoming(alice, event, 1000L))
         assertEquals(CallSessionMachine.OfferResult.DUPLICATE, fsm.incoming(alice, event, 1001L))
         assertEquals(CallSessionMachine.OfferResult.BUSY, fsm.incoming(bob, event, 1002L))
@@ -71,7 +71,17 @@ class CallSessionProtocolTest {
         assertNotNull(fsm.finish(2000L))
         assertEquals(CallSessionMachine.OfferResult.STALE, fsm.incoming(alice, event, 2001L))
         assertEquals(CallSessionMachine.OfferResult.STALE, fsm.incoming(alice, event, 599_999L))
-        assertEquals(CallSessionMachine.OfferResult.NEW, fsm.incoming(alice, event, 602_001L))
+        assertEquals("Convites expirados não podem reabrir chamadas após reiniciar o app",
+            CallSessionMachine.OfferResult.STALE, fsm.incoming(alice, event, 602_001L))
+    }
+
+    @Test fun expiredInviteAndFutureDatedInviteDoNotRing() {
+        val fsm = CallSessionMachine()
+        val old = CallSessionProtocol.parse(CallSessionProtocol.invite(false, "Alice", id, 1000L))!!
+        assertEquals(CallSessionMachine.OfferResult.STALE, fsm.incoming(alice, old, 400_000L))
+        val future = CallSessionProtocol.parse(CallSessionProtocol.invite(false, "Alice", id, 900_000L))!!
+        assertEquals(CallSessionMachine.OfferResult.STALE, fsm.incoming(alice, future, 1000L))
+        assertNull(fsm.active)
     }
 
     @Test fun incomingLegacyCallDoesNotRequireMutualProtocolV2() {
