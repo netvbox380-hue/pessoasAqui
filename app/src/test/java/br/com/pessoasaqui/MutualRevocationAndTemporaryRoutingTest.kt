@@ -93,6 +93,23 @@ class MutualRevocationAndTemporaryRoutingTest {
         assertNull("Convites encerrados não podem tocar novamente", repo.activeCallState.value)
     }
 
+    @Test fun unsolicitedMediaDoesNotAutoAnswerIncomingCall() {
+        val repo = PessoasAquiRepository()
+        repo.setMarkPerson(peerId, mark = true)
+        repo.confirmMutualConnectionFromServer(peerId)
+        val id = br.com.pessoasaqui.core.media.CallSignalingProtocol.newCallId()
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:true:Contato:$id]", "", "media-setup")
+        assertFalse(repo.activeCallState.value?.isConnected ?: true)
+
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_AUDIO_FRAME:AAAA]", "", "media-before-accept")
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_VIDEO_FRAME:BBBB]", "", "video-before-accept")
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_ACK]#$id", "", "ack-before-accept")
+        assertFalse("Mídia e ACK nunca são consentimento de atendimento",
+            repo.activeCallState.value?.isConnected ?: true)
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]#$id", "", "media-end")
+        assertEquals(1, repo.proximitySimulator.privateChats.value[peerId].orEmpty().size)
+    }
+
     @Test fun wifiDisconnectMustNotRemoveNativeBleRadarPeer() {
         val repo = PessoasAquiRepository()
         val seenAt = System.currentTimeMillis()
