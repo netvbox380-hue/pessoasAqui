@@ -757,14 +757,23 @@ open class PessoasAquiNetworkClient(
     /**
      * Cria um convite criptografado de uso único no servidor
      */
-    suspend fun createOneTimeInvite(senderIdentity: String, senderAlias: String): Result<CreateInviteResponse> = withContext(Dispatchers.IO) {
+    suspend fun createOneTimeInvite(
+        senderIdentity: String,
+        senderAlias: String,
+        nonce: String,
+        createdAtMs: Long,
+        authSignature: String
+    ): Result<CreateInviteResponse> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("senderIdentity", senderIdentity)
                 put("senderAlias", senderAlias)
+                put("nonce", nonce)
+                put("createdAtMs", createdAtMs)
+                put("signature", authSignature)
             }
             val request = Request.Builder()
-                .url("$baseUrl/api/invites/create")
+                .url("$baseUrl/api/invites/create-v2")
                 .post(json.toString().toRequestBody(jsonMediaType))
                 .build()
 
