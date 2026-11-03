@@ -82,6 +82,12 @@ setTimeout(async () => {
         created_at TIMESTAMPTZ DEFAULT NOW()
       )`);
 
+      await query(`CREATE TABLE IF NOT EXISTS invite_create_nonces (
+        request_id VARCHAR(160) PRIMARY KEY,
+        sender_identity VARCHAR(64) NOT NULL,
+        used_at TIMESTAMPTZ DEFAULT NOW()
+      )`);
+
       await query(`CREATE TABLE IF NOT EXISTS moderation_reports (
         id VARCHAR(64) PRIMARY KEY,
         reporter_identity VARCHAR(64),
@@ -1081,6 +1087,67 @@ app.post('/api/invites/create', async (req, res) => {
  * Validação autoritativa de uso único: PostgreSQL em uma instrução atômica,
  * sem fallback por HMAC, e fail-closed quando o banco estiver indisponível.
  */
+/**
+ * V2: criação com prova de posse da chave de identidade já registrada.
+ * Não aceitar chave pública fornecida pelo próprio pedido nem assinatura
+ * de fallback. A marcação criptográfica e anti-replay é confirmada no DB.
+ * O endpoint antigo permanece para migração dos clientes já publicados,
+ * mas deverá ser desligado depois de uma distribuição mínima obrigatória.
+ */
+app.post('/api/invites/create-v2', async (req, res) => {
+  const sender = cleanId(req.body.senderIdentity);
+  const alias = String(req.body.senderAlias || 'Usuário').trim().slice(0, 64);
+  const nonce = String(req.body.nonce || '');
+  const createdAtMs = Number(req.body.createdAtMs);
+  const signature = String(req.body.signature || '');
+  if (!sender || sender.length > 64 || !/^[0-9a-f-]{36}$/i.test(nonce) ||
+      !Number.isSafeInteger(createdAtMs) || Math.abs(Date.now() - createdAtMs) > 5 * 60_000 ||
+      !signature || signature.length > 512) {
+    return res.status(400).json({ error: 'Autorização do convite inválida ou expirada.' });
+  }
+  if (!process.env.DATABASE_URL || !isPostgres()) {
+    return res.status(503).json({ error: 'Banco de identidades indisponível.' });
+  }
+  try {
+    const stored = await query(
+      'SELECT public_key_ed25519 FROM identities WHERE id = $1',
+      [sender]
+    );
+    const publicKey = stored.rows && stored.rows[0] && stored.rows[0].public_key_ed25519;
+    if (!publicKey || !verifyClientEcdsaSignature(publicKey,
+        `invite-create-v2:${sender}:${nonce}:${createdAtMs}`, signature)) {
+      return res.status(403).json({ error: 'Não foi possível confirmar a identidade do remetente.' });
+    }
+    const nonceId = `${sender}:${nonce}`;
+    const locked = await query(
+      `INSERT INTO invite_create_nonces (request_id, sender_identity)
+       VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING request_id`,
+      [nonceId, sender]
+    );
+    if (!locked.rows || locked.rows.length !== 1) {
+      return res.status(409).json({ error: 'Pedido de convite já utilizado. Gere novamente.' });
+    }
+  } catch (_) {
+    return res.status(503).json({ error: 'Não foi possível verificar a identidade com segurança.' });
+  }
+
+  const created = await inviteLifecycle.create({ sender, alias });
+  if (!created.invite) return res.status(created.status).json({ error: created.error });
+  const { inviteId, token, signature: inviteSignature, expiresAt } = created.invite;
+  const configuredBase = process.env.BASE_URL || 'https://pessoasaqui3.onrender.com';
+  if (!/^https:\/\/[a-z0-9.-]+(?::443)?\/?$/i.test(configuredBase)) {
+    return res.status(503).json({ error: 'BASE_URL de convites deve ser HTTPS.' });
+  }
+  const baseUrl = configuredBase.replace(/\/$/, '');
+  const queryParams = `id=${encodeURIComponent(inviteId)}&token=${encodeURIComponent(token)}&sender=${encodeURIComponent(sender)}&alias=${encodeURIComponent(alias)}&sig=${encodeURIComponent(inviteSignature)}&exp=${expiresAt}`;
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    success: true, inviteId, token, signature: inviteSignature,
+    inviteUrl: `${baseUrl}/invite?${queryParams}`,
+    senderIdentity: sender, senderAlias: alias, expiresAt
+  });
+});
+
 app.post('/api/invites/redeem', async (req, res) => {
   const { inviteId, token, receiverIdentity, receiverAlias } = req.body;
   const receiver = cleanId(receiverIdentity);
