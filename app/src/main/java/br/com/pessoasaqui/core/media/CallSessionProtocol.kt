@@ -17,6 +17,7 @@ internal data class CallSignal(
     val callId: String? = null,
     val video: Boolean = false,
     val alias: String = "",
+    val issuedAtMs: Long? = null,
     val endReason: CallEndReason? = null
 )
 
@@ -24,8 +25,8 @@ internal object CallSessionProtocol {
     private fun validId(id: String?): String? =
         id?.takeIf { runCatching { UUID.fromString(it).toString().equals(it, ignoreCase = true) }.getOrDefault(false) }
 
-    fun invite(video: Boolean, alias: String, callId: String): String =
-        "[CALL_INIT:$video:${alias.replace(':', ' ')}:$callId]"
+    fun invite(video: Boolean, alias: String, callId: String, issuedAtMs: Long = System.currentTimeMillis()): String =
+        "[CALL_INIT:$video:${alias.replace(':', ' ')}:$callId:$issuedAtMs]"
     fun ringing(id: String) = "[CALL_RINGING:$id]"
     fun accept(id: String) = "[CALL_ACCEPT:$id]"
     fun ack(id: String) = "[CALL_ACK:$id]"
@@ -38,11 +39,19 @@ internal object CallSessionProtocol {
         return when (parts[0]) {
             "CALL_INIT" -> {
                 if (parts.size < 3 || (parts[1] != "true" && parts[1] != "false")) return null
-                val id = if (parts.size >= 4) validId(parts.last()) else null
-                // CALL_INIT de versões antigas pode ter apelido com ':'.
-                val name = if (id != null) parts.subList(2, parts.lastIndex).joinToString(":")
-                           else parts.drop(2).joinToString(":")
-                CallSignal(CallSignalType.INIT, id, parts[1].toBoolean(), name.take(64))
+                // Compatibilidade: INIT legado (sem ID), v2 anterior (ID
+                // final) ou v2 com tempo de emissão para bloquear replay.
+                val issuedAt = if (parts.size >= 5) parts.last().toLongOrNull() else null
+                val timestampedId = if (issuedAt != null) validId(parts[parts.lastIndex - 1]) else null
+                val id = timestampedId ?: if (parts.size >= 4) validId(parts.last()) else null
+                val nameEnd = when {
+                    timestampedId != null -> parts.lastIndex - 1
+                    id != null -> parts.lastIndex
+                    else -> parts.size
+                }
+                val name = parts.subList(2, nameEnd).joinToString(":")
+                CallSignal(CallSignalType.INIT, id, parts[1].toBoolean(), name.take(64),
+                    issuedAtMs = if (timestampedId != null) issuedAt else null)
             }
             "CALL_RINGING", "CALL_ACCEPT", "CALL_ACK" -> {
                 val type = when (parts[0]) {
@@ -106,6 +115,10 @@ internal class CallSessionMachine {
     @Synchronized
     fun incoming(peer: String, signal: CallSignal, nowMs: Long = System.currentTimeMillis()): OfferResult {
         if (signal.type != CallSignalType.INIT) return OfferResult.STALE
+        val emitted = signal.issuedAtMs
+        if (emitted != null &&
+            (emitted < nowMs - 180_000L || emitted > nowMs + 300_000L)
+        ) return OfferResult.STALE
         expireTombstones(nowMs)
         val id = signal.callId ?: UUID.randomUUID().toString()
         if (id in completed) return OfferResult.STALE
