@@ -427,6 +427,8 @@ fun ChatDetailScreen(
 
     var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
     var stickerBitmapToCreate by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var editingStickerId by remember { mutableStateOf<String?>(null) }
+    var stickerCollectionRevision by remember { mutableIntStateOf(0) }
 
     val createStickerPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -434,6 +436,7 @@ fun ChatDetailScreen(
         if (uri != null) {
             val bmp = uriToBitmap(context, uri)
             if (bmp != null) {
+                editingStickerId = null
                 stickerBitmapToCreate = bmp
             }
         }
@@ -1986,6 +1989,12 @@ fun ChatDetailScreen(
                         onCreateStickerRequested = {
                             createStickerPickerLauncher.launch("image/*")
                         },
+                        onEditStickerRequested = { id, bmp ->
+                            editingStickerId = id
+                            stickerBitmapToCreate = bmp
+                            showEmojiPicker = false
+                        },
+                        stickerCollectionRevision = stickerCollectionRevision,
                         onBackspace = {
                             if (inputText.isNotEmpty()) {
                                 val codePoints = inputText.codePoints().toArray()
@@ -2580,6 +2589,7 @@ fun ChatDetailScreen(
                 },
                 onCreateSticker = { bmp ->
                     fullscreenImageBitmap = null
+                    editingStickerId = null
                     stickerBitmapToCreate = bmp
                 },
                 onDismiss = { fullscreenImageBitmap = null }
@@ -2589,12 +2599,18 @@ fun ChatDetailScreen(
         if (stickerBitmapToCreate != null) {
             StickerCreatorDialog(
                 sourceBitmap = stickerBitmapToCreate!!,
-                onStickerCreated = { stickerBmp, payload ->
+                existingStickerId = editingStickerId,
+                onStickerSaved = { stickerCollectionRevision++ },
+                onStickerCreated = { _, payload ->
                     stickerBitmapToCreate = null
+                    editingStickerId = null
                     onSendImageMessage(person, payload)
                     Toast.makeText(context, "⭐ Figurinha enviada com sucesso!", Toast.LENGTH_SHORT).show()
                 },
-                onDismiss = { stickerBitmapToCreate = null }
+                onDismiss = {
+                    stickerBitmapToCreate = null
+                    editingStickerId = null
+                }
             )
         }
 
