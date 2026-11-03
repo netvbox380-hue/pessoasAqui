@@ -223,7 +223,12 @@ class BleManager(
     @Volatile private var lastRecoveryAttemptMs = 0L
     private val advertisingGeneration = AtomicLong(0L)
     // Retentativas só depois de callback de falha real; backoff limita consumo.
-    private val recoveryHandler = if (context != null) Handler(Looper.getMainLooper()) else null
+    private val recoveryHandler: Handler? = try {
+        if (context != null) Handler(Looper.getMainLooper()) else null
+    } catch (_: Throwable) {
+        // JVM unit tests or unavailable Android Looper: manual retry path.
+        null
+    }
     private var scanRetryTask: Runnable? = null
     private var advertisingRetryTask: Runnable? = null
     private var scanFailureCount = 0
