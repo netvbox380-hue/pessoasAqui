@@ -239,6 +239,7 @@ class PessoasAquiRepository(
     }
 
     /** Derruba o privilégio permanente imediatamente, inclusive com UI e cache antigos. */
+    @Synchronized
     internal fun revokeMutualLocally(peerId: String, removeMyMark: Boolean = false, queueRemoteUnmark: Boolean = false) {
         val cid = cleanId(peerId)
         if (cid.isBlank()) return
@@ -707,6 +708,7 @@ class PessoasAquiRepository(
      * Terminação idempotente de sessão. O ID é compartilhado pelos aparelhos
      * e impede que um END atrasado encerre a próxima chamada.
      */
+    @Synchronized
     private fun finishActiveCall(
         timedOut: Boolean = false,
         remoteEnded: Boolean = false,
@@ -776,6 +778,7 @@ class PessoasAquiRepository(
      * Sinalização separada da mídia e do histórico. Todas as transições
      * validam remetente, callId e estado; comandos fora de ordem são ignorados.
      */
+    @Synchronized
     private fun handleCallControl(senderId: String, senderAlias: String, event: CallSignal) {
         val sender = cleanId(senderId)
         if (!isPeerPermanent(sender)) return
@@ -2413,6 +2416,7 @@ class PessoasAquiRepository(
         sendPrivateMessage(cleanRecipient, "[DOC:$fileName:$sizeBytes:$base64]")
     }
 
+    @Synchronized
     fun startCall(person: NearbyPerson, isVideo: Boolean) {
         val cleanHash = cleanId(person.technicalIdentityHash.ifBlank { person.id })
         // O Modo A é texto BLE: nunca abrir chamada sem conexão confirmada.
@@ -2461,6 +2465,7 @@ class PessoasAquiRepository(
         }
     }
 
+    @Synchronized
     fun answerCall() {
         val current = _activeCallState.value ?: return
         if (!current.isIncoming || current.isConnected) return
@@ -2487,6 +2492,7 @@ class PessoasAquiRepository(
         }
     }
 
+    @Synchronized
     fun endCall() {
         finishActiveCall()
     }
