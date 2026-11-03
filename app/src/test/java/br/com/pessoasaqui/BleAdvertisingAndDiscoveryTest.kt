@@ -196,7 +196,7 @@ class BleAdvertisingAndDiscoveryTest {
     }
 
     @Test
-    fun testContinuityMonitorRestartsStalledAdvertiserWithoutTogglingBluetooth() {
+    fun testHealthyAdvertisingIsNotRestartedByMaintenanceTimer() {
         val driver = MockAdvertiserDriver()
         val ble = BleManager(context = null, customAdvertiserDriver = driver)
         ble.isMockBluetoothEnabled = true
@@ -209,7 +209,8 @@ class BleAdvertisingAndDiscoveryTest {
             started, driver.startAdvertisingCallCount)
 
         ble.ensureDiscoveryContinuity(System.currentTimeMillis() + BleManager.ADVERTISING_REFRESH_INTERVAL_MS + 1000L)
-        assertEquals(started + 1, driver.startAdvertisingCallCount)
+        assertEquals("Advertising saudável não é reiniciado por tempo decorrido",
+            started, driver.startAdvertisingCallCount)
         assertTrue(ble.isAdvertisingActive)
     }
 
@@ -222,12 +223,14 @@ class BleAdvertisingAndDiscoveryTest {
         ble.startAdvertising("1122334455667788", "Teste", UserIntent.QUERO_CONVERSAR)
         assertFalse(ble.isAdvertisingActive)
         ble.ensureDiscoveryContinuity()
+        assertEquals("Retry deve aguardar backoff e não gerar throttling", 1, driver.startAdvertisingCallCount)
+        ble.ensureDiscoveryContinuity(System.currentTimeMillis() + 3_000L)
         assertEquals(2, driver.startAdvertisingCallCount)
         assertTrue(ble.isAdvertisingActive)
     }
 
     @Test
-    fun testForegroundResumeRefreshesStaleAdvertisingWithoutTogglingBluetooth() {
+    fun testForegroundResumeDoesNotRestartHealthyAdvertising() {
         val driver = MockAdvertiserDriver()
         val ble = BleManager(context = null, customAdvertiserDriver = driver)
         ble.isMockBluetoothEnabled = true
@@ -240,7 +243,7 @@ class BleAdvertisingAndDiscoveryTest {
         ble.refreshDiscoveryOnForeground(
             System.currentTimeMillis() + BleManager.FOREGROUND_ADVERTISING_REFRESH_MS + 1000L
         )
-        assertEquals("Retorno prolongado deve renovar anúncios", startCount + 1, driver.startAdvertisingCallCount)
+        assertEquals("Retorno prolongado não deve interromper anúncios conectáveis", startCount, driver.startAdvertisingCallCount)
     }
 
     @Test
