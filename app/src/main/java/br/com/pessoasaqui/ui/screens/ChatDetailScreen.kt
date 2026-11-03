@@ -355,6 +355,7 @@ fun ChatDetailScreen(
     onSendBroadcastWithMedia: ((List<String>, String, String?, (Int, Int) -> Unit, (Boolean, String) -> Unit) -> Unit)? = null,
     isCreatingInvite: Boolean = false,
     onCreateInviteLink: () -> Unit = {},
+    onScanInviteQr: () -> Unit = {},
     onRedeemInviteLink: ((String, (Boolean, String?, NearbyPerson?) -> Unit) -> Unit)? = null,
     isVip: Boolean = false,
     onUpgradeToVip: () -> Unit = {},
@@ -2274,8 +2275,38 @@ fun ChatDetailScreen(
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("🔗 Criar Convite Criptografado", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
-                                    Text("Link seguro de uso único para compartilhar", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                    Text("🔗 Criar convite: link + QR", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("QR para perto e link para longe, ambos de uso único", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                }
+                            }
+                        }
+
+                        // Scanner delegado ao Google Play Services.
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                showResourceDrawer = false
+                                onScanInviteQr()
+                            }
+                        ) {
+                            Row(modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier.size(38.dp).clip(CircleShape)
+                                        .background(EmeraldGreen.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.QrCodeScanner, contentDescription = null,
+                                        tint = EmeraldGreen, modifier = Modifier.size(20.dp))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("📷 Ler QR de convite", color = TextPrimary,
+                                        fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text("Escaneie o QR da outra pessoa e confirme a conexão",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = TextSecondary, fontSize = 11.sp))
                                 }
                             }
                         }
@@ -2386,7 +2417,7 @@ fun ChatDetailScreen(
                                 pasteError = null
                             },
                             placeholder = {
-                                Text("https://pessoasaqui.onrender.com/invite?id=...", color = TextSecondary.copy(alpha = 0.5f))
+                                Text("https://pessoasaqui3.onrender.com/invite?id=...", color = TextSecondary.copy(alpha = 0.5f))
                             },
                             singleLine = false,
                             maxLines = 3,
