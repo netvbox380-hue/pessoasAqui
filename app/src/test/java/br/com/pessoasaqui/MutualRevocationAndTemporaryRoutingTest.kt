@@ -41,6 +41,29 @@ class MutualRevocationAndTemporaryRoutingTest {
         assertNull(repo.activeCallState.value)
     }
 
+    @Test fun answeredIncomingVideoCallHasReadableReceivedEntry() {
+        val repo = PessoasAquiRepository()
+        repo.setMarkPerson(peerId, mark = true)
+        repo.confirmMutualConnectionFromServer(peerId)
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:true:Contato]", "", "video-call-start")
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_ACK]", "", "video-call-ack")
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "video-call-end")
+        val history = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals(1, history.size)
+        assertTrue(history.single().text.contains("Videochamada recebida"))
+        assertNull(repo.activeCallState.value)
+    }
+
+    @Test fun callHistoryEntryIsDeduplicatedAndIsASystemRecord() {
+        val sim = br.com.pessoasaqui.core.proximity.ProximitySimulator()
+        sim.recordCallHistory(peerId, "📞 Chamada de voz não atendida", outgoing = true, myAlias = "Alice", entryId = "call-once")
+        sim.recordCallHistory(peerId, "📞 Chamada de voz não atendida", outgoing = true, myAlias = "Alice", entryId = "call-once")
+        val events = sim.privateChats.value[peerId].orEmpty()
+        assertEquals(1, events.size)
+        assertEquals(br.com.pessoasaqui.domain.model.MessageType.SYSTEM, events.single().messageType)
+        assertEquals("📞 Chamada de voz não atendida", events.single().safeDisplayText)
+    }
+
     @Test fun wifiDisconnectMustNotRemoveNativeBleRadarPeer() {
         val repo = PessoasAquiRepository()
         val seenAt = System.currentTimeMillis()
