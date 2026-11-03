@@ -7,7 +7,7 @@ package br.com.pessoasaqui.core.media
  */
 class CallSessionStateMachine {
     enum class Phase { IDLE, OUTGOING, INCOMING, ACTIVE }
-    enum class FinishReason { COMPLETED, CANCELLED, DECLINED, MISSED, NO_ANSWER }
+    enum class FinishReason { COMPLETED, CANCELLED, DECLINED, MISSED, NO_ANSWER, BUSY }
 
     data class Session(
         val callId: String,
@@ -54,7 +54,8 @@ class CallSessionStateMachine {
 
     @Synchronized
     fun finish(callId: String, peerId: String, byTimeout: Boolean = false,
-               byRemotePeer: Boolean = false): FinishReason? {
+               byRemotePeer: Boolean = false, remoteDeclined: Boolean = false,
+               remoteBusy: Boolean = false): FinishReason? {
         val active = session ?: return null
         if (active.callId != callId || active.peerId != peerId) return null
         session = null
@@ -62,6 +63,8 @@ class CallSessionStateMachine {
         if (recentFinished.size > 128) recentFinished.remove(recentFinished.first())
         return when {
             active.phase == Phase.ACTIVE -> FinishReason.COMPLETED
+            !active.incoming && remoteBusy -> FinishReason.BUSY
+            !active.incoming && remoteDeclined -> FinishReason.DECLINED
             active.incoming && (byRemotePeer || byTimeout) -> FinishReason.MISSED
             active.incoming -> FinishReason.DECLINED
             byRemotePeer || byTimeout -> FinishReason.NO_ANSWER
