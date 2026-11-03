@@ -297,7 +297,7 @@ class BleManager(
     private fun backgroundPendingIntent(): PendingIntent? {
         val ctx = context ?: return null
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
         return PendingIntent.getBroadcast(
             ctx,
             0xFA01,
