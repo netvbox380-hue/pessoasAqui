@@ -16,6 +16,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import br.com.pessoasaqui.core.proximity.BleConstants
+import br.com.pessoasaqui.core.qrcode.QrCodeGenerator
+import br.com.pessoasaqui.core.qrcode.InviteLinkParser
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import br.com.pessoasaqui.core.subscription.SubscriptionTier
 import br.com.pessoasaqui.data.repository.PessoasAquiRepository
 import br.com.pessoasaqui.domain.model.NearbyPerson
@@ -43,6 +49,9 @@ fun MainScreen(
     var tempAliasInput by remember { mutableStateOf("") }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
     var isCreatingInvite by remember { mutableStateOf(false) }
+    var generatedInviteUrl by remember { mutableStateOf<String?>(null) }
+    var inviteGenerationError by remember { mutableStateOf<String?>(null) }
+    val clipboardManager = LocalClipboardManager.current
     var showSupportDialog by remember { mutableStateOf(false) }
 
     val people by repository.discoveredPeople.collectAsState()
@@ -509,68 +518,30 @@ fun MainScreen(
                                 isCreatingInvite = true
                                 repository.createOneTimeInviteLink { url ->
                                     isCreatingInvite = false
-                                    if (url != null) {
-                                        val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                            putExtra(android.content.Intent.EXTRA_SUBJECT, "Convite Seguro - PessoasAqui")
-                                            putExtra(
-                                                android.content.Intent.EXTRA_TEXT,
-                                                "Olá! Estou te convidando para nos conectarmos no PessoasAqui com conversa privada, chamadas de voz e vídeo criptografadas à distância.\n\nToque no link abaixo para aceitar meu convite de conexão mútua (link seguro de uso único):\n$url"
-                                            )
-                                            type = "text/plain"
-                                        }
-                                        val shareIntent = android.content.Intent.createChooser(sendIntent, "Compartilhar Convite Seguro")
-                                        context.startActivity(shareIntent)
+                                    if (url != null && InviteLinkParser.parse(url) != null) {
+                                        generatedInviteUrl = url
+                                        inviteGenerationError = null
+                                    } else {
+                                        inviteGenerationError = "Não foi possível criar um convite válido. Verifique a conexão com o servidor."
                                     }
                                 }
                             }
                         },
                         onRedeemInviteLink = { rawInput, onResult ->
-                            val text = rawInput.trim()
-
-                            // Extrai a URL caso o usuário tenha colado a mensagem completa do WhatsApp ou outros apps
-                            val urlPattern = Regex("""(https?://[^\s]+|pessoasaqui://[^\s]+)""")
-                            val matchedUrl = urlPattern.find(text)?.value ?: text
-                            val parsedUri = try { android.net.Uri.parse(matchedUrl) } catch (_: Exception) { null }
-
-                            val id = parsedUri?.getQueryParameter("id")
-                                ?: parsedUri?.getQueryParameter("inviteId")
-                                ?: Regex("""[?&](?:id|inviteId)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val token = parsedUri?.getQueryParameter("token")
-                                ?: Regex("""[?&]token=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val sender = parsedUri?.getQueryParameter("sender")
-                                ?: parsedUri?.getQueryParameter("senderIdentity")
-                                ?: Regex("""[?&](?:sender|senderIdentity)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val rawAlias = parsedUri?.getQueryParameter("alias")
-                                ?: parsedUri?.getQueryParameter("senderAlias")
-                                ?: Regex("""[?&](?:alias|senderAlias)=([^&\s]+)""").find(text)?.groupValues?.get(1)
-                            val alias = rawAlias?.let {
-                                try { java.net.URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it }
-                            } ?: "Usuário"
-
-                            val sig = parsedUri?.getQueryParameter("sig")
-                                ?: parsedUri?.getQueryParameter("signature")
-                                ?: Regex("""[?&](?:sig|signature)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val exp = parsedUri?.getQueryParameter("exp")?.toLongOrNull()
-                                ?: parsedUri?.getQueryParameter("expiresAt")?.toLongOrNull()
-                                ?: Regex("""[?&](?:exp|expiresAt)=([0-9]+)""").find(text)?.groupValues?.get(1)?.toLongOrNull()
-
-                            if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
+                            val invite = InviteLinkParser.parse(rawInput)
+                            if (invite == null) {
+                                onResult(false, "Convite inválido. Aceitamos somente links oficiais PessoasAqui.", null)
+                            } else {
                                 repository.redeemOneTimeInvite(
-                                    inviteId = id.trim(),
-                                    token = token.trim(),
-                                    senderIdentity = sender.trim(),
-                                    senderAlias = alias.trim(),
-                                    signature = sig?.trim(),
-                                    expiresAt = exp
+                                    inviteId = invite.id,
+                                    token = invite.token,
+                                    senderIdentity = invite.sender,
+                                    senderAlias = invite.alias,
+                                    signature = invite.signature,
+                                    expiresAt = invite.expiresAt
                                 ) { success, msg, peer ->
                                     onResult(success, msg, peer)
                                 }
-                            } else {
-                                onResult(false, "Link ou formato de convite inválido.", null)
                             }
                         },
                         contactTags = contactTags,
@@ -595,6 +566,87 @@ fun MainScreen(
                         }
                     )
                 }
+            }
+
+            // O QR contém exatamente o mesmo link de uso único.
+            // O segredo não é salvo nem enviado a qualquer serviço adicional.
+            generatedInviteUrl?.let { url ->
+                val qr = remember(url) { QrCodeGenerator.generateQrCodeBitmap(url, 512, 512) }
+                AlertDialog(
+                    onDismissRequest = { generatedInviteUrl = null },
+                    title = { Text("Convite: link ou QR", color = TextPrimary) },
+                    text = {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 570.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            if (qr != null) {
+                                Image(
+                                    bitmap = qr,
+                                    contentDescription = "Código QR do convite único",
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.widthIn(max = 250.dp)
+                                        .fillMaxWidth().aspectRatio(1f)
+                                )
+                            } else {
+                                Text("Não foi possível desenhar o QR. Compartilhe o link.", color = WarningAmber)
+                            }
+                            Text("Mostre este QR a quem está perto. Para quem está longe, compartilhe o link.",
+                                color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+                            Text("Uso único: a primeira pessoa a resgatar estabelece o vínculo. Qualquer pessoa com este código ou link pode tentar usá-lo; compartilhe somente com alguém de confiança.",
+                                color = WarningAmber, style = MaterialTheme.typography.bodySmall)
+                            val expires = InviteLinkParser.parse(url)?.expiresAt
+                            if (expires != null) {
+                                Text("Expira: " + java.text.SimpleDateFormat("dd/MM/yyyy HH:mm",
+                                    java.util.Locale.getDefault()).format(java.util.Date(expires)),
+                                    color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Text("O link e o QR representam o mesmo convite; usar um invalida o outro.",
+                                color = RadarCyan, style = MaterialTheme.typography.labelSmall)
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(android.content.Intent.EXTRA_TEXT,
+                                    "Convite pessoal PessoasAqui (uso único):\\n$url")
+                            }
+                            context.startActivity(android.content.Intent.createChooser(sendIntent,
+                                "Compartilhar link de convite"))
+                        }) {
+                            Text("Compartilhar link", color = RadarCyan)
+                        }
+                    },
+                    dismissButton = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = {
+                                val clip = android.content.ClipData.newPlainText("Convite PessoasAqui", url)
+                                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                                    clip.description.extras = android.os.PersistableBundle().apply {
+                                        putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+                                    }
+                                }
+                                (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                    as android.content.ClipboardManager).setPrimaryClip(clip)
+                            }) { Text("Copiar", color = WarningAmber) }
+                            TextButton(onClick = { generatedInviteUrl = null }) { Text("Fechar") }
+                        }
+                    },
+                    containerColor = DarkSurface
+                )
+            }
+
+            if (inviteGenerationError != null) {
+                AlertDialog(
+                    onDismissRequest = { inviteGenerationError = null },
+                    title = { Text("Convite indisponível") },
+                    text = { Text(inviteGenerationError ?: "") },
+                    confirmButton = {
+                        TextButton(onClick = { inviteGenerationError = null }) { Text("Entendi") }
+                    }
+                )
             }
 
             // BottomSheet de Intenções do Usuário
