@@ -59,10 +59,31 @@ fun ConversationsTab(
     val realConnectedPeople = remember(connectedPeople) {
         connectedPeople.filter { !it.id.startsWith("sim-", ignoreCase = true) }
     }
+    // Inclui o suporte oficial na mesma política de prioridades, sem
+    // duplicá-lo em uma linha fixa acima das conversas não lidas.
+    val supportHistory = remember(privateChats) {
+        privateChats["suporte-oficial"]
+            ?: privateChats["peer-suporte-oficial"]
+            ?: privateChats["SUPORTE-OFICIAL"]
+            ?: emptyList()
+    }
+    val contactsForInbox = remember(connectedPeople, supportHistory) {
+        if (supportHistory.isEmpty() || connectedPeople.any {
+                ConversationPriority.canonicalPeerId(it.technicalIdentityHash.ifBlank { it.id }) == "SUPORTE-OFICIAL"
+            }
+        ) connectedPeople else connectedPeople + NearbyPerson(
+            id = "suporte-oficial",
+            technicalIdentityHash = "suporte-oficial",
+            alias = "Suporte PessoasAqui",
+            estimatedDistanceMeters = 0.0,
+            proximityLabel = "Canal Oficial de Atendimento",
+            isMutualConnection = true
+        )
+    }
     // Computado diretamente do histórico local criptografado recuperado na abertura
     // do app. Não modifica nenhuma mensagem ou a ordem do armazenamento.
-    val priority = remember(connectedPeople, privateChats) {
-        ConversationPriority.build(connectedPeople, privateChats)
+    val priority = remember(contactsForInbox, privateChats) {
+        ConversationPriority.build(contactsForInbox, privateChats)
     }
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
@@ -456,13 +477,6 @@ fun ConversationsTab(
                     )
                 }
 
-                val supportHistory = remember(privateChats) {
-                    privateChats["suporte-oficial"]
-                        ?: privateChats["peer-suporte-oficial"]
-                        ?: privateChats["SUPORTE-OFICIAL"]
-                        ?: emptyList()
-                }
-
                 if (realConnectedPeople.isEmpty() && supportHistory.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -638,102 +652,14 @@ fun ConversationsTab(
                                 HorizontalDivider(color = WarningAmber.copy(alpha = 0.2f))
                             }
                         }
-                        if (supportHistory.isNotEmpty()) {
-                            item(key = "suporte-oficial") {
-                                val lastMsg = supportHistory.last()
-                                Card(
-                                    shape = RoundedCornerShape(16.dp),
-                                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
-                                    border = BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.5f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            onOpenChat(
-                                                NearbyPerson(
-                                                    id = "suporte-oficial",
-                                                    technicalIdentityHash = "suporte-oficial",
-                                                    alias = "Suporte PessoasAqui",
-                                                    estimatedDistanceMeters = 0.0,
-                                                    proximityLabel = "Canal Oficial de Atendimento",
-                                                    isMutualConnection = true
-                                                )
-                                            )
-                                        }
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(14.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(46.dp)
-                                                .clip(CircleShape)
-                                                .background(EmeraldGreen.copy(alpha = 0.15f)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Headset,
-                                                contentDescription = null,
-                                                tint = EmeraldGreen,
-                                                modifier = Modifier.size(24.dp)
-                                            )
-                                        }
-
-                                        Spacer(modifier = Modifier.width(12.dp))
-
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text(
-                                                    text = "Suporte PessoasAqui",
-                                                    style = MaterialTheme.typography.titleMedium.copy(
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = TextPrimary
-                                                    )
-                                                )
-                                                Surface(
-                                                    shape = RoundedCornerShape(6.dp),
-                                                    color = EmeraldGreen.copy(alpha = 0.2f),
-                                                    border = BorderStroke(1.dp, EmeraldGreen)
-                                                ) {
-                                                    Text(
-                                                        text = "OFICIAL",
-                                                        color = EmeraldGreen,
-                                                        fontSize = 9.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
-
-                                            Spacer(modifier = Modifier.height(4.dp))
-
-                                            Text(
-                                                text = lastMsg.safeDisplayText,
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    color = EmeraldGreen,
-                                                    fontWeight = FontWeight.Medium
-                                                ),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
                         items(priority.orderedConversations, key = { "conversation-${it.contact.id}" }) { conversation ->
                             val contact = conversation.contact
                             val history = conversation.messages
                             val lastMsg = history.lastOrNull()
 
-                            val isSelected = contact.id in selectedContactIds
+                            val isOfficialSupport = ConversationPriority.canonicalPeerId(
+                                contact.technicalIdentityHash.ifBlank { contact.id }) == "SUPORTE-OFICIAL"
+                            val isSelected = !isOfficialSupport && contact.id in selectedContactIds
 
                             Card(
                                 shape = RoundedCornerShape(16.dp),
@@ -748,10 +674,14 @@ fun ConversationsTab(
                                     .pointerInput(contact.id, selectedContactIds.isNotEmpty()) {
                                         detectTapGestures(
                                             onLongPress = {
-                                                selectedContactIds = if (isSelected) selectedContactIds - contact.id else selectedContactIds + contact.id
+                                                if (!isOfficialSupport) {
+                                                    selectedContactIds = if (isSelected) selectedContactIds - contact.id else selectedContactIds + contact.id
+                                                }
                                             },
                                             onTap = {
-                                                if (selectedContactIds.isNotEmpty()) {
+                                                if (isOfficialSupport) {
+                                                    onOpenChat(contact)
+                                                } else if (selectedContactIds.isNotEmpty()) {
                                                     selectedContactIds = if (isSelected) selectedContactIds - contact.id else selectedContactIds + contact.id
                                                 } else {
                                                     onOpenChat(contact)
@@ -784,13 +714,18 @@ fun ConversationsTab(
                                             .background(Color(contact.avatarColorHex).copy(alpha = 0.2f)),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        Text(
-                                            text = contact.alias.take(1).uppercase(),
-                                            style = MaterialTheme.typography.titleMedium.copy(
-                                                color = Color(contact.avatarColorHex),
-                                                fontWeight = FontWeight.Bold
+                                        if (isOfficialSupport) {
+                                            Icon(Icons.Default.Headset, contentDescription = "Canal de suporte oficial",
+                                                tint = EmeraldGreen, modifier = Modifier.size(26.dp))
+                                        } else {
+                                            Text(
+                                                text = contact.alias.take(1).uppercase(),
+                                                style = MaterialTheme.typography.titleMedium.copy(
+                                                    color = Color(contact.avatarColorHex),
+                                                    fontWeight = FontWeight.Bold
+                                                )
                                             )
-                                        )
+                                        }
                                     }
 
                                     Spacer(modifier = Modifier.width(12.dp))
@@ -814,6 +749,11 @@ fun ConversationsTab(
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
+                                                if (isOfficialSupport) {
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("OFICIAL", color = EmeraldGreen,
+                                                        style = MaterialTheme.typography.labelSmall)
+                                                }
 
                                                 val cClean = contact.technicalIdentityHash.ifBlank { contact.id }.removePrefix("peer-").trim().uppercase()
                                                 val cTagIds = contactTagAssignments[cClean] ?: emptySet()
