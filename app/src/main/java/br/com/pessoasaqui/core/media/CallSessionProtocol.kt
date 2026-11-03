@@ -101,6 +101,20 @@ internal class CallSessionMachine {
 
     private var current: Session? = null
     private val completed = LinkedHashMap<String, Long>()
+
+    @Synchronized
+    fun restoreTombstones(entries: Map<String, Long>, nowMs: Long = System.currentTimeMillis()) {
+        for ((id, timestamp) in entries) {
+            if (runCatching { UUID.fromString(id).toString() == id }.getOrDefault(false) &&
+                timestamp <= nowMs && nowMs - timestamp < 10 * 60_000L
+            ) completed[id] = timestamp
+        }
+        expireTombstones(nowMs)
+    }
+
+    @Synchronized
+    fun tombstones(): Map<String, Long> = completed.toMap()
+
     val active: Session?
         @Synchronized get() = current
 
