@@ -359,8 +359,8 @@ fun ConversationsTab(
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("Criar Convite Criptografado", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
-                                    Text("Link seguro de uso único para compartilhar", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                    Text("Criar Convite de Uso Único", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Link para longe + QR para quem está perto", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
                                 }
                             }
                         }
