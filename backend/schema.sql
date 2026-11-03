@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS invites (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Nonces consumidos para criação de convites v2 assinados: anti-replay persistente.
+CREATE TABLE IF NOT EXISTS invite_create_nonces (
+    request_id VARCHAR(160) PRIMARY KEY,
+    sender_identity VARCHAR(64) NOT NULL,
+    used_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- 7. RELAY DE MENSAGENS E2EE (Criptografia Ponta a Ponta - Servidor não lê conteúdo)
 CREATE TABLE IF NOT EXISTS e2ee_messages (
     id VARCHAR(64) PRIMARY KEY,
