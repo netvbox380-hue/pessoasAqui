@@ -242,16 +242,16 @@ class PessoasAquiRepository(
     internal fun revokeMutualLocally(peerId: String, removeMyMark: Boolean = false, queueRemoteUnmark: Boolean = false) {
         val cid = cleanId(peerId)
         if (cid.isBlank()) return
+        // Finaliza e registra a chamada enquanto o vínculo ainda é permanente.
+        // Ao revogar, não deixar sessão órfã capaz de bloquear ligações futuras.
+        if (_activeCallState.value?.peerHash?.let(::cleanId) == cid) {
+            finishActiveCall(remoteEnded = true, notifyPeer = false, remoteReason = CallEndReason.FAILED)
+        }
         revokedMutualPeople.add(cid)
         savedMutualPeople.remove(cid)
         savedMarkingMePeople.remove(cid)
         if (removeMyMark) savedMarkedPeople.remove(cid)
         if (queueRemoteUnmark) pendingUnmarkPeople.add(cid)
-        if (_activeCallState.value?.peerHash?.let(::cleanId) == cid) {
-            callRingtoneWakeManager?.stopAllCallAlerts()
-            callMediaEngine?.stopCallMedia()
-            _activeCallState.value = null
-        }
         _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
             if (cleanId(peer.technicalIdentityHash.ifBlank { peer.id }) == cid) {
                 peer.copy(
