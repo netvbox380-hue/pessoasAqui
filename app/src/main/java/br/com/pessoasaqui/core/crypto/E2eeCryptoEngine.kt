@@ -219,8 +219,10 @@ object E2eeCryptoEngine {
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), spec)
             val decryptedBytes = cipher.doFinal(ciphertextBytes)
             String(decryptedBytes, StandardCharsets.UTF_8)
-        } catch (_: Exception) {
-            payload
+        } catch (e: Exception) {
+            // Nunca expor um envelope cifrado como mensagem de chat. Em caso de
+            // chave/IV ausente, desatualizada ou tag inválida, falhar fechado.
+            throw SecurityException("Não foi possível autenticar o conteúdo E2EE", e)
         }
     }
 
