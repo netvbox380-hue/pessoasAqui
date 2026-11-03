@@ -55,7 +55,7 @@ object InviteLinkParser {
             val sender = params["sender"] ?: params["senderIdentity"] ?: return null
             if (!safeInviteId.matches(id) || !safeToken.matches(token) ||
                 !safeIdentity.matches(sender)) return null
-            val signature = params["sig"] ?: params["signature"]
+            val signature = (params["sig"] ?: params["signature"])?.takeIf { it.isNotBlank() }
             if (signature != null && !safeSignature.matches(signature)) return null
             val exp = (params["exp"] ?: params["expiresAt"])?.toLongOrNull()
             if ((params["exp"] != null || params["expiresAt"] != null) && exp == null) return null
