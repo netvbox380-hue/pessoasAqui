@@ -1334,7 +1334,7 @@ class PessoasAquiRepository(
         _unifiedPrivateChats.value = proximitySimulator.privateChats.value
     }
 
-    private fun handleRemotePresenceSync(remotePeers: List<RemotePeer>) {
+    internal fun handleRemotePresenceSync(remotePeers: List<RemotePeer>) {
         val myId = cleanId(cryptoIdentityManager.getTechnicalIdentity())
         val myAlias = _currentAlias.value.trim()
         val current = _realDiscoveredPeople.value.toMutableList()
@@ -1356,8 +1356,8 @@ class PessoasAquiRepository(
 
             val safeIntent = try { UserIntent.valueOf(p.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
             val idx = current.indexOfFirst {
-                cleanId(it.technicalIdentityHash) == cId || cleanId(it.id) == cId ||
-                (!it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(p.alias, ignoreCase = true))
+                // Apelido NÃO é identidade técnica: duas pessoas podem ter o mesmo nome.
+                cleanId(it.technicalIdentityHash) == cId || cleanId(it.id) == cId
             }
             if (idx != -1) {
                 // Atualiza contato já existente (detectado fisicamente pelo BLE nativo ou conexão prévia)
@@ -1403,7 +1403,7 @@ class PessoasAquiRepository(
         updateUnifiedData()
     }
 
-    private fun handlePeerOnline(peer: RemotePeer) {
+    internal fun handlePeerOnline(peer: RemotePeer) {
         val myId = cleanId(cryptoIdentityManager.getTechnicalIdentity())
         val myAlias = _currentAlias.value.trim()
         val cId = cleanId(peer.identityHash)
@@ -1419,8 +1419,7 @@ class PessoasAquiRepository(
         val safeIntent = try { UserIntent.valueOf(peer.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
         val current = _realDiscoveredPeople.value.toMutableList()
         val idx = current.indexOfFirst {
-            cleanId(it.technicalIdentityHash) == cId || cleanId(it.id) == cId ||
-            (!it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(peer.alias, ignoreCase = true))
+            cleanId(it.technicalIdentityHash) == cId || cleanId(it.id) == cId
         }
         if (idx != -1) {
             val existing = current[idx]
