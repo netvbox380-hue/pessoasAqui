@@ -1341,8 +1341,8 @@ class PessoasAquiRepository(
         val current = _realDiscoveredPeople.value.toMutableList()
 
         val validPeers = remotePeers.filter { p ->
-            cleanId(p.identityHash) != myId &&
-            (p.alias.isBlank() || myAlias.isBlank() || !p.alias.trim().equals(myAlias, ignoreCase = true))
+            // Apenas a identidade técnica identifica o próprio aparelho.
+            cleanId(p.identityHash) != myId
         }
 
         val distinctPeers = validPeers.distinctBy { cleanId(it.identityHash) }
@@ -1394,10 +1394,9 @@ class PessoasAquiRepository(
         }
         saveConnectionsToPrefs()
 
-        // Remove do radar qualquer registro com meu próprio id ou apelido
+        // Apelidos repetidos são válidos; remover apenas a identidade própria.
         val cleanedList = current.filter { peer ->
-            cleanId(peer.technicalIdentityHash) != myId &&
-            (myAlias.isBlank() || !peer.alias.trim().equals(myAlias, ignoreCase = true))
+            cleanId(peer.technicalIdentityHash) != myId
         }
 
         _realDiscoveredPeople.value = cleanedList
@@ -1409,7 +1408,7 @@ class PessoasAquiRepository(
         val myAlias = _currentAlias.value.trim()
         val cId = cleanId(peer.identityHash)
         if (cId == myId) return
-        if (myAlias.isNotBlank() && peer.alias.trim().equals(myAlias, ignoreCase = true)) return
+        // O apelido remoto pode ser igual ao local; isso não torna a identidade igual.
 
         peer.publicKeyBase64?.let { pubKey ->
             E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
@@ -1559,7 +1558,7 @@ class PessoasAquiRepository(
                         val myAlias = _currentAlias.value
                         val peerCleanId = cleanId(realPeer.technicalIdentityHash)
                         if (peerCleanId == myId || cleanId(realPeer.id) == myId) return@startScanning
-                        if (realPeer.alias.isNotBlank() && myAlias.isNotBlank() && realPeer.alias.equals(myAlias, ignoreCase = true)) return@startScanning
+                        // Nomes iguais não impedem descoberta de identidades distintas.
                         recordNativeBlePresence(peerCleanId, realPeer.lastSeenEpochMs)
 
                         val currentList = _realDiscoveredPeople.value.toMutableList()
