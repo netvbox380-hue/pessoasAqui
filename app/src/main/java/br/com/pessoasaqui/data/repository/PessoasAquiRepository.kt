@@ -989,8 +989,10 @@ class PessoasAquiRepository(
         }
 
         if (_hasGrantedPermissions.value) {
+            // O processo pode nascer por broadcast de scanner em segundo plano.
+            // Não iniciar ForegroundService aqui (restrito no Android 12+).
+            // A Activity visível cuida do start permitido do serviço.
             startNativeBleHardware()
-            context?.let { br.com.pessoasaqui.core.service.PessoasAquiForegroundService.startServiceSafely(it) }
         }
     }
 
