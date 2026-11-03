@@ -712,9 +712,10 @@ class PessoasAquiRepository(
             callConnectedAtMs = 0L
             outgoingCallTimeoutJob?.cancel()
             outgoingCallTimeoutJob = null
-            Triple(current, durationSeconds, callId)
+            Pair(Triple(current, durationSeconds, callId), reason)
         }
-        val (current, durationSeconds, callId) = completed
+        val (callDetails, reason) = completed
+        val (current, durationSeconds, callId) = callDetails
         callRingtoneWakeManager?.stopAllCallAlerts()
         callMediaEngine?.stopCallMedia()
 
