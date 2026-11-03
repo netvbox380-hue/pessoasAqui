@@ -1369,7 +1369,7 @@ class PessoasAquiRepository(
                     alias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) existing.alias else p.alias,
                     intent = safeIntent,
                     // A nuvem não comprova proximidade: não renova o relógio BLE.
-                    lastSeenEpochMs = if (cId in lastNativeBleSeenMs) existing.lastSeenEpochMs else System.currentTimeMillis()
+                    lastSeenEpochMs = if (lastNativeBleSeenMs.containsKey(cId)) existing.lastSeenEpochMs else System.currentTimeMillis()
                 ))
             } else if (isPeerPermanent(cId)) {
                 // Presença remota de Conexão Mútua comprovada pré-existente
@@ -1429,7 +1429,7 @@ class PessoasAquiRepository(
                 alias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) existing.alias else peer.alias,
                 intent = safeIntent,
                 // Eventos da internet não mantêm artificialmente o Radar ligado.
-                lastSeenEpochMs = if (cId in lastNativeBleSeenMs) existing.lastSeenEpochMs else System.currentTimeMillis()
+                lastSeenEpochMs = if (lastNativeBleSeenMs.containsKey(cId)) existing.lastSeenEpochMs else System.currentTimeMillis()
             ))
             _realDiscoveredPeople.value = current
             updateUnifiedData()
@@ -1463,7 +1463,7 @@ class PessoasAquiRepository(
                 // Desconexão WebSocket NÃO significa saída dos 10 m: a validade do
                 // BLE só é determinada pelos anúncios de rádio e timeout próprio.
                 isPeerPermanent(it.technicalIdentityHash.ifBlank { it.id }) ||
-                    cleanPeerHash in lastNativeBleSeenMs
+                    lastNativeBleSeenMs.containsKey(cleanPeerHash)
             } else {
                 true
             }
