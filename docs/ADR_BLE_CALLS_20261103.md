@@ -21,6 +21,10 @@ O comportamento em aparelhos físicos não está comprovado por testes JVM.
 - `ForegroundService` com tipo `connectedDevice` no Android 14+,
   observando permissões e limitações de inicialização em segundo plano.
   **Não há garantia de varredura ininterrupta quando o processo morre**.
+- Solicitar permissões Android e confirmar seu resultado real: recusa de
+  BLUETOOTH_SCAN, ADVERTISE, CONNECT ou localização necessária deve manter
+  a tela de autorização, sem registrar um falso "permissões concedidas".
+  Câmera e microfone não são pré-requisitos para o Radar.
 - A política de 45 s de expiração de sessões temporárias não deve ser usada
   como indicador de falha do scanner: ausência de pessoas não prova falha.
 - Dados de presença pela internet nunca revogam presença física nem alteram
