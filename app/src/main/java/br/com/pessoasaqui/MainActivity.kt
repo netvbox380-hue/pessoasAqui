@@ -44,6 +44,10 @@ class MainActivity : ComponentActivity() {
     private val incomingInvite = mutableStateOf<IncomingInvite?>(null)
     private val targetPeerToOpen = mutableStateOf<NearbyPerson?>(null)
 
+    private val bleRecoveryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var bleRecoveryTask: Runnable? = null
+    private var lastPausedAtMs = 0L
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -90,14 +94,31 @@ class MainActivity : ComponentActivity() {
         repo?.callRingtoneWakeManager?.isAppInForeground = true
         repo?.playBillingManager?.queryActivePurchases()
         repo?.ensureBleHealthOnForeground()
+
+        // Após suspensão prolongada, alguns chipsets mantêm scan marcado como
+        // ativo mas sem callbacks. Renova-o após a Activity realmente voltar
+        // ao primeiro plano; não interfere nas conexões GATT estabelecidas.
+        bleRecoveryTask?.let(bleRecoveryHandler::removeCallbacks)
+        if (lastPausedAtMs > 0L && System.currentTimeMillis() - lastPausedAtMs >= 15_000L) {
+            val recover = Runnable {
+                (application as? PessoasAquiApp)?.repository?.ensureBleHealthOnForeground(forceRefresh = true)
+            }
+            bleRecoveryTask = recover
+            bleRecoveryHandler.postDelayed(recover, 1_200L)
+        }
     }
 
     override fun onPause() {
+        lastPausedAtMs = System.currentTimeMillis()
+        bleRecoveryTask?.let(bleRecoveryHandler::removeCallbacks)
+        bleRecoveryTask = null
         super.onPause()
         (application as? PessoasAquiApp)?.repository?.callRingtoneWakeManager?.isAppInForeground = false
     }
 
     override fun onDestroy() {
+        bleRecoveryTask?.let(bleRecoveryHandler::removeCallbacks)
+        bleRecoveryTask = null
         super.onDestroy()
         (application as? PessoasAquiApp)?.repository?.playBillingManager?.destroy()
     }
