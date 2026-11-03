@@ -14,6 +14,8 @@ import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.media.DocumentViewerHelper
 import br.com.pessoasaqui.core.media.ImageSearchHelper
 import br.com.pessoasaqui.core.chat.StickerPersistenceManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -26,6 +28,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -3732,25 +3736,33 @@ fun FullscreenImageViewerDialog(
 /**
  * Painel Interativo de Emojis e Figurinhas (Stickers) com Categorias, Acervo e Criador.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EmojiPickerPanel(
     onEmojiSelected: (String) -> Unit,
     onStickerSelected: (String) -> Unit = {},
     onCreateStickerRequested: () -> Unit = {},
+    onEditStickerRequested: (String, android.graphics.Bitmap) -> Unit = { _, _ -> },
+    stickerCollectionRevision: Int = 0,
     onBackspace: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val manager = remember(context) { StickerPersistenceManager(context) }
     var selectedCategory by remember { mutableIntStateOf(0) }
     var stickersRefreshKey by remember { mutableIntStateOf(0) }
+    var stickerToManage by remember { mutableStateOf<Pair<String, android.graphics.Bitmap>?>(null) }
+    var stickerToDelete by remember { mutableStateOf<String?>(null) }
 
-    val userStickers = remember(selectedCategory, stickersRefreshKey) {
-        if (selectedCategory == 5) {
-            StickerPersistenceManager(context).loadAllStickers()
-        } else {
-            emptyList()
-        }
+    // Decodificar toda a biblioteca na thread da interface causa travamentos e
+    // pressão de memória. Apenas miniaturas são carregadas no worker de IO.
+    val userStickers by produceState<List<Pair<String, android.graphics.Bitmap>>>(
+        initialValue = emptyList(), selectedCategory, stickersRefreshKey, stickerCollectionRevision
+    ) {
+        value = if (selectedCategory == 5) {
+            withContext(Dispatchers.IO) { manager.loadAllStickers() }
+        } else emptyList()
     }
 
     val categories = listOf(
@@ -3923,10 +3935,21 @@ fun EmojiPickerPanel(
                                 modifier = Modifier
                                     .size(72.dp)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        val payload = StickerPersistenceManager(context).bitmapToStickerPayload(bmp)
-                                        onStickerSelected(payload)
-                                    },
+                                    .combinedClickable(
+                                        onClick = {
+                                            try {
+                                                val full = manager.loadSticker(id)
+                                                if (full != null) {
+                                                    onStickerSelected(manager.bitmapToStickerPayload(full))
+                                                } else {
+                                                    Toast.makeText(context, "Figurinha indisponível", Toast.LENGTH_SHORT).show()
+                                                }
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Não foi possível abrir figurinha", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        onLongClick = { stickerToManage = id to bmp }
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Image(
@@ -3966,6 +3989,52 @@ fun EmojiPickerPanel(
                     }
                 }
             }
+        }
+
+        // Pressionar uma figurinha oferece operações locais previsíveis, sem
+        // remover as imagens já enviadas em mensagens anteriores.
+        stickerToManage?.let { (id, _) ->
+            AlertDialog(
+                onDismissRequest = { stickerToManage = null },
+                title = { Text("Gerenciar figurinha", color = TextPrimary) },
+                text = { Text("Você pode editar ou excluir esta figurinha do seu acervo. Mensagens já enviadas não serão modificadas.",
+                    color = TextSecondary) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val full = manager.loadSticker(id)
+                        stickerToManage = null
+                        if (full != null) onEditStickerRequested(id, full)
+                        else Toast.makeText(context, "Figurinha indisponível", Toast.LENGTH_SHORT).show()
+                    }) { Text("Editar", color = RadarCyan) }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        stickerToManage = null
+                        stickerToDelete = id
+                    }) { Text("Excluir", color = AlertRed) }
+                },
+                containerColor = DarkSurface
+            )
+        }
+        stickerToDelete?.let { id ->
+            AlertDialog(
+                onDismissRequest = { stickerToDelete = null },
+                title = { Text("Excluir figurinha?", color = TextPrimary) },
+                text = { Text("A figurinha será excluída apenas do seu acervo. As que já foram enviadas continuarão no histórico.",
+                    color = TextSecondary) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val removed = manager.deleteSticker(id)
+                        stickerToDelete = null
+                        if (removed) stickersRefreshKey++
+                        else Toast.makeText(context, "Falha ao excluir figurinha", Toast.LENGTH_SHORT).show()
+                    }) { Text("Excluir", color = AlertRed) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { stickerToDelete = null }) { Text("Cancelar", color = RadarCyan) }
+                },
+                containerColor = DarkSurface
+            )
         }
     }
 }
