@@ -4,6 +4,8 @@ import br.com.pessoasaqui.core.proximity.BleDirectTransportCoordinator
 import br.com.pessoasaqui.data.remote.PessoasAquiNetworkClient
 import br.com.pessoasaqui.data.repository.PessoasAquiRepository
 import br.com.pessoasaqui.domain.model.MessageDeliveryStatus
+import br.com.pessoasaqui.data.remote.RemotePeer
+import br.com.pessoasaqui.domain.model.NearbyPerson
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -12,6 +14,51 @@ import org.junit.Test
  */
 class MutualRevocationAndTemporaryRoutingTest {
     private val peerId = "A1B2C3D4E5F60708"
+
+    @Test fun wifiDisconnectMustNotRemoveNativeBleRadarPeer() {
+        val repo = PessoasAquiRepository()
+        val seenAt = System.currentTimeMillis()
+        val person = NearbyPerson(
+            id = peerId,
+            technicalIdentityHash = peerId,
+            alias = "Pessoa BLE",
+            estimatedDistanceMeters = 1.0,
+            proximityLabel = "1 m",
+            lastSeenEpochMs = seenAt
+        )
+        repo.addDiscoveredPeer(person)
+        repo.recordNativeBlePresence(peerId, seenAt)
+
+        repo.handlePeerOffline(peerId) // Internet caiu; BLE continua físico.
+        assertTrue("PEER_OFFLINE do Render não remove contato BLE",
+            repo.discoveredPeople.value.any { it.technicalIdentityHash == peerId })
+    }
+
+    @Test fun internetPresenceCannotRefreshPhysicalBleExpiry() {
+        val repo = PessoasAquiRepository()
+        val seenAt = System.currentTimeMillis()
+        val person = NearbyPerson(
+            id = peerId,
+            technicalIdentityHash = peerId,
+            alias = "Pessoa BLE",
+            estimatedDistanceMeters = 1.0,
+            proximityLabel = "1 m",
+            lastSeenEpochMs = seenAt
+        )
+        repo.addDiscoveredPeer(person)
+        repo.recordNativeBlePresence(peerId, seenAt)
+
+        val remote = RemotePeer(identityHash = peerId, alias = "Pessoa BLE", intent = "QUERO_CONVERSAR")
+        repo.handleRemotePresenceSync(listOf(remote))
+        repo.handlePeerOnline(remote)
+
+        // Somente anúncio BLE renova a validade física do Radar.
+        val removed = repo.cleanupExpiredTemporarySessions(
+            now = seenAt + PessoasAquiRepository.TEMPORARY_SESSION_EXPIRATION_MS + 1L
+        )
+        assertTrue("Backend não pode prolongar artificialmente os 10 metros", peerId in removed)
+        assertFalse(repo.discoveredPeople.value.any { it.technicalIdentityHash == peerId })
+    }
 
     @Test fun temporaryChatDoesNotRequireMutualInviteOrInternet() {
         var bleSends = 0
