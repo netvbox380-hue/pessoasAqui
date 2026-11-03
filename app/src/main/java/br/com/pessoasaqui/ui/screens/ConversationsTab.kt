@@ -650,6 +650,17 @@ fun ConversationsTab(
                                             Text("Colar Convite", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                         }
                                     }
+                                    OutlinedButton(
+                                        onClick = { scanInviteQr() },
+                                        enabled = !isScanningInviteQr,
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                                        border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.5f))
+                                    ) {
+                                        Icon(Icons.Default.QrCodeScanner, contentDescription = null,
+                                            tint = RadarCyan)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Ler QR de um convite próximo", color = RadarCyan)
+                                    }
                                 }
                             }
                         }
