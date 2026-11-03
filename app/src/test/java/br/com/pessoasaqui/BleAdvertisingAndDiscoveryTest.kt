@@ -196,6 +196,37 @@ class BleAdvertisingAndDiscoveryTest {
     }
 
     @Test
+    fun testContinuityMonitorRestartsStalledAdvertiserWithoutTogglingBluetooth() {
+        val driver = MockAdvertiserDriver()
+        val ble = BleManager(context = null, customAdvertiserDriver = driver)
+        ble.isMockBluetoothEnabled = true
+        ble.startAdvertising("1122334455667788", "Teste", UserIntent.QUERO_CONVERSAR)
+
+        assertTrue(ble.isAdvertisingActive)
+        val started = driver.startAdvertisingCallCount
+        ble.ensureDiscoveryContinuity()
+        assertEquals("Monitor não deve reiniciar advertising saudável antes do limite",
+            started, driver.startAdvertisingCallCount)
+
+        ble.ensureDiscoveryContinuity(System.currentTimeMillis() + BleManager.ADVERTISING_REFRESH_INTERVAL_MS + 1000L)
+        assertEquals(started + 1, driver.startAdvertisingCallCount)
+        assertTrue(ble.isAdvertisingActive)
+    }
+
+    @Test
+    fun testContinuityMonitorRetriesAdvertiserAfterStartFailure() {
+        val driver = MockAdvertiserDriver()
+        driver.simulateFailureCode = AdvertiseCallback.ADVERTISE_FAILED_INTERNAL_ERROR
+        val ble = BleManager(context = null, customAdvertiserDriver = driver)
+        ble.isMockBluetoothEnabled = true
+        ble.startAdvertising("1122334455667788", "Teste", UserIntent.QUERO_CONVERSAR)
+        assertFalse(ble.isAdvertisingActive)
+        ble.ensureDiscoveryContinuity()
+        assertEquals(2, driver.startAdvertisingCallCount)
+        assertTrue(ble.isAdvertisingActive)
+    }
+
+    @Test
     fun testStopAdvertisingInvokesDriver() {
         val mockDriver = MockAdvertiserDriver()
         val bleManager = BleManager(
