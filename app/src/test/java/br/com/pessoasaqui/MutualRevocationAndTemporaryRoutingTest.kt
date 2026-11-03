@@ -66,6 +66,33 @@ class MutualRevocationAndTemporaryRoutingTest {
         assertEquals("📞 Chamada de voz não atendida", events.single().safeDisplayText)
     }
 
+    @Test fun delayedOldCallEndCannotTerminateDifferentSession() {
+        val repo = PessoasAquiRepository()
+        repo.setMarkPerson(peerId, mark = true)
+        repo.confirmMutualConnectionFromServer(peerId)
+        val first = br.com.pessoasaqui.core.media.CallSignalingProtocol.newCallId()
+        val second = br.com.pessoasaqui.core.media.CallSignalingProtocol.newCallId()
+
+        repo.processIncomingPayload(peerId, "Contato",
+            "[CALL_INIT:false:Contato:$first]", "", "invite-1")
+        assertNotNull(repo.activeCallState.value)
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]#$first", "", "end-1")
+        assertNull(repo.activeCallState.value)
+
+        repo.processIncomingPayload(peerId, "Contato",
+            "[CALL_INIT:false:Contato:$second]", "", "invite-2")
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]#$first", "", "stale-end")
+        assertNotNull("A chamada antiga não pode encerrar uma ligação nova", repo.activeCallState.value)
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]#$second", "", "end-2")
+        assertNull(repo.activeCallState.value)
+
+        val entries = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals("Um registro por callId", 2, entries.size)
+        repo.processIncomingPayload(peerId, "Contato",
+            "[CALL_INIT:false:Contato:$second]", "", "delayed-replay")
+        assertNull("Convites encerrados não podem tocar novamente", repo.activeCallState.value)
+    }
+
     @Test fun wifiDisconnectMustNotRemoveNativeBleRadarPeer() {
         val repo = PessoasAquiRepository()
         val seenAt = System.currentTimeMillis()
