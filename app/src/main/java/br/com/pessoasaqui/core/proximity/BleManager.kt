@@ -285,12 +285,17 @@ class BleManager(
                             }
                             BluetoothAdapter.STATE_ON -> {
                                 _isBluetoothEnabledFlow.value = true
-                                // O servidor GATT deve voltar antes do advertising.
-                                onBluetoothStateChanged?.invoke(true)
-                                lastIdentityHash?.let { hash ->
-                                    startAdvertising(hash, lastAlias ?: "", lastIntent ?: UserIntent.QUERO_CONVERSAR)
+                                // O repositório reinicia os três elementos (GATT, anúncio e
+                                // scanner). Em usos isolados, mantém o fallback local.
+                                val listener = onBluetoothStateChanged
+                                if (listener != null) {
+                                    listener(true)
+                                } else {
+                                    lastIdentityHash?.let { hash ->
+                                        startAdvertising(hash, lastAlias ?: "", lastIntent ?: UserIntent.QUERO_CONVERSAR)
+                                    }
+                                    lastScanCallback?.let { cb -> startScanning(cb) }
                                 }
-                                lastScanCallback?.let { cb -> startScanning(cb) }
                             }
                         }
                     }
