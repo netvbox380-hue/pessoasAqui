@@ -25,6 +25,9 @@ class CallSessionStateMachine {
     fun current(): Session? = session
 
     @Synchronized
+    fun phase(): Phase = session?.phase ?: Phase.IDLE
+
+    @Synchronized
     fun begin(callId: String, peerId: String, video: Boolean, incoming: Boolean): Boolean {
         if (session != null || callId.isBlank() || peerId.isBlank() || recentFinished.contains(callId)) return false
         session = Session(
