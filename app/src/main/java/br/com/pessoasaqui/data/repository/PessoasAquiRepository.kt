@@ -685,7 +685,7 @@ class PessoasAquiRepository(
     val activeCallState: StateFlow<ActiveCallState?> = _activeCallState.asStateFlow()
 
     private val callStateLock = Any()
-    private var activeCallGeneration: String? = null
+    @Volatile private var activeCallGeneration: String? = null
     private var callConnectedAtMs: Long = 0L
     private var outgoingCallTimeoutJob: Job? = null
 
@@ -987,7 +987,7 @@ class PessoasAquiRepository(
             payload.startsWith("[CALL_ACCEPT]") -> {
                 callRingtoneWakeManager?.stopAllCallAlerts()
                 val current = _activeCallState.value
-                if (current != null && !current.isConnected && cleanId(current.peerHash) == cleanSender) {
+                if (current != null && !current.isIncoming && !current.isConnected && cleanId(current.peerHash) == cleanSender) {
                     _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
                     markActiveCallConnected()
                     callMediaEngine?.startCallMedia(current.isVideo)
@@ -998,7 +998,7 @@ class PessoasAquiRepository(
             payload.startsWith("[CALL_ACK]") -> {
                 callRingtoneWakeManager?.stopAllCallAlerts()
                 val current = _activeCallState.value
-                if (current != null && !current.isConnected && cleanId(current.peerHash) == cleanSender) {
+                if (current != null && !current.isIncoming && !current.isConnected && cleanId(current.peerHash) == cleanSender) {
                     _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
                     markActiveCallConnected()
                     callMediaEngine?.startCallMedia(current.isVideo)
@@ -1172,6 +1172,8 @@ class PessoasAquiRepository(
                 }
             }
             else -> {
+                // Um comando interno de versão futura ou malformado não é texto.
+                if (payload.startsWith("[CALL_")) return
                 val isPermanent = isPeerPermanent(cleanSender)
                 // Este método recebe somente payloads da INTERNET. Mensagens do Modo A
                 // devem chegar por onTemporaryMessageReceived (BLE), nunca pelo Render,
