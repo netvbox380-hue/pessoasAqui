@@ -703,7 +703,17 @@ class PessoasAquiRepository(
     val activeCallState: StateFlow<ActiveCallState?> = _activeCallState.asStateFlow()
 
     private val callStateLock = Any()
-    private val callSessions = CallSessionMachine()
+    private val callSessions = CallSessionMachine().apply {
+        // Apenas IDs aleatórios + horário; nunca conteúdo ou chaves.
+        // Bloqueia replay de CALL_INIT após o Android encerrar o processo.
+        val prior = prefs?.getStringSet("recent_call_tombstones_v2", emptySet()).orEmpty()
+        val restored = prior.mapNotNull { entry ->
+            val fields = entry.split("|", limit = 2)
+            val time = fields.getOrNull(1)?.toLongOrNull()
+            if (fields.size == 2 && time != null) fields[0] to time else null
+        }.toMap()
+        restoreTombstones(restored)
+    }
     @Volatile private var activeCallGeneration: String? = null
     private var callConnectedAtMs: Long = 0L
     private var outgoingCallTimeoutJob: Job? = null
@@ -741,6 +751,10 @@ class PessoasAquiRepository(
             Triple(current, session, duration)
         }
         val (current, session, durationSeconds) = completed
+        prefs?.edit()?.putStringSet(
+            "recent_call_tombstones_v2",
+            callSessions.tombstones().map { (id, time) -> "$id|$time" }.toSet()
+        )?.apply()
         callRingtoneWakeManager?.stopAllCallAlerts()
         callMediaEngine?.stopCallMedia()
 
