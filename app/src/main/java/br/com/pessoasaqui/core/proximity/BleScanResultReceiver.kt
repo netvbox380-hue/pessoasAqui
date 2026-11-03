@@ -17,6 +17,7 @@ import br.com.pessoasaqui.PessoasAquiApp
 class BleScanResultReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_BLE_SCAN = "br.com.pessoasaqui.action.BLE_SCAN"
+        private val deliveryExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     }
 
     @Suppress("DEPRECATION")
@@ -37,7 +38,23 @@ class BleScanResultReceiver : BroadcastReceiver() {
             val error = if (intent.hasExtra(BluetoothLeScanner.EXTRA_ERROR_CODE)) {
                 intent.getIntExtra(BluetoothLeScanner.EXTRA_ERROR_CODE, 0)
             } else null
-            manager.onBackgroundScanResults(results, error)
+            // BroadcastReceiver roda na thread principal. goAsync() evita ANR
+            // e executor serial preserva a ordem dos anúncios de vários peers.
+            val pending = goAsync()
+            try {
+                deliveryExecutor.execute {
+                    try {
+                        manager.onBackgroundScanResults(results, error)
+                    } catch (e: Exception) {
+                        Log.w("PessoasAquiBLE", "Erro ao entregar scan BLE: ${e.message}")
+                    } finally {
+                        pending.finish()
+                    }
+                }
+            } catch (e: Exception) {
+                pending.finish()
+                Log.w("PessoasAquiBLE", "Falha ao enfileirar broadcast BLE: ${e.message}")
+            }
         } catch (e: Exception) {
             Log.w("PessoasAquiBLE", "Resultado BLE em segundo plano inválido: ${e.message}")
         }
