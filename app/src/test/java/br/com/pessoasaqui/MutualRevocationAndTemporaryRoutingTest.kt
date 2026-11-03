@@ -41,16 +41,18 @@ class MutualRevocationAndTemporaryRoutingTest {
         assertNull(repo.activeCallState.value)
     }
 
-    @Test fun answeredIncomingVideoCallHasReadableReceivedEntry() {
+    @Test fun incomingVideoCallDoesNotAcceptAckBeforeUserAnswers() {
         val repo = PessoasAquiRepository()
         repo.setMarkPerson(peerId, mark = true)
         repo.confirmMutualConnectionFromServer(peerId)
         repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:true:Contato]", "", "video-call-start")
         repo.processIncomingPayload(peerId, "Contato", "[CALL_ACK]", "", "video-call-ack")
+        assertFalse("O chamador não pode atender no lugar do destinatário",
+            repo.activeCallState.value?.isConnected ?: true)
         repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "video-call-end")
         val history = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
         assertEquals(1, history.size)
-        assertTrue(history.single().text.contains("Videochamada recebida"))
+        assertTrue(history.single().text.contains("Videochamada perdida"))
         assertNull(repo.activeCallState.value)
     }
 
