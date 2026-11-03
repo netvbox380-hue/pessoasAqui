@@ -1014,6 +1014,15 @@ class PessoasAquiRepository(
             Log.w("PessoasAqui", "Envelope cifrado inesperado após decifragem; descartado")
             return
         }
+        // Controles de voz/vídeo não podem ser injetados em texto claro via
+        // WebSocket/HTTP: somente envelopes autenticados controlam a chamada.
+        if (payload.startsWith("[CALL_") &&
+            !rawPayload.startsWith("ENC_ECDH:") &&
+            !rawPayload.startsWith("ENC:")
+        ) {
+            Log.w("PessoasAqui", "Sinalização de chamada sem autenticação E2EE descartada")
+            return
+        }
         if (messageId.isNotBlank()) {
             synchronized(processedMessageIds) {
                 if (!processedMessageIds.add(messageId)) return
