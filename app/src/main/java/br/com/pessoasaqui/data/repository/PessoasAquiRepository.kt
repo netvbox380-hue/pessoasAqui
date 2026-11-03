@@ -7,6 +7,11 @@ import br.com.pessoasaqui.core.crypto.DeviceSessionManager
 import br.com.pessoasaqui.core.crypto.E2eeCryptoEngine
 import br.com.pessoasaqui.core.crypto.PinSecurityManager
 import br.com.pessoasaqui.core.media.CallMediaEngine
+import br.com.pessoasaqui.core.media.CallSessionMachine
+import br.com.pessoasaqui.core.media.CallSessionProtocol
+import br.com.pessoasaqui.core.media.CallSignal
+import br.com.pessoasaqui.core.media.CallSignalType
+import br.com.pessoasaqui.core.media.CallEndReason
 import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.moderation.ContentModerationManager
 import br.com.pessoasaqui.core.proximity.BleManager
@@ -685,6 +690,7 @@ class PessoasAquiRepository(
     val activeCallState: StateFlow<ActiveCallState?> = _activeCallState.asStateFlow()
 
     private val callStateLock = Any()
+    private val callSessions = CallSessionMachine()
     @Volatile private var activeCallGeneration: String? = null
     private var callConnectedAtMs: Long = 0L
     private var outgoingCallTimeoutJob: Job? = null
@@ -697,32 +703,51 @@ class PessoasAquiRepository(
         }
     }
 
-    private fun finishActiveCall(timedOut: Boolean = false, remoteEnded: Boolean = false, notifyPeer: Boolean = !remoteEnded) {
+    /**
+     * Terminação idempotente de sessão. O ID é compartilhado pelos aparelhos
+     * e impede que um END atrasado encerre a próxima chamada.
+     */
+    private fun finishActiveCall(
+        timedOut: Boolean = false,
+        remoteEnded: Boolean = false,
+        notifyPeer: Boolean = !remoteEnded,
+        remoteReason: CallEndReason? = null
+    ) {
         val completed = synchronized(callStateLock) {
             val current = _activeCallState.value ?: return
-            val durationSeconds = if (current.isConnected && callConnectedAtMs > 0L) {
+            val session = callSessions.finish() ?: return
+            val duration = if (current.isConnected && callConnectedAtMs > 0L) {
                 ((System.currentTimeMillis() - callConnectedAtMs) / 1000L).coerceAtLeast(0L)
             } else 0L
-            val callId = activeCallGeneration ?: UUID.randomUUID().toString()
             _activeCallState.value = null
             activeCallGeneration = null
             callConnectedAtMs = 0L
             outgoingCallTimeoutJob?.cancel()
             outgoingCallTimeoutJob = null
-            Triple(current, durationSeconds, callId)
+            Triple(current, session, duration)
         }
-        val (current, durationSeconds, callId) = completed
+        val (current, session, durationSeconds) = completed
         callRingtoneWakeManager?.stopAllCallAlerts()
         callMediaEngine?.stopCallMedia()
 
+        val reason = remoteReason ?: when {
+            current.isConnected -> CallEndReason.COMPLETED
+            timedOut || remoteEnded -> CallEndReason.TIMEOUT
+            current.isIncoming -> CallEndReason.DECLINED
+            else -> CallEndReason.CANCELLED
+        }
         val type = if (current.isVideo) "📹 Videochamada" else "📞 Chamada de voz"
         val outcome = when {
             current.isConnected && current.isIncoming -> "recebida"
             current.isConnected -> "realizada"
-            current.isIncoming && (timedOut || remoteEnded) -> "perdida"
-            current.isIncoming -> "recusada"
-            timedOut || remoteEnded -> "não atendida"
-            else -> "cancelada"
+            reason == CallEndReason.DECLINED -> "recusada"
+            reason == CallEndReason.BUSY -> "ocupada"
+            reason == CallEndReason.FAILED -> "não completada"
+            reason == CallEndReason.CANCELLED -> "cancelada"
+            current.isIncoming && reason == CallEndReason.TIMEOUT -> "perdida"
+            !current.isIncoming && reason == CallEndReason.TIMEOUT && session.remoteRinging -> "não atendida"
+            !current.isIncoming && reason == CallEndReason.TIMEOUT -> "não completada"
+            else -> "encerrada"
         }
         val durationText = if (current.isConnected) " — ${durationSeconds / 60}min ${durationSeconds % 60}s" else ""
         proximitySimulator.recordCallHistory(
@@ -730,16 +755,86 @@ class PessoasAquiRepository(
             description = "$type $outcome$durationText",
             outgoing = !current.isIncoming,
             myAlias = _currentAlias.value,
-            entryId = "call-$callId"
+            entryId = "call-${session.id}"
         )
         updateUnifiedData()
 
-        if (notifyPeer) {
-            sendPrivateMessage(current.peerHash, "[CALL_END]")
-            // Compatibilidade com o protocolo existente: reenvio idempotente.
+        if (notifyPeer && isPeerPermanent(current.peerHash)) {
+            val signal = if (session.peerSupportsV2) {
+                CallSessionProtocol.end(session.id, reason)
+            } else "[CALL_END]"
+            sendPrivateMessage(current.peerHash, signal)
+            // Reenvio com mesmo callId e razão, aceito no máximo uma vez pelo FSM.
             scope.launch {
                 delay(200L)
-                sendPrivateMessage(current.peerHash, "[CALL_END]")
+                sendPrivateMessage(current.peerHash, signal)
+            }
+        }
+    }
+
+    /**
+     * Sinalização separada da mídia e do histórico. Todas as transições
+     * validam remetente, callId e estado; comandos fora de ordem são ignorados.
+     */
+    private fun handleCallControl(senderId: String, senderAlias: String, event: CallSignal) {
+        val sender = cleanId(senderId)
+        if (!isPeerPermanent(sender)) return
+        when (event.type) {
+            CallSignalType.INIT -> {
+                val result = callSessions.incoming(sender, event)
+                if (result == CallSessionMachine.OfferResult.BUSY) {
+                    if (event.callId != null) {
+                        sendPrivateMessage(sender, CallSessionProtocol.end(event.callId, CallEndReason.BUSY))
+                    }
+                    return
+                }
+                if (result != CallSessionMachine.OfferResult.NEW) return
+                val session = callSessions.active ?: return
+                synchronized(callStateLock) {
+                    activeCallGeneration = session.id
+                    callConnectedAtMs = 0L
+                    _activeCallState.value = ActiveCallState(
+                        isIncoming = true,
+                        peerHash = sender,
+                        peerAlias = event.alias.ifBlank { senderAlias },
+                        isVideo = event.video,
+                        isConnected = false
+                    )
+                }
+                if (event.callId != null) {
+                    sendPrivateMessage(sender, CallSessionProtocol.ringing(session.id))
+                }
+                callRingtoneWakeManager?.onIncomingCallReceived(
+                    callerHash = sender,
+                    callerAlias = event.alias.ifBlank { senderAlias },
+                    isVideo = event.video,
+                    onAutoTimeout = {
+                        if (activeCallGeneration == session.id) finishActiveCall(timedOut = true)
+                    }
+                )
+            }
+            CallSignalType.RINGING -> {
+                callSessions.ringing(sender, event.callId)
+            }
+            CallSignalType.ACCEPT -> {
+                if (!callSessions.remoteAccept(sender, event.callId)) return
+                val current = _activeCallState.value ?: return
+                callRingtoneWakeManager?.stopAllCallAlerts()
+                _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+                markActiveCallConnected()
+                callMediaEngine?.startCallMedia(current.isVideo)
+                val session = callSessions.active ?: return
+                val ack = if (session.peerSupportsV2) CallSessionProtocol.ack(session.id) else "[CALL_ACK]"
+                sendPrivateMessage(sender, ack)
+            }
+            CallSignalType.ACK -> {
+                // ACK confirma que o chamador recebeu o aceite; nunca atende
+                // automaticamente a chamada no aparelho chamado.
+                callSessions.remoteAck(sender, event.callId)
+            }
+            CallSignalType.END -> {
+                if (!callSessions.validRemoteEnd(sender, event.callId)) return
+                finishActiveCall(remoteEnded = true, notifyPeer = false, remoteReason = event.endReason)
             }
         }
     }
