@@ -1,5 +1,7 @@
 package br.com.pessoasaqui
 
+import br.com.pessoasaqui.core.qrcode.InviteLinkParser
+
 import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
@@ -174,23 +176,17 @@ class MainActivity : ComponentActivity() {
 
     private fun parseDeepLink(intent: Intent?) {
         val uri = intent?.data ?: return
-        val id = uri.getQueryParameter("id") ?: uri.getQueryParameter("inviteId")
-        val token = uri.getQueryParameter("token")
-        val sender = uri.getQueryParameter("sender") ?: uri.getQueryParameter("senderIdentity")
-        val alias = uri.getQueryParameter("alias") ?: uri.getQueryParameter("senderAlias") ?: "Usuário"
-        val sig = uri.getQueryParameter("sig") ?: uri.getQueryParameter("signature")
-        val exp = uri.getQueryParameter("exp")?.toLongOrNull() ?: uri.getQueryParameter("expiresAt")?.toLongOrNull()
-
-        if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
-            incomingInvite.value = IncomingInvite(
-                inviteId = id.trim(),
-                token = token.trim(),
-                senderIdentity = sender.trim(),
-                senderAlias = alias.trim(),
-                signature = sig?.trim(),
-                expiresAt = exp
-            )
-        }
+        // Deep links externos são entrada não confiável: aplicar a mesma
+        // política estrita de domínio, ID e token usada em QR/clipboard.
+        val invite = InviteLinkParser.parse(uri.toString()) ?: return
+        incomingInvite.value = IncomingInvite(
+            inviteId = invite.id,
+            token = invite.token,
+            senderIdentity = invite.sender,
+            senderAlias = invite.alias,
+            signature = invite.signature,
+            expiresAt = invite.expiresAt
+        )
     }
 }
 
