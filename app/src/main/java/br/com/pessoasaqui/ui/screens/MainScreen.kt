@@ -3,6 +3,8 @@ package br.com.pessoasaqui.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -577,7 +579,8 @@ fun MainScreen(
                     title = { Text("Convite: link ou QR", color = TextPrimary) },
                     text = {
                         Column(
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 570.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 570.dp)
+                                .verticalScroll(rememberScrollState()),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
@@ -592,7 +595,7 @@ fun MainScreen(
                             } else {
                                 Text("Não foi possível desenhar o QR. Compartilhe o link.", color = WarningAmber)
                             }
-                            Text("Mostre este QR a quem está perto. Para quem está longe, compartilhe o link.",
+                            Text("Mostre este QR a quem está perto. Para quem está longe, compartilhe o link. A conexão permanente requer acesso à internet para validar o convite.",
                                 color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
                             Text("Uso único: a primeira pessoa a resgatar estabelece o vínculo. Qualquer pessoa com este código ou link pode tentar usá-lo; compartilhe somente com alguém de confiança.",
                                 color = WarningAmber, style = MaterialTheme.typography.bodySmall)
