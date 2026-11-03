@@ -20,6 +20,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import br.com.pessoasaqui.core.qrcode.InviteLinkParser
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.barcode.common.Barcode
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,6 +56,38 @@ fun ConversationsTab(
     contactTagAssignments: Map<String, Set<String>> = emptyMap()
 ) {
     var showPasteInviteDialog by remember { mutableStateOf(false) }
+    var scannedInviteText by remember { mutableStateOf("") }
+    var isScanningInviteQr by remember { mutableStateOf(false) }
+    var qrScannerError by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val inviteScanner = remember(context) {
+        val options = GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .enableAutoZoom()
+            .build()
+        GmsBarcodeScanning.getClient(context, options)
+    }
+
+    fun scanInviteQr() {
+        if (isScanningInviteQr) return
+        isScanningInviteQr = true
+        qrScannerError = null
+        inviteScanner.startScan()
+            .addOnSuccessListener { barcode ->
+                val raw = barcode.rawValue.orEmpty()
+                if (InviteLinkParser.parse(raw) != null) {
+                    scannedInviteText = raw
+                    showConversationsDrawer = false
+                    showPasteInviteDialog = true
+                } else {
+                    qrScannerError = "Este QR não contém um convite oficial válido do PessoasAqui."
+                }
+            }
+            .addOnFailureListener {
+                qrScannerError = "Não foi possível iniciar o leitor. Verifique os Serviços do Google Play ou use Colar Convite."
+            }
+            .addOnCompleteListener { isScanningInviteQr = false }
+    }
     var showConversationsDrawer by remember { mutableStateOf(false) }
     var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
@@ -328,7 +365,30 @@ fun ConversationsTab(
                             }
                         }
 
-                        // 2. Colar Convite
+                        // 2. Ler QR de convite presencial
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable(enabled = !isScanningInviteQr) { scanInviteQr() }
+                        ) {
+                            Row(modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.QrCodeScanner,
+                                    contentDescription = "Ler QR de convite",
+                                    tint = RadarCyan, modifier = Modifier.size(30.dp))
+                                Spacer(Modifier.width(16.dp))
+                                Column {
+                                    Text("Ler QR de Convite", color = TextPrimary,
+                                        fontWeight = FontWeight.Bold)
+                                    Text("Aponte a câmera para o QR mostrado por alguém perto.",
+                                        color = TextSecondary,
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+
+                        // 3. Colar Convite
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = DarkCard,
@@ -371,8 +431,20 @@ fun ConversationsTab(
             )
         }
 
+        if (qrScannerError != null) {
+            AlertDialog(
+                onDismissRequest = { qrScannerError = null },
+                title = { Text("Leitor de QR", color = TextPrimary) },
+                text = { Text(qrScannerError ?: "", color = TextSecondary) },
+                confirmButton = {
+                    TextButton(onClick = { qrScannerError = null }) { Text("Entendi") }
+                },
+                containerColor = DarkSurface
+            )
+        }
+
         if (showPasteInviteDialog) {
-                    var pastedInviteText by remember { mutableStateOf("") }
+                    var pastedInviteText by remember(scannedInviteText) { mutableStateOf(scannedInviteText) }
                     var isRedeeming by remember { mutableStateOf(false) }
                     var pasteError by remember { mutableStateOf<String?>(null) }
                     val clipboard = LocalClipboardManager.current
