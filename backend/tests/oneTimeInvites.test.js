@@ -116,7 +116,7 @@ test('database outage fails closed, no invite or connection falsely approved',as
 
 test('legacy plaintext invite stored in database remains redeemable once',async()=>{
   const f=fixture({postgres:true});
-  const token='a'.repeat(32), id='inv_'+'b'.repeat(24);
+  const token='a'.repeat(32), id='inv_'+'b'.repeat(12);
   f.store.invites.set(id,{token,sender,alias:'Antigo',expiresAt:Date.now()+10000,isUsed:false});
   assert.equal((await redeem(f,{inviteId:id,token})).code,200);
   assert.equal((await redeem(f,{inviteId:id,token},other)).code,410);
