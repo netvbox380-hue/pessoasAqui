@@ -355,7 +355,7 @@ class BleManager(
         lastIntent = myIntent
         if (!isBluetoothEnabled) return
 
-        stopAdvertising()
+        stopAdvertising(preserveFailure = true)
         advertiserLifecycle.starting()
         val generation = advertisingGeneration.get()
         lastAdvertisingStartMs = System.currentTimeMillis()
@@ -425,10 +425,10 @@ class BleManager(
      * Encerra a transmissão BLE.
      */
     @SuppressLint("MissingPermission")
-    fun stopAdvertising() {
+    fun stopAdvertising(preserveFailure: Boolean = false) {
         advertisingGeneration.incrementAndGet()
         advertisingActive = false
-        advertiserLifecycle.stopped()
+        if (!preserveFailure) advertiserLifecycle.stopped()
         try {
             advertiserDriver.stopAdvertising()
         } catch (e: Exception) {
@@ -444,7 +444,7 @@ class BleManager(
     fun startScanning(onPeerDiscovered: (NearbyPerson) -> Unit) {
         lastScanCallback = onPeerDiscovered
         if (!isBluetoothEnabled) return
-        stopScanning()
+        stopScanning(preserveFailure = true)
         scanner = try {
             bluetoothAdapter?.bluetoothLeScanner
         } catch (e: Throwable) {
@@ -504,11 +504,11 @@ class BleManager(
 
     @SuppressLint("MissingPermission")
     @Synchronized
-    fun stopScanning() {
+    fun stopScanning(preserveFailure: Boolean = false) {
         val callback = scanCallback
         scanCallback = null
         scanningActive = false
-        scanLifecycle.stopped()
+        if (!preserveFailure) scanLifecycle.stopped()
         callback?.let {
             try {
                 scanner?.stopScan(it)
