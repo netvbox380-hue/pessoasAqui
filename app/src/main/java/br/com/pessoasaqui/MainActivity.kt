@@ -601,8 +601,12 @@ fun PessoasAquiNavHost(
                         )
                     )
                     Text(
-                        text = "Este convite é de uso único. Ao aceitar, vocês poderão conversar livremente a qualquer distância com mensagens, chamadas e fotos criptografadas.",
-                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        text = "Identidade informada: ${invite.senderIdentity}",
+                        style = MaterialTheme.typography.labelSmall.copy(color = RadarCyan)
+                    )
+                    Text(
+                        text = "Confirme com a pessoa por outro canal antes de aceitar. O nome exibido no link não comprova a identidade do emissor. Este convite é de uso único e requer conexão com o servidor.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = WarningAmber)
                     )
                     if (errorMessage != null) {
                         Text(
