@@ -62,8 +62,9 @@ class PessoasAquiForegroundService : Service() {
         startForegroundCompat()
         acquireBackgroundLocks()
         startReminderTicker()
-        // Garante que o repositório singleton esteja inicializado
-        (application as? PessoasAquiApp)?.repository
+        // Serviço explicitamente ativo pode manter presença de conexões
+        // permanentes; receiver passivo de BLE nunca inicia este polling.
+        (application as? PessoasAquiApp)?.repository?.ensureInternetPresenceStarted()
         return START_STICKY
     }
 
