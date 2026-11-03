@@ -97,6 +97,9 @@ dependencies {
 
     // QR Code Generation & Scanning
     implementation(libs.zxing.core)
+    // Leitor oficial de QR do Google Play Services: UI gerenciada sem
+    // permissão adicional de câmera para a leitura de convites.
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 
     // Google Play Billing In-App Purchases & Subscriptions
     implementation(libs.google.billing.ktx)
