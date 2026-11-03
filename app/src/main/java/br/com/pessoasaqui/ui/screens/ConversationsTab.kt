@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -24,6 +25,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import br.com.pessoasaqui.core.chat.ConversationPriority
 import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.ContactTag
 import br.com.pessoasaqui.domain.model.MessageType
@@ -52,9 +54,15 @@ fun ConversationsTab(
     var showConversationsDrawer by remember { mutableStateOf(false) }
     var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var showAllImportant by rememberSaveable { mutableStateOf(false) }
 
     val realConnectedPeople = remember(connectedPeople) {
         connectedPeople.filter { !it.id.startsWith("sim-", ignoreCase = true) }
+    }
+    // Computado diretamente do histórico local criptografado recuperado na abertura
+    // do app. Não modifica nenhuma mensagem ou a ordem do armazenamento.
+    val priority = remember(connectedPeople, privateChats) {
+        ConversationPriority.build(connectedPeople, privateChats)
     }
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
@@ -553,6 +561,83 @@ fun ConversationsTab(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         contentPadding = PaddingValues(bottom = 16.dp)
                     ) {
+                        // As estrelas são conteúdo, não só um filtro da lista:
+                        // o usuário revê seus próprios acordos e datas ao entrar.
+                        if (priority.highlights.isNotEmpty()) {
+                            item(key = "important-title") {
+                                Column(modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Star, contentDescription = null,
+                                            tint = WarningAmber, modifier = Modifier.size(20.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("⭐ Mensagens importantes (${priority.highlights.size})",
+                                            color = WarningAmber,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold)
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                    Text("Seus acordos e lembranças ficam em primeiro lugar. Para alertas com data, agende um lembrete na mensagem.",
+                                        color = TextSecondary,
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            val visibleImportant = if (showAllImportant) priority.highlights else priority.highlights.take(4)
+                            items(
+                                items = visibleImportant,
+                                key = { "star-${ConversationPriority.canonicalPeerId(it.contact.technicalIdentityHash.ifBlank { it.contact.id })}-${it.message.id}" }
+                            ) { highlight ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().clickable { onOpenChat(highlight.contact) },
+                                    colors = CardDefaults.cardColors(containerColor = DarkCardElevated),
+                                    border = BorderStroke(1.dp, WarningAmber.copy(alpha = 0.55f)),
+                                    shape = RoundedCornerShape(14.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                                        Row(modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically) {
+                                            Text(highlight.contact.alias, color = WarningAmber,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.weight(1f),
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(formatSmartDateTime(highlight.message.timestampMs),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = TextSecondary)
+                                        }
+                                        Spacer(Modifier.height(5.dp))
+                                        Text(
+                                            text = when (highlight.message.messageType) {
+                                                MessageType.IMAGE -> "📷 Figurinha ou imagem importante"
+                                                MessageType.AUDIO -> "🎤 Áudio importante"
+                                                MessageType.DOCUMENT -> "📄 Documento importante"
+                                                else -> highlight.message.safeDisplayText
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = TextPrimary,
+                                            maxLines = 3,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Text("Abrir conversa para revisar", style = MaterialTheme.typography.labelSmall,
+                                            color = RadarCyan)
+                                    }
+                                }
+                            }
+                            if (priority.highlights.size > 4) {
+                                item(key = "important-expand") {
+                                    TextButton(
+                                        onClick = { showAllImportant = !showAllImportant },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(if (showAllImportant) "Mostrar menos" else
+                                            "Ver todas as ${priority.highlights.size} mensagens importantes",
+                                            color = WarningAmber)
+                                    }
+                                }
+                            }
+                            item(key = "important-divider") {
+                                HorizontalDivider(color = WarningAmber.copy(alpha = 0.2f))
+                            }
+                        }
                         if (supportHistory.isNotEmpty()) {
                             item(key = "suporte-oficial") {
                                 val lastMsg = supportHistory.last()
@@ -643,11 +728,9 @@ fun ConversationsTab(
                             }
                         }
 
-                        items(realConnectedPeople, key = { it.id }) { contact ->
-                            // Busca histórico privado dessa pessoa para exibir prévia da última mensagem
-                            val history = privateChats[contact.id]
-                                ?: privateChats[contact.technicalIdentityHash]
-                                ?: emptyList()
+                        items(priority.orderedConversations, key = { "conversation-${it.contact.id}" }) { conversation ->
+                            val contact = conversation.contact
+                            val history = conversation.messages
                             val lastMsg = history.lastOrNull()
 
                             val isSelected = contact.id in selectedContactIds
@@ -786,6 +869,21 @@ fun ConversationsTab(
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
+                                        if (conversation.importantCount > 0 || conversation.unreadCount > 0) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                buildString {
+                                                    if (conversation.importantCount > 0) append("⭐ ${conversation.importantCount} importante(s)")
+                                                    if (conversation.unreadCount > 0) {
+                                                        if (isNotEmpty()) append("  •  ")
+                                                        append("● ${conversation.unreadCount} não lida(s)")
+                                                    }
+                                                },
+                                                color = if (conversation.importantCount > 0) WarningAmber else RadarCyan,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 2
+                                            )
+                                        }
                                     }
 
                                     Spacer(modifier = Modifier.width(8.dp))
