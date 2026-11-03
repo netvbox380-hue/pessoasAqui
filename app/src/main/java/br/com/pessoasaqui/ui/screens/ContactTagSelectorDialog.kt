@@ -53,6 +53,7 @@ fun ContactTagSelectorDialog(
             color = DarkSurface,
             border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.35f)),
             modifier = Modifier
+                .widthIn(max = 650.dp)
                 .fillMaxWidth(0.96f)
                 .heightIn(max = 620.dp)
         ) {
