@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.*
+import android.app.PendingIntent
+import android.os.Build
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -206,6 +208,8 @@ class BleManager(
     }
 
     private var scanner: BluetoothLeScanner? = null
+    private var pendingScanIntent: PendingIntent? = null
+    private var scanningWithPendingIntent = false
 
     private val _realDiscoveredPeers = MutableStateFlow<Map<String, NearbyPerson>>(emptyMap())
     val realDiscoveredPeers: StateFlow<Map<String, NearbyPerson>> = _realDiscoveredPeers.asStateFlow()
@@ -225,7 +229,8 @@ class BleManager(
     private val advertisingGeneration = AtomicLong(0L)
     private val scanLifecycle = BleRadioLifecycle()
     private val advertiserLifecycle = BleRadioLifecycle()
-    @Volatile private var appInForeground = true
+    // Inicialização via BroadcastReceiver não representa Activity aberta.
+    @Volatile private var appInForeground = false
 
     private var lastIdentityHash: String? = null
     private var lastAlias: String? = null
@@ -287,6 +292,33 @@ class BleManager(
         if (isBluetoothEnabled && scanLifecycle.state == BleRadioState.ACTIVE && callback != null) {
             startScanning(callback)
         }
+    }
+
+    private fun backgroundPendingIntent(): PendingIntent? {
+        val ctx = context ?: return null
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        return PendingIntent.getBroadcast(
+            ctx,
+            0xFA01,
+            Intent(ctx, BleScanResultReceiver::class.java).apply {
+                action = BleScanResultReceiver.ACTION_BLE_SCAN
+            },
+            flags
+        )
+    }
+
+    /** Entrada exclusivamente por PendingIntent de scanner filtrado em segundo plano. */
+    internal fun onBackgroundScanResults(results: List<ScanResult>, errorCode: Int?) {
+        if (errorCode != null && errorCode != 0) {
+            scanningActive = false
+            scanLifecycle.failed()
+            Log.w(tag, "Scanner em segundo plano falhou ($errorCode), aguardando backoff")
+            return
+        }
+        if (appInForeground || !isBluetoothEnabled) return
+        val receiver = lastScanCallback ?: return
+        results.forEach { processScanResult(it, receiver) }
     }
 
     var isMockBluetoothEnabled: Boolean? = null
@@ -470,31 +502,50 @@ class BleManager(
             .build()
         scanLifecycle.starting()
 
-        scanCallback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult?) {
-                result ?: return
-                if (scanCallback === this) processScanResult(result, onPeerDiscovered)
-            }
-
-            override fun onBatchScanResults(results: MutableList<ScanResult>?) {
-                if (scanCallback === this) results?.forEach { processScanResult(it, onPeerDiscovered) }
-            }
-
-            override fun onScanFailed(errorCode: Int) {
-                if (scanCallback === this) {
-                    scanningActive = false
-                    scanLifecycle.failed()
-                }
-                Log.e(tag, "Falha no escaneamento BLE. Código: $errorCode")
-            }
-        }
-
         try {
-            scanner?.startScan(filters, settings, scanCallback)
+            // Quando a Activity não está visível, PendingIntent permite despertar
+            // o processo por anúncio filtrado mesmo após término pelo Android.
+            // Em API < 26 permanece o callback filtrado.
+            val pending = if (!appInForeground && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                backgroundPendingIntent()
+            } else null
+            if (pending != null) {
+                pendingScanIntent = pending
+                scanningWithPendingIntent = true
+                val error = scanner?.startScan(filters, settings, pending)
+                    ?: ScanCallback.SCAN_FAILED_INTERNAL_ERROR
+                if (error != 0) {
+                    scanningWithPendingIntent = false
+                    scanLifecycle.failed()
+                    scanningActive = false
+                    Log.e(tag, "Falha ao iniciar PendingIntent scanner BLE: $error")
+                    return
+                }
+            } else {
+                scanCallback = object : ScanCallback() {
+                    override fun onScanResult(callbackType: Int, result: ScanResult?) {
+                        result ?: return
+                        if (scanCallback === this) processScanResult(result, onPeerDiscovered)
+                    }
+
+                    override fun onBatchScanResults(results: MutableList<ScanResult>?) {
+                        if (scanCallback === this) results?.forEach { processScanResult(it, onPeerDiscovered) }
+                    }
+
+                    override fun onScanFailed(errorCode: Int) {
+                        if (scanCallback === this) {
+                            scanningActive = false
+                            scanLifecycle.failed()
+                        }
+                        Log.e(tag, "Falha no escaneamento BLE. Código: $errorCode")
+                    }
+                }
+                scanner?.startScan(filters, settings, scanCallback)
+            }
             scanningActive = true
             scanLifecycle.started()
             lastScanStartMs = System.currentTimeMillis()
-            Log.d(tag, "BLE Scanner filtrado 0xFA01 iniciado (${if (appInForeground) "foreground" else "background"}).")
+            Log.d(tag, "Scanner BLE filtrado ativo (${if (pending != null) "PendingIntent" else "callback"}).")
         } catch (e: Exception) {
             scanningActive = false
             scanLifecycle.failed()
@@ -507,6 +558,9 @@ class BleManager(
     fun stopScanning(preserveFailure: Boolean = false) {
         val callback = scanCallback
         scanCallback = null
+        val pending = pendingScanIntent
+        val wasPending = scanningWithPendingIntent
+        scanningWithPendingIntent = false
         scanningActive = false
         if (!preserveFailure) scanLifecycle.stopped()
         callback?.let {
@@ -514,6 +568,13 @@ class BleManager(
                 scanner?.stopScan(it)
             } catch (e: Exception) {
                 Log.e(tag, "Erro ao parar scanner: ${e.message}")
+            }
+        }
+        if (wasPending && pending != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                scanner?.stopScan(pending)
+            } catch (e: Exception) {
+                Log.e(tag, "Erro ao parar scan por PendingIntent: ${e.message}")
             }
         }
     }
