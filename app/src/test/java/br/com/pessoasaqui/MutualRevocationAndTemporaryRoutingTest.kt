@@ -15,6 +15,32 @@ import org.junit.Test
 class MutualRevocationAndTemporaryRoutingTest {
     private val peerId = "A1B2C3D4E5F60708"
 
+    @Test fun corruptEncryptedCallSignalMustNotAppearAsChatBubble() {
+        val repo = PessoasAquiRepository()
+        repo.setMarkPerson(peerId, mark = true)
+        repo.confirmMutualConnectionFromServer(peerId)
+        repo.processIncomingPayload(peerId, "Contato", "ENC_ECDH:not-valid-base64", "invalid-IV", "bad-call")
+        assertTrue("Nenhum conteúdo ENC_ECDH inválido pode aparecer no chat",
+            repo.proximitySimulator.privateChats.value[peerId].orEmpty().isEmpty())
+    }
+
+    @Test fun unansweredIncomingCallBecomesOneMissedCallEntry() {
+        val repo = PessoasAquiRepository()
+        repo.setMarkPerson(peerId, mark = true)
+        repo.confirmMutualConnectionFromServer(peerId)
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:false:Contato]", "", "call-start-01")
+        // O segundo comando CALL_INIT é retransmissão, não outra chamada.
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:false:Contato]", "", "call-start-02")
+        assertNotNull(repo.activeCallState.value)
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "call-end-01")
+        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "call-end-02")
+        val history = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals("Uma ligação deve gerar somente um registro", 1, history.size)
+        assertTrue(history.single().text.contains("Chamada de voz perdida"))
+        assertEquals(br.com.pessoasaqui.domain.model.MessageType.SYSTEM, history.single().messageType)
+        assertNull(repo.activeCallState.value)
+    }
+
     @Test fun wifiDisconnectMustNotRemoveNativeBleRadarPeer() {
         val repo = PessoasAquiRepository()
         val seenAt = System.currentTimeMillis()
