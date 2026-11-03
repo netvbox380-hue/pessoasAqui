@@ -15,6 +15,13 @@ import org.junit.Test
 class MutualRevocationAndTemporaryRoutingTest {
     private val peerId = "A1B2C3D4E5F60708"
 
+    private fun deliverEncryptedCall(repo: PessoasAquiRepository, control: String, id: String) {
+        val (ciphertext, iv) = br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.encrypt(
+            control, peerId, repo.cryptoIdentityManager.getTechnicalIdentity()
+        )
+        repo.processIncomingPayload(peerId, "Contato", ciphertext, iv, id)
+    }
+
     @Test fun corruptEncryptedCallSignalMustNotAppearAsChatBubble() {
         val repo = PessoasAquiRepository()
         repo.setMarkPerson(peerId, mark = true)
@@ -28,12 +35,12 @@ class MutualRevocationAndTemporaryRoutingTest {
         val repo = PessoasAquiRepository()
         repo.setMarkPerson(peerId, mark = true)
         repo.confirmMutualConnectionFromServer(peerId)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:false:Contato]", "", "call-start-01")
+        deliverEncryptedCall(repo, "[CALL_INIT:false:Contato]", "call-start-01")
         // O segundo comando CALL_INIT é retransmissão, não outra chamada.
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:false:Contato]", "", "call-start-02")
+        deliverEncryptedCall(repo, "[CALL_INIT:false:Contato]", "call-start-02")
         assertNotNull(repo.activeCallState.value)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "call-end-01")
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "call-end-02")
+        deliverEncryptedCall(repo, "[CALL_END]", "call-end-01")
+        deliverEncryptedCall(repo, "[CALL_END]", "call-end-02")
         val history = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
         assertEquals("Uma ligação deve gerar somente um registro", 1, history.size)
         assertTrue(history.single().text.contains("Chamada de voz perdida"))
@@ -45,11 +52,11 @@ class MutualRevocationAndTemporaryRoutingTest {
         val repo = PessoasAquiRepository()
         repo.setMarkPerson(peerId, mark = true)
         repo.confirmMutualConnectionFromServer(peerId)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:true:Contato]", "", "video-call-start")
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_ACK]", "", "video-call-ack")
+        deliverEncryptedCall(repo, "[CALL_INIT:true:Contato]", "video-call-start")
+        deliverEncryptedCall(repo, "[CALL_ACK]", "video-call-ack")
         assertFalse("O chamador não pode atender no lugar do destinatário",
             repo.activeCallState.value?.isConnected ?: true)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "video-call-end")
+        deliverEncryptedCall(repo, "[CALL_END]", "video-call-end")
         val history = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
         assertEquals(1, history.size)
         assertTrue(history.single().text.contains("Videochamada perdida"))
