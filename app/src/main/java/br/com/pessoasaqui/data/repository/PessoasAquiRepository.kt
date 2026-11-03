@@ -811,8 +811,9 @@ class PessoasAquiRepository(
                     // descartar handles antigos antes da próxima inicialização.
                     bleTransportCoordinator.stop()
                 } else if (_hasGrantedPermissions.value) {
-                    // A ordem importa: servidor GATT primeiro, anúncios e scanner depois.
-                    bleTransportCoordinator.start()
+                    // Mesmo se o app iniciou com Bluetooth desligado (sem callbacks
+                    // anteriores), iniciar GATT + advertising + scanner por inteiro.
+                    startNativeBleHardware()
                 }
             } catch (e: Exception) {
                 Log.w("PessoasAqui", "Falha ao sincronizar GATT com estado do Bluetooth: ${e.message}")
