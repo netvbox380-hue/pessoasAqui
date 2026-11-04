@@ -65,7 +65,13 @@ function fixture(){
   async function request(method,path,body={}){
     let code=200,data;
     const res={status(status){code=status;return this;},json(obj){data=obj;return this;}};
-    await routes.get(method+' '+path)({body,params:{id:body.id}},res);
+    // A fixture é um mapa simples, não o roteador dinâmico do Express.
+    // Resolver apenas o parâmetro declarado pela rota de DELETE legado.
+    const dynamicLegacyDelete = method==='DELETE' && /^\/api\/offers\/[^/]+$/.test(path);
+    const handler = routes.get(method+' '+path) ||
+      (dynamicLegacyDelete ? routes.get('DELETE /api/offers/:id') : undefined);
+    assert.equal(typeof handler,'function',`Missing fixture route: ${method} ${path}`);
+    await handler({body,params:{id:body.id||path.split('/').pop()}},res);
     return {code,data};
   }
   const publish=(offer=baseOffer,who=me)=>
