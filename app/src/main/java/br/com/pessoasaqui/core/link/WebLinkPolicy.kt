@@ -10,7 +10,7 @@ object WebLinkPolicy {
     // http(s), www e domínios comuns sem esquema (ex.: exemplo.com.br).
     // O lookbehind evita transformar partes de endereços de e-mail em links.
     private val urls = Regex(
-        """(?<![A-Za-z0-9@._-])(?:(?:https?://|www\.)[^\s<>"'`]+|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}(?::[0-9]{1,5})?(?:[/#?][^\s<>"'`]*)?)""",
+        """(?<![A-Za-z0-9@._:/-])(?:(?:https?://|www\.)[^\s<>"'`]+|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}(?::[0-9]{1,5})?(?:[/#?][^\s<>"'`]*)?)""",
         RegexOption.IGNORE_CASE
     )
 
