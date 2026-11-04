@@ -227,7 +227,7 @@ open class PessoasAquiNetworkClient(
                     Result.success(RecoveryIssueResponse(
                         recoveryKey = obj.getString("recoveryKey"),
                         targetIdentity = obj.getString("targetIdentity"),
-                        expiresAtEpochMs = java.time.Instant.parse(obj.getString("expiresAt")).toEpochMilli()
+                        expiresAtEpochMs = obj.getLong("expiresAtEpochMs")
                     ))
                 } else Result.failure(IOException(obj.optString("error", "Falha ao gerar autorização")))
             }
