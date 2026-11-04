@@ -14,6 +14,9 @@ import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.media.DocumentViewerHelper
 import br.com.pessoasaqui.core.media.ImageSearchHelper
 import br.com.pessoasaqui.core.chat.StickerPersistenceManager
+import br.com.pessoasaqui.core.chat.SafeChatImageDecoder
+import br.com.pessoasaqui.core.link.WebLinkPolicy
+import kotlinx.coroutines.withContext
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -26,12 +29,16 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -228,8 +235,7 @@ fun LinkifiedMessageText(
     linkColor: Color
 ) {
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
-    val urlRegex = remember { Regex("""(https?://[^\s]+|www\.[^\s]+)""") }
-    val matches = remember(text) { urlRegex.findAll(text).toList() }
+    val matches = remember(text) { WebLinkPolicy.findWebLinks(text) }
 
     if (matches.isEmpty()) {
         Text(
@@ -244,13 +250,13 @@ fun LinkifiedMessageText(
             val annotated = buildAnnotatedString {
                 var lastIndex = 0
                 matches.forEach { match ->
-                    val start = match.range.first
-                    val end = match.range.last + 1
+                    val start = match.start
+                    val end = match.endExclusive
                     if (start > lastIndex) {
                         append(text.substring(lastIndex, start))
                     }
-                    val url = match.value
-                    pushStringAnnotation(tag = "URL", annotation = if (url.startsWith("http")) url else "https://$url")
+                    val url = match.displayText
+                    pushStringAnnotation(tag = "URL", annotation = match.url)
                     withStyle(
                         SpanStyle(
                             color = linkColor,
@@ -285,8 +291,7 @@ fun LinkifiedMessageText(
             )
 
             matches.firstOrNull()?.let { firstMatch ->
-                val rawUrl = firstMatch.value
-                val domain = rawUrl.removePrefix("https://").removePrefix("http://").removePrefix("www.").substringBefore('/')
+                val domain = java.net.URI(firstMatch.url).host?.removePrefix("www.") ?: firstMatch.displayText
                 Spacer(modifier = Modifier.height(4.dp))
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -294,7 +299,7 @@ fun LinkifiedMessageText(
                     border = BorderStroke(0.5.dp, linkColor.copy(alpha = 0.4f)),
                     modifier = Modifier.clickable {
                         try {
-                            uriHandler.openUri(if (rawUrl.startsWith("http")) rawUrl else "https://$rawUrl")
+                            uriHandler.openUri(firstMatch.url)
                         } catch (_: Exception) {}
                     }
                 ) {
@@ -334,6 +339,8 @@ fun ChatDetailScreen(
     onAcceptMutualConnection: (NearbyPerson) -> Unit = { _ -> },
     onRequestFamilyRole: (NearbyPerson, FamilyRole) -> Unit = { _, _ -> },
     onGenerateFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
+    onAuthorizeFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
+    onRevokeFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
     onBlockUser: (String) -> Unit = { _ -> },
     onReportUser: (String) -> Unit = { _ -> },
     onReportUserWithDetails: ((String, String, String, List<ChatMessage>) -> Unit)? = null,
@@ -368,6 +375,9 @@ fun ChatDetailScreen(
     var menuExpanded by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
     var showFamilyRoleDialog by remember { mutableStateOf(false) }
+    var showFamilyRecoveryDelegateConfirm by remember { mutableStateOf(false) }
+    var showFamilyRecoveryRevokeConfirm by remember { mutableStateOf(false) }
+    var showFamilyRecoveryIssueConfirm by remember { mutableStateOf(false) }
     var showRemindersDialog by remember { mutableStateOf(false) }
     var reminderInitialText by remember { mutableStateOf("") }
     var showResourceDrawer by remember { mutableStateOf(false) }
@@ -427,6 +437,8 @@ fun ChatDetailScreen(
 
     var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
     var stickerBitmapToCreate by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var editingStickerId by remember { mutableStateOf<String?>(null) }
+    var stickerCollectionRevision by remember { mutableIntStateOf(0) }
 
     val createStickerPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -434,6 +446,7 @@ fun ChatDetailScreen(
         if (uri != null) {
             val bmp = uriToBitmap(context, uri)
             if (bmp != null) {
+                editingStickerId = null
                 stickerBitmapToCreate = bmp
             }
         }
@@ -579,11 +592,44 @@ fun ChatDetailScreen(
                             text = "${selectedMessageIds.size} selecionada(s)",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            )
+                                color = TextPrimary,
+                                fontSize = 14.sp
+                            ),
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                         )
                     },
                     actions = {
+                        // Pressionar a mensagem abre a seleção. A ação ⭐ deve
+                        // estar na barra selecionada, ao lado de Copiar/Compartilhar/Excluir.
+                        // Apenas uma mensagem por vez para não alternar estrelas indevidamente.
+                        val selectedImportantMessage = selectedMessageIds.singleOrNull()?.let { id ->
+                            messages.firstOrNull { it.id == id && !it.isDeleted }
+                        }
+                        if (selectedImportantMessage != null && onToggleImportantMessage != null) {
+                            IconButton(
+                                onClick = {
+                                    val peerId = person.technicalIdentityHash.ifBlank { person.id }
+                                    val wasImportant = selectedImportantMessage.isImportant
+                                    onToggleImportantMessage.invoke(peerId, selectedImportantMessage.id)
+                                    selectedMessageIds = emptySet()
+                                    Toast.makeText(
+                                        context,
+                                        if (wasImportant) "Mensagem removida dos importantes"
+                                        else "Mensagem marcada como importante ⭐",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = if (selectedImportantMessage.isImportant)
+                                        Icons.Default.Star else Icons.Default.StarBorder,
+                                    contentDescription = if (selectedImportantMessage.isImportant)
+                                        "Remover de importantes" else "Marcar como importante",
+                                    tint = WarningAmber
+                                )
+                            }
+                        }
                         IconButton(onClick = {
                             val textToCopy = messages
                                 .filter { it.id in selectedMessageIds && it.text.isNotBlank() && !it.isDeleted }
@@ -631,12 +677,8 @@ fun ChatDetailScreen(
                                 .background(Color(person.avatarColorHex).copy(alpha = 0.2f)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = person.alias.take(1).uppercase(),
-                                style = MaterialTheme.typography.titleSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(person.avatarColorHex)
-                                )
+                            br.com.pessoasaqui.ui.components.PeerPrivacyAvatar(
+                                person = person, modifier = Modifier.fillMaxSize()
                             )
                         }
                         Spacer(modifier = Modifier.width(10.dp))
@@ -818,6 +860,29 @@ fun ChatDetailScreen(
                             DropdownMenuItem(
                                 text = {
                                     Text(
+                                        text = "🛡️ Autorizar ${person.alias} para me ajudar a recuperar",
+                                        color = FamilyPurple,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    showFamilyRecoveryDelegateConfirm = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text("🔒 Revogar autorização de recuperação",
+                                        color = WarningAmber)
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    showFamilyRecoveryRevokeConfirm = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
                                         text = "🔐 Recuperar identidade de ${person.alias}",
                                         color = RadarCyan,
                                         fontWeight = FontWeight.Bold
@@ -825,7 +890,7 @@ fun ChatDetailScreen(
                                 },
                                 onClick = {
                                     menuExpanded = false
-                                    onGenerateFamilyRecovery(person)
+                                    showFamilyRecoveryIssueConfirm = true
                                 }
                             )
                         }
@@ -1016,14 +1081,17 @@ fun ChatDetailScreen(
                         }
                         Spacer(modifier = Modifier.height(3.dp))
                         Text(
-                            text = "Chamadas de voz, vídeo, áudios e envio de fotos/documentos são liberados quando ambos se marcam mutuamente ou confirmam parentesco.",
+                            text = "Você já pode conversar por Bluetooth sem convite mútuo. Marcar conexão é opcional: após os dois aceitarem, vocês poderão continuar conversando além dos 10m e usar chamadas/mídia.",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = TextSecondary,
                                 fontSize = 11.sp
                             )
                         )
                         Spacer(modifier = Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             if (person.isMarkingMe && !person.isMarkedByMe) {
                                 Button(
                                     onClick = { onAcceptMutualConnection(person) },
@@ -1099,11 +1167,14 @@ fun ChatDetailScreen(
                 }
             }
 
-            // Lista de Mensagens
+            // A largura é calculada a partir da janela REAL: bolhas estreitas
+            // em telefone, mais largas sem esticar demais em tablet/dobráveis.
+            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+            val maxChatBubbleWidth = (maxWidth * 0.82f).coerceAtMost(560.dp)
             LazyColumn(
                 state = listState,
                 modifier = Modifier
-                    .weight(1f)
+                    .fillMaxSize()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -1161,7 +1232,7 @@ fun ChatDetailScreen(
                             color = if (isMsgSelected) DarkCardElevated else bubbleBgColor,
                             border = if (isMsgSelected) BorderStroke(2.dp, RadarCyan) else BorderStroke(0.5.dp, bubbleBorderColor),
                             modifier = Modifier
-                                .widthIn(max = 290.dp)
+                                .widthIn(max = maxChatBubbleWidth)
                                 .pointerInput(msg.id, selectedMessageIds.isNotEmpty()) {
                                     detectTapGestures(
                                         onLongPress = {
@@ -1310,30 +1381,30 @@ fun ChatDetailScreen(
                                         val stickerRaw = if (msg.text.startsWith("[STICKER:")) msg.text else msg.mediaBase64 ?: ""
                                         val stickerB64 = if (isSticker) stickerRaw.removePrefix("[STICKER:").removeSuffix("]").trim() else null
 
-                                        val bitmap = remember(msg.mediaBase64, msg.text) {
-                                            try {
-                                                val b64 = if (isSticker) stickerB64 else msg.mediaBase64
-                                                if (!b64.isNullOrBlank()) {
-                                                    val decoded = Base64.decode(b64, Base64.DEFAULT)
-                                                    BitmapFactory.decodeByteArray(decoded, 0, decoded.size)?.asImageBitmap()
-                                                } else null
-                                            } catch (_: Exception) { null }
+                                        val imagePayload = if (isSticker) stickerB64 else msg.mediaBase64
+                                        val bitmap by produceState<ImageBitmap?>(
+                                            initialValue = null, key1 = imagePayload
+                                        ) {
+                                            value = withContext(Dispatchers.Default) {
+                                                SafeChatImageDecoder.decode(imagePayload)?.asImageBitmap()
+                                            }
                                         }
 
-                                        if (bitmap != null) {
+                                        val currentBitmap = bitmap
+                                        if (currentBitmap != null) {
                                             if (isSticker) {
                                                 // Figurinha Autêntica Estilo WhatsApp: Flutuante, Transparente e Sem Balão
                                                 Box(
                                                     modifier = Modifier
                                                         .size(144.dp)
                                                         .clickable {
-                                                            fullscreenImageBitmap = bitmap
+                                                            fullscreenImageBitmap = currentBitmap
                                                             fullscreenImageSender = msg.senderAlias
                                                         },
                                                     contentAlignment = Alignment.Center
                                                 ) {
                                                     Image(
-                                                        bitmap = bitmap,
+                                                        bitmap = currentBitmap,
                                                         contentDescription = "Figurinha",
                                                         modifier = Modifier.fillMaxSize(),
                                                         contentScale = ContentScale.Fit
@@ -1345,12 +1416,12 @@ fun ChatDetailScreen(
                                                         .fillMaxWidth()
                                                         .clip(RoundedCornerShape(12.dp))
                                                         .clickable {
-                                                            fullscreenImageBitmap = bitmap
+                                                            fullscreenImageBitmap = currentBitmap
                                                             fullscreenImageSender = msg.senderAlias
                                                         }
                                                 ) {
                                                     Image(
-                                                        bitmap = bitmap,
+                                                        bitmap = currentBitmap,
                                                         contentDescription = "Foto Cifrada (Toque para ampliar)",
                                                         modifier = Modifier
                                                             .fillMaxWidth()
@@ -1501,11 +1572,11 @@ fun ChatDetailScreen(
 
                                     else -> {
                                         // Mensagem de Texto Padrão (com suporte responsivo a badge de Transmissão)
-                                        val isBroadcast = msg.text.startsWith("📢 [Transmissão]: ") || msg.text.startsWith("📢 [Transmissao]: ")
+                                        val isBroadcast = msg.safeDisplayText.startsWith("📢 [Transmissão]: ") || msg.safeDisplayText.startsWith("📢 [Transmissao]: ")
                                         val cleanText = if (isBroadcast) {
-                                            msg.text.removePrefix("📢 [Transmissão]: ").removePrefix("📢 [Transmissao]: ").trim()
+                                            msg.safeDisplayText.removePrefix("📢 [Transmissão]: ").removePrefix("📢 [Transmissao]: ").trim()
                                         } else {
-                                            msg.text
+                                            msg.safeDisplayText
                                         }
 
                                         if (isBroadcast) {
@@ -1596,19 +1667,40 @@ fun ChatDetailScreen(
                                     )
                                     if (isMe) {
                                         Spacer(modifier = Modifier.width(2.dp))
-                                        val isRead = msg.isRead
-                                        Icon(
-                                            imageVector = Icons.Default.DoneAll,
-                                            contentDescription = if (isRead) "Visualizada" else "Entregue",
-                                            tint = if (isRead) Color(0xFF69F0AE) else if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
-                                            modifier = Modifier.size(12.dp)
-                                        )
+                                        when (msg.deliveryStatus) {
+                                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.PENDING -> {
+                                                Icon(
+                                                    imageVector = Icons.Default.Schedule,
+                                                    contentDescription = "Pendente / Enviando...",
+                                                    tint = if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED -> {
+                                                Icon(
+                                                    imageVector = Icons.Default.ErrorOutline,
+                                                    contentDescription = "Falha no envio",
+                                                    tint = Color(0xFFFF5252),
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED -> {
+                                                val isRead = msg.isRead
+                                                Icon(
+                                                    imageVector = Icons.Default.DoneAll,
+                                                    contentDescription = if (isRead) "Visualizada" else "Entregue",
+                                                    tint = if (isRead) Color(0xFF69F0AE) else if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+            }
             }
 
             // Barra de Gravação de Áudio Ativa Responsiva (Android 14 & 16)
@@ -1966,6 +2058,12 @@ fun ChatDetailScreen(
                         onCreateStickerRequested = {
                             createStickerPickerLauncher.launch("image/*")
                         },
+                        onEditStickerRequested = { id, bmp ->
+                            editingStickerId = id
+                            stickerBitmapToCreate = bmp
+                            showEmojiPicker = false
+                        },
+                        stickerCollectionRevision = stickerCollectionRevision,
                         onBackspace = {
                             if (inputText.isNotEmpty()) {
                                 val codePoints = inputText.codePoints().toArray()
@@ -2434,6 +2532,61 @@ fun ChatDetailScreen(
             )
         }
 
+        if (showFamilyRecoveryRevokeConfirm) {
+            AlertDialog(
+                onDismissRequest = { showFamilyRecoveryRevokeConfirm = false },
+                title = { Text("Revogar recuperação familiar") },
+                text = { Text("Cancelar a autorização de ${person.alias} para recuperar sua conta? Códigos ainda válidos serão anulados no servidor. O vínculo de conversa permanece.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showFamilyRecoveryRevokeConfirm = false
+                        onRevokeFamilyRecovery(person)
+                    }) { Text("Revogar permissão") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showFamilyRecoveryRevokeConfirm = false }) {
+                        Text("Manter")
+                    }
+                }
+            )
+        }
+        if (showFamilyRecoveryDelegateConfirm) {
+            AlertDialog(
+                onDismissRequest = { showFamilyRecoveryDelegateConfirm = false },
+                title = { Text("Autorizar familiar para recuperação") },
+                text = { Text("Você autoriza ${person.alias} a emitir uma chave de recuperação para sua identidade. Essa pessoa poderá ajudar a transferir sua conta para outro aparelho. Autorize somente alguém de absoluta confiança.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showFamilyRecoveryDelegateConfirm = false
+                        onAuthorizeFamilyRecovery(person)
+                    }) { Text("Autorizar familiar") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showFamilyRecoveryDelegateConfirm = false }) {
+                        Text("Cancelar")
+                    }
+                }
+            )
+        }
+        if (showFamilyRecoveryIssueConfirm) {
+            AlertDialog(
+                onDismissRequest = { showFamilyRecoveryIssueConfirm = false },
+                title = { Text("Emitir recuperação de identidade") },
+                text = { Text("Confirme pessoalmente que ${person.alias} solicitou a recuperação. Qualquer pessoa que receba o QR ou a chave temporária pode tentar transferir esta identidade. Não compartilhe com terceiros.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showFamilyRecoveryIssueConfirm = false
+                        onGenerateFamilyRecovery(person)
+                    }) { Text("Emitir chave de uso único") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showFamilyRecoveryIssueConfirm = false }) {
+                        Text("Cancelar")
+                    }
+                }
+            )
+        }
+
         // Diálogo para convidar/vincular papel de familiar com confirmação mútua
         if (showFamilyRoleDialog) {
             AlertDialog(
@@ -2442,7 +2595,7 @@ fun ChatDetailScreen(
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "A rede familiar requer confirmação mútua. Ao escolher o papel, um convite criptografado será enviado para ${person.alias} aceitar.",
+                            text = "A rede familiar requer confirmação mútua. A aceitação também permite configurar este familiar para auxiliar na recuperação de identidade. Você poderá revisar e autorizar essa função no menu da conversa.",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
                         FamilyRole.values().forEach { role ->
@@ -2560,6 +2713,7 @@ fun ChatDetailScreen(
                 },
                 onCreateSticker = { bmp ->
                     fullscreenImageBitmap = null
+                    editingStickerId = null
                     stickerBitmapToCreate = bmp
                 },
                 onDismiss = { fullscreenImageBitmap = null }
@@ -2569,12 +2723,18 @@ fun ChatDetailScreen(
         if (stickerBitmapToCreate != null) {
             StickerCreatorDialog(
                 sourceBitmap = stickerBitmapToCreate!!,
-                onStickerCreated = { stickerBmp, payload ->
+                existingStickerId = editingStickerId,
+                onStickerSaved = { stickerCollectionRevision++ },
+                onStickerCreated = { _, payload ->
                     stickerBitmapToCreate = null
+                    editingStickerId = null
                     onSendImageMessage(person, payload)
                     Toast.makeText(context, "⭐ Figurinha enviada com sucesso!", Toast.LENGTH_SHORT).show()
                 },
-                onDismiss = { stickerBitmapToCreate = null }
+                onDismiss = {
+                    stickerBitmapToCreate = null
+                    editingStickerId = null
+                }
             )
         }
 
@@ -2779,9 +2939,19 @@ fun ChatDetailScreen(
         if (showImportantMessagesDialog) {
             ImportantMessagesDialog(
                 peerAlias = person.alias,
-                importantMessages = messages.filter { it.isImportant },
+                importantMessages = messages.filter { it.isImportant && !it.isDeleted },
                 onUnmarkImportant = { msgId ->
                     onToggleImportantMessage?.invoke(person.technicalIdentityHash.ifBlank { person.id }, msgId)
+                },
+                onScheduleReminder = { msg ->
+                    reminderInitialText = when (msg.messageType) {
+                        MessageType.AUDIO -> "🎤 Áudio importante"
+                        MessageType.IMAGE -> "📷 Imagem importante"
+                        MessageType.DOCUMENT -> "📄 ${msg.fileName ?: "Documento importante"}"
+                        else -> msg.safeDisplayText
+                    }
+                    showImportantMessagesDialog = false
+                    showRemindersDialog = true
                 },
                 onDismiss = { showImportantMessagesDialog = false }
             )
@@ -2849,7 +3019,7 @@ fun ChatDetailScreen(
                                         if (canEdit) {
                                             if (isVip) {
                                                 editingMessage = msg
-                                                inputText = msg.text
+                                                inputText = msg.safeDisplayText
                                                 selectedMessageForActions = null
                                             } else {
                                                 selectedMessageForActions = null
@@ -2916,7 +3086,7 @@ fun ChatDetailScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(msg.text))
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(msg.safeDisplayText))
                                         selectedMessageForActions = null
                                         Toast.makeText(context, "Texto copiado!", Toast.LENGTH_SHORT).show()
                                     }
@@ -2941,7 +3111,7 @@ fun ChatDetailScreen(
                                     .fillMaxWidth()
                                     .clickable {
                                         selectedMessageForActions = null
-                                        reminderInitialText = msg.text
+                                        reminderInitialText = msg.safeDisplayText
                                         showRemindersDialog = true
                                     }
                             ) {
@@ -3696,25 +3866,33 @@ fun FullscreenImageViewerDialog(
 /**
  * Painel Interativo de Emojis e Figurinhas (Stickers) com Categorias, Acervo e Criador.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EmojiPickerPanel(
     onEmojiSelected: (String) -> Unit,
     onStickerSelected: (String) -> Unit = {},
     onCreateStickerRequested: () -> Unit = {},
+    onEditStickerRequested: (String, android.graphics.Bitmap) -> Unit = { _, _ -> },
+    stickerCollectionRevision: Int = 0,
     onBackspace: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val manager = remember(context) { StickerPersistenceManager(context) }
     var selectedCategory by remember { mutableIntStateOf(0) }
     var stickersRefreshKey by remember { mutableIntStateOf(0) }
+    var stickerToManage by remember { mutableStateOf<Pair<String, android.graphics.Bitmap>?>(null) }
+    var stickerToDelete by remember { mutableStateOf<String?>(null) }
 
-    val userStickers = remember(selectedCategory, stickersRefreshKey) {
-        if (selectedCategory == 5) {
-            StickerPersistenceManager(context).loadAllStickers()
-        } else {
-            emptyList()
-        }
+    // Decodificar toda a biblioteca na thread da interface causa travamentos e
+    // pressão de memória. Apenas miniaturas são carregadas no worker de IO.
+    val userStickers by produceState<List<Pair<String, android.graphics.Bitmap>>>(
+        initialValue = emptyList(), selectedCategory, stickersRefreshKey, stickerCollectionRevision
+    ) {
+        value = if (selectedCategory == 5) {
+            withContext(Dispatchers.IO) { manager.loadAllStickers() }
+        } else emptyList()
     }
 
     val categories = listOf(
@@ -3772,7 +3950,8 @@ fun EmojiPickerPanel(
         border = BorderStroke(1.dp, DarkCardElevated),
         modifier = modifier
             .fillMaxWidth()
-            .height(260.dp)
+            .heightIn(max = 260.dp)
+            .fillMaxHeight(0.35f)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Barra superior de categorias e controles
@@ -3784,11 +3963,12 @@ fun EmojiPickerPanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Categorias
-                Row(
+                LazyRow(
                     modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    categories.forEachIndexed { index, (icon, label) ->
+                    items(categories.size) { index ->
+                        val (icon, label) = categories[index]
                         val isSelected = selectedCategory == index
                         Surface(
                             shape = RoundedCornerShape(8.dp),
@@ -3843,9 +4023,16 @@ fun EmojiPickerPanel(
                         .fillMaxSize()
                         .padding(horizontal = 8.dp, vertical = 6.dp)
                 ) {
+                    Text(
+                        "Toque para enviar • Segure para editar ou excluir",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp),
+                        maxLines = 2
+                    )
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = 72.dp),
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -3887,10 +4074,21 @@ fun EmojiPickerPanel(
                                 modifier = Modifier
                                     .size(72.dp)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        val payload = StickerPersistenceManager(context).bitmapToStickerPayload(bmp)
-                                        onStickerSelected(payload)
-                                    },
+                                    .combinedClickable(
+                                        onClick = {
+                                            try {
+                                                val full = manager.loadSticker(id)
+                                                if (full != null) {
+                                                    onStickerSelected(manager.bitmapToStickerPayload(full))
+                                                } else {
+                                                    Toast.makeText(context, "Figurinha indisponível", Toast.LENGTH_SHORT).show()
+                                                }
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Não foi possível abrir figurinha", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        onLongClick = { stickerToManage = id to bmp }
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Image(
@@ -3930,6 +4128,52 @@ fun EmojiPickerPanel(
                     }
                 }
             }
+        }
+
+        // Pressionar uma figurinha oferece operações locais previsíveis, sem
+        // remover as imagens já enviadas em mensagens anteriores.
+        stickerToManage?.let { (id, _) ->
+            AlertDialog(
+                onDismissRequest = { stickerToManage = null },
+                title = { Text("Gerenciar figurinha", color = TextPrimary) },
+                text = { Text("Você pode editar ou excluir esta figurinha do seu acervo. Mensagens já enviadas não serão modificadas.",
+                    color = TextSecondary) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val full = manager.loadSticker(id)
+                        stickerToManage = null
+                        if (full != null) onEditStickerRequested(id, full)
+                        else Toast.makeText(context, "Figurinha indisponível", Toast.LENGTH_SHORT).show()
+                    }) { Text("Editar", color = RadarCyan) }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        stickerToManage = null
+                        stickerToDelete = id
+                    }) { Text("Excluir", color = AlertRed) }
+                },
+                containerColor = DarkSurface
+            )
+        }
+        stickerToDelete?.let { id ->
+            AlertDialog(
+                onDismissRequest = { stickerToDelete = null },
+                title = { Text("Excluir figurinha?", color = TextPrimary) },
+                text = { Text("A figurinha será excluída apenas do seu acervo. As que já foram enviadas continuarão no histórico.",
+                    color = TextSecondary) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val removed = manager.deleteSticker(id)
+                        stickerToDelete = null
+                        if (removed) stickersRefreshKey++
+                        else Toast.makeText(context, "Falha ao excluir figurinha", Toast.LENGTH_SHORT).show()
+                    }) { Text("Excluir", color = AlertRed) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { stickerToDelete = null }) { Text("Cancelar", color = RadarCyan) }
+                },
+                containerColor = DarkSurface
+            )
         }
     }
 }

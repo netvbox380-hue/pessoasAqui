@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import br.com.pessoasaqui.domain.model.OfferItem
+import br.com.pessoasaqui.core.link.WebLinkPolicy
 import br.com.pessoasaqui.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -40,9 +41,12 @@ import kotlinx.coroutines.launch
 @Composable
 fun OffersTab(
     offers: List<OfferItem>,
+    backendWarning: String? = null,
     myId: String = "",
     myAlias: String = "",
     onToggleMarkAuthor: (String) -> Unit,
+    isAuthorNearby: (String) -> Boolean = { false },
+    onOpenAuthorChat: (String) -> Unit = {},
     onPostOffer: (profession: String, description: String, imageBase64: String?, externalLink: String?) -> Unit = { _, _, _, _ -> },
     onUpdateOffer: (offerId: String, profession: String, description: String, imageBase64: String?, externalLink: String?) -> Unit = { _, _, _, _, _ -> },
     onDeleteOffer: (offerId: String) -> Unit = {}
@@ -59,6 +63,7 @@ fun OffersTab(
     var professionInput by remember { mutableStateOf("") }
     var descriptionInput by remember { mutableStateOf("") }
     var linkInput by remember { mutableStateOf("") }
+    var offerLinkError by remember { mutableStateOf<String?>(null) }
     var selectedImageBase64 by remember { mutableStateOf<String?>(null) }
 
     // Launcher para escolher imagem no Criar
@@ -67,7 +72,7 @@ fun OffersTab(
     ) { uri: Uri? ->
         uri?.let {
             coroutineScope.launch(Dispatchers.IO) {
-                val b64 = uriToBase64Image(context, it)
+                val b64 = br.com.pessoasaqui.core.offer.OfferPhotoCodec.fromUri(context, it)
                 if (b64 != null) {
                     selectedImageBase64 = b64
                 }
@@ -82,7 +87,7 @@ fun OffersTab(
     ) { uri: Uri? ->
         uri?.let {
             coroutineScope.launch(Dispatchers.IO) {
-                val b64 = uriToBase64Image(context, it)
+                val b64 = br.com.pessoasaqui.core.offer.OfferPhotoCodec.fromUri(context, it)
                 if (b64 != null) {
                     editImageBase64 = b64
                 }
@@ -93,9 +98,8 @@ fun OffersTab(
     fun isMine(offer: OfferItem): Boolean {
         val cleanMyId = myId.removePrefix("peer-").trim().uppercase()
         val cleanAuthorId = offer.authorId.removePrefix("peer-").trim().uppercase()
-        return (cleanMyId.isNotBlank() && cleanMyId == cleanAuthorId) ||
-                offer.proximityLabel.contains("Seu anúncio") ||
-                (myAlias.isNotBlank() && offer.authorAlias.trim().equals(myAlias.trim(), ignoreCase = true))
+        // Apelidos e rótulos não comprovam que um anúncio pertence ao usuário.
+        return cleanMyId.isNotBlank() && cleanMyId == cleanAuthorId
     }
 
     Box(
@@ -108,6 +112,14 @@ fun OffersTab(
                 .fillMaxSize()
                 .padding(horizontal = 16.dp)
         ) {
+            backendWarning?.let { warning ->
+                Text(
+                    text = "⚠ ${warning}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WarningAmber,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                )
+            }
             // Cabeçalho informativo
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -138,7 +150,7 @@ fun OffersTab(
                             )
                         )
                         Text(
-                            text = "Aparece a até 10m de você. Marque o profissional para manter contato sem limites de distância!",
+                            text = "Anúncios recebidos por Bluetooth ficam visíveis enquanto o profissional está próximo (~10 m). A internet não é necessária para a descoberta.",
                             style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary)
                         )
                     }
@@ -277,7 +289,7 @@ fun OffersTab(
                                             color = DarkCardElevated
                                         ) {
                                             Text(
-                                                text = "10m",
+                                                text = if (isAuthorNearby(offer.authorId)) "No Radar • ~10m" else "Anúncio da rede",
                                                 style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary),
                                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                             )
@@ -323,8 +335,12 @@ fun OffersTab(
                                 // Link Externo (se houver)
                                 if (!offer.externalLink.isNullOrBlank()) {
                                     val rawLink = offer.externalLink.trim()
-                                    val isWa = rawLink.contains("wa.me") || rawLink.contains("whatsapp")
-                                    val isInsta = rawLink.contains("instagram.com")
+                                    val validUrl = WebLinkPolicy.normalizeWebUrl(rawLink)
+                                    val host = validUrl?.let {
+                                        runCatching { java.net.URI(it).host.orEmpty() }.getOrDefault("")
+                                    }.orEmpty().lowercase()
+                                    val isWa = host == "wa.me" || host == "whatsapp.com" || host.endsWith(".whatsapp.com")
+                                    val isInsta = host == "instagram.com" || host.endsWith(".instagram.com")
                                     val label = when {
                                         isWa -> "Conversar via WhatsApp"
                                         isInsta -> "Ver Perfil no Instagram"
@@ -335,14 +351,12 @@ fun OffersTab(
                                     Spacer(modifier = Modifier.height(10.dp))
                                     OutlinedButton(
                                         onClick = {
-                                            val cleanUrl = if (!rawLink.startsWith("http://") && !rawLink.startsWith("https://")) {
-                                                "https://$rawLink"
+                                            if (validUrl != null) {
+                                                try { uriHandler.openUri(validUrl) }
+                                                catch (_: Exception) { offerLinkError = "Não foi possível abrir esse endereço." }
                                             } else {
-                                                rawLink
+                                                offerLinkError = "O endereço deste anúncio é inválido."
                                             }
-                                            try {
-                                                uriHandler.openUri(cleanUrl)
-                                            } catch (_: Exception) {}
                                         },
                                         modifier = Modifier.fillMaxWidth(),
                                         shape = RoundedCornerShape(10.dp),
@@ -417,27 +431,32 @@ fun OffersTab(
                                             Text("Excluir", fontWeight = FontWeight.Bold)
                                         }
                                     }
-                                } else {
+                                } else if (isAuthorNearby(offer.authorId)) {
                                     Button(
-                                        onClick = { onToggleMarkAuthor(offer.authorId) },
+                                        onClick = { onOpenAuthorChat(offer.authorId) },
                                         modifier = Modifier.fillMaxWidth(),
-                                        shape = RoundedCornerShape(10.dp),
                                         colors = ButtonDefaults.buttonColors(
-                                            containerColor = RadarCyanGlow,
-                                            contentColor = RadarCyan
+                                            containerColor = EmeraldGreen, contentColor = DeepBlack
                                         )
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Star,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = "Marcar Profissional para Conversar",
-                                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
-                                        )
+                                        Icon(Icons.Default.ChatBubbleOutline, contentDescription = null)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Conversar por Bluetooth")
                                     }
+                                    Spacer(Modifier.height(8.dp))
+                                    OutlinedButton(
+                                        onClick = { onToggleMarkAuthor(offer.authorId) },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(Icons.Default.StarBorder, contentDescription = null)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Solicitar conexão permanente")
+                                    }
+                                } else {
+                                    Text(
+                                        "Para conversar via Bluetooth, este profissional precisa aparecer no Radar. A conexão permanente depende da internet.",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                                    )
                                 }
                             }
                         }
@@ -459,7 +478,7 @@ fun OffersTab(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Text(
-                            text = "Seu anúncio ficará visível para qualquer pessoa em até 10 metros.",
+                            text = "Seu anúncio será salvo aqui e enviado a pessoas encontradas pelo rádio Bluetooth (~10 m). A publicação online só é confirmada com servidor disponível.",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
 
@@ -551,17 +570,23 @@ fun OffersTab(
                     Button(
                         onClick = {
                             if (professionInput.isNotBlank() && descriptionInput.isNotBlank()) {
-                                onPostOffer(
-                                    professionInput.trim(),
-                                    descriptionInput.trim(),
-                                    selectedImageBase64,
-                                    linkInput.trim().takeIf { it.isNotBlank() }
-                                )
-                                professionInput = ""
-                                descriptionInput = ""
-                                linkInput = ""
-                                selectedImageBase64 = null
-                                showPostDialog = false
+                                val rawLink = linkInput.trim().takeIf { it.isNotBlank() }
+                                val safeLink = rawLink?.let(WebLinkPolicy::normalizeWebUrl)
+                                if (rawLink != null && safeLink == null) {
+                                    offerLinkError = "Informe um endereço HTTP(S) válido, como exemplo.com.br ou wa.me/55..."
+                                } else {
+                                    onPostOffer(
+                                        professionInput.trim(),
+                                        descriptionInput.trim(),
+                                        selectedImageBase64,
+                                        safeLink
+                                    )
+                                    professionInput = ""
+                                    descriptionInput = ""
+                                    linkInput = ""
+                                    selectedImageBase64 = null
+                                    showPostDialog = false
+                                }
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = RadarCyan, contentColor = DeepBlack),
@@ -681,14 +706,20 @@ fun OffersTab(
                     Button(
                         onClick = {
                             if (editProfession.isNotBlank() && editDescription.isNotBlank()) {
-                                onUpdateOffer(
-                                    offerToEdit.id,
-                                    editProfession.trim(),
-                                    editDescription.trim(),
-                                    editImageBase64,
-                                    editLink.trim().takeIf { it.isNotBlank() }
-                                )
-                                editingOffer = null
+                                val rawLink = editLink.trim().takeIf { it.isNotBlank() }
+                                val safeLink = rawLink?.let(WebLinkPolicy::normalizeWebUrl)
+                                if (rawLink != null && safeLink == null) {
+                                    offerLinkError = "Informe um endereço HTTP(S) válido."
+                                } else {
+                                    onUpdateOffer(
+                                        offerToEdit.id,
+                                        editProfession.trim(),
+                                        editDescription.trim(),
+                                        editImageBase64,
+                                        safeLink
+                                    )
+                                    editingOffer = null
+                                }
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = RadarCyan, contentColor = DeepBlack),
@@ -703,6 +734,17 @@ fun OffersTab(
                     }
                 },
                 containerColor = DarkSurface
+            )
+        }
+
+        offerLinkError?.let { error ->
+            AlertDialog(
+                onDismissRequest = { offerLinkError = null },
+                title = { Text("Endereço externo") },
+                text = { Text(error) },
+                confirmButton = {
+                    TextButton(onClick = { offerLinkError = null }) { Text("Entendi") }
+                }
             )
         }
 

@@ -10,7 +10,10 @@ import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -52,7 +55,9 @@ enum class StickerShape {
 fun StickerCreatorDialog(
     sourceBitmap: Bitmap,
     onStickerCreated: (Bitmap, String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    existingStickerId: String? = null,
+    onStickerSaved: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val stickerManager = remember { StickerPersistenceManager(context) }
@@ -65,6 +70,23 @@ fun StickerCreatorDialog(
     var offsetY by remember { mutableFloatStateOf(0f) }
 
     val sourceImageBitmap = remember(sourceBitmap) { sourceBitmap.asImageBitmap() }
+
+    fun saveToCollection(stickerBmp: Bitmap): Boolean {
+        return try {
+            if (existingStickerId != null) {
+                check(stickerManager.updateSticker(existingStickerId, stickerBmp)) {
+                    "Não foi possível atualizar a figurinha original"
+                }
+            } else {
+                stickerManager.saveSticker(stickerBmp)
+            }
+            onStickerSaved()
+            true
+        } catch (e: Exception) {
+            Toast.makeText(context, e.message ?: "Falha ao salvar figurinha", Toast.LENGTH_LONG).show()
+            false
+        }
+    }
 
     // Gera o Bitmap final da figurinha processado
     fun generateFinalSticker(): Bitmap {
@@ -150,9 +172,10 @@ fun StickerCreatorDialog(
                     .fillMaxSize()
                     .statusBarsPadding()
                     .navigationBarsPadding()
+                    .verticalScroll(rememberScrollState())
                     .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
                 // Barra Superior do Criador
                 Row(
@@ -166,7 +189,7 @@ fun StickerCreatorDialog(
 
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = "⭐ Criar Figurinha",
+                            text = if (existingStickerId == null) "⭐ Criar Figurinha" else "✏️ Editar Figurinha",
                             color = WarningAmber,
                             fontWeight = FontWeight.Bold,
                             fontSize = 17.sp
@@ -192,7 +215,9 @@ fun StickerCreatorDialog(
                 // Área Central: Enquadramento e Pré-visualização da Figurinha (240dp x 240dp)
                 Box(
                     modifier = Modifier
-                        .size(240.dp)
+                        .widthIn(max = 240.dp)
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
                         .clip(
                             when (selectedShape) {
                                 StickerShape.CIRCLE -> CircleShape
@@ -246,6 +271,7 @@ fun StickerCreatorDialog(
                 ) {
                     // Seleção do Formato da Figurinha
                     Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -325,43 +351,51 @@ fun StickerCreatorDialog(
                     }
 
                     // Ações Finais: Salvar no Acervo / Enviar no Chat
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         // Salvar no Acervo de Figurinhas
                         OutlinedButton(
                             onClick = {
                                 val stickerBmp = generateFinalSticker()
-                                val id = stickerManager.saveSticker(stickerBmp)
-                                Toast.makeText(context, "⭐ Figurinha salva no seu pacote de figurinhas!", Toast.LENGTH_SHORT).show()
-                                onDismiss()
+                                if (saveToCollection(stickerBmp)) {
+                                    Toast.makeText(context, "⭐ Figurinha salva no seu acervo!", Toast.LENGTH_SHORT).show()
+                                    onDismiss()
+                                }
                             },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                             shape = RoundedCornerShape(18.dp),
                             border = androidx.compose.foundation.BorderStroke(1.dp, WarningAmber)
                         ) {
                             Icon(Icons.Default.BookmarkBorder, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Salvar no Acervo", color = WarningAmber, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text(if (existingStickerId == null) "Salvar no Acervo" else "Salvar Edição",
+                                color = WarningAmber, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
 
                         // Enviar Agora no Chat
                         Button(
                             onClick = {
                                 val stickerBmp = generateFinalSticker()
-                                val payload = stickerManager.bitmapToStickerPayload(stickerBmp)
-                                stickerManager.saveSticker(stickerBmp) // Também salva no acervo para reutilizar
-                                onStickerCreated(stickerBmp, payload)
-                                onDismiss()
+                                if (saveToCollection(stickerBmp)) {
+                                    try {
+                                        val payload = stickerManager.bitmapToStickerPayload(stickerBmp)
+                                        onStickerCreated(stickerBmp, payload)
+                                        onDismiss()
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, e.message ?: "Falha ao enviar", Toast.LENGTH_LONG).show()
+                                    }
+                                }
                             },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                             shape = RoundedCornerShape(18.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen)
                         ) {
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Enviar Figurinha", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("Enviar Figurinha", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                                maxLines = 2)
                         }
                     }
                 }

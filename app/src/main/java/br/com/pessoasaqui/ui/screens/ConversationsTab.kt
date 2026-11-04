@@ -13,17 +13,24 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import br.com.pessoasaqui.core.qrcode.InviteLinkParser
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.barcode.common.Barcode
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import br.com.pessoasaqui.core.chat.ConversationPriority
 import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.ContactTag
 import br.com.pessoasaqui.domain.model.MessageType
@@ -50,11 +57,70 @@ fun ConversationsTab(
 ) {
     var showPasteInviteDialog by remember { mutableStateOf(false) }
     var showConversationsDrawer by remember { mutableStateOf(false) }
+    var scannedInviteText by remember { mutableStateOf("") }
+    var isScanningInviteQr by remember { mutableStateOf(false) }
+    var qrScannerError by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val inviteScanner = remember(context) {
+        val options = GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .enableAutoZoom()
+            .build()
+        GmsBarcodeScanning.getClient(context, options)
+    }
+
+    fun scanInviteQr() {
+        if (isScanningInviteQr) return
+        isScanningInviteQr = true
+        qrScannerError = null
+        inviteScanner.startScan()
+            .addOnSuccessListener { barcode ->
+                val raw = barcode.rawValue.orEmpty()
+                if (InviteLinkParser.parse(raw) != null) {
+                    scannedInviteText = raw
+                    showConversationsDrawer = false
+                    showPasteInviteDialog = true
+                } else {
+                    qrScannerError = "Este QR não contém um convite oficial válido do PessoasAqui."
+                }
+            }
+            .addOnFailureListener {
+                qrScannerError = "Não foi possível iniciar o leitor. Verifique os Serviços do Google Play ou use Colar Convite."
+            }
+            .addOnCompleteListener { isScanningInviteQr = false }
+    }
     var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var showAllImportant by rememberSaveable { mutableStateOf(false) }
 
     val realConnectedPeople = remember(connectedPeople) {
         connectedPeople.filter { !it.id.startsWith("sim-", ignoreCase = true) }
+    }
+    // Inclui o suporte oficial na mesma política de prioridades, sem
+    // duplicá-lo em uma linha fixa acima das conversas não lidas.
+    val supportHistory = remember(privateChats) {
+        privateChats["suporte-oficial"]
+            ?: privateChats["peer-suporte-oficial"]
+            ?: privateChats["SUPORTE-OFICIAL"]
+            ?: emptyList()
+    }
+    val contactsForInbox = remember(connectedPeople, supportHistory) {
+        if (supportHistory.isEmpty() || connectedPeople.any {
+                ConversationPriority.canonicalPeerId(it.technicalIdentityHash.ifBlank { it.id }) == "SUPORTE-OFICIAL"
+            }
+        ) connectedPeople else connectedPeople + NearbyPerson(
+            id = "suporte-oficial",
+            technicalIdentityHash = "suporte-oficial",
+            alias = "Suporte PessoasAqui",
+            estimatedDistanceMeters = 0.0,
+            proximityLabel = "Canal Oficial de Atendimento",
+            isMutualConnection = true
+        )
+    }
+    // Computado diretamente do histórico local criptografado recuperado na abertura
+    // do app. Não modifica nenhuma mensagem ou a ordem do armazenamento.
+    val priority = remember(contactsForInbox, privateChats) {
+        ConversationPriority.build(contactsForInbox, privateChats)
     }
 
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
@@ -148,15 +214,28 @@ fun ConversationsTab(
         }
 
         if (showDeleteConfirmDialog) {
+            val importantAtRisk = priority.orderedConversations
+                .filter { it.contact.id in selectedContactIds }
+                .sumOf { it.importantCount }
             AlertDialog(
                 onDismissRequest = { showDeleteConfirmDialog = false },
                 title = { Text("Excluir conversas?", color = TextPrimary, fontWeight = FontWeight.Bold) },
                 text = {
-                    Text(
-                        "Deseja excluir as ${selectedContactIds.size} conversa(s) selecionada(s)? Isso apagará todo o histórico de mensagens e desfará os vínculos no seu aparelho.",
-                        color = TextSecondary,
-                        fontSize = 13.sp
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Deseja excluir as ${selectedContactIds.size} conversa(s) selecionada(s)? Isso apagará todo o histórico de mensagens e desfará os vínculos no seu aparelho.",
+                            color = TextSecondary,
+                            fontSize = 13.sp
+                        )
+                        if (importantAtRisk > 0) {
+                            Text(
+                                "⚠️ Atenção: ${importantAtRisk} mensagem(ns) importante(s) marcada(s) com estrela também serão apagadas. Revise seus acordos e lembranças antes de continuar.",
+                                color = WarningAmber,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 },
                 confirmButton = {
                     Button(
@@ -280,13 +359,36 @@ fun ConversationsTab(
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("Criar Convite Criptografado", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
-                                    Text("Link seguro de uso único para compartilhar", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                    Text("Criar Convite de Uso Único", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("Link para longe + QR para quem está perto", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
                                 }
                             }
                         }
 
-                        // 2. Colar Convite
+                        // 2. Ler QR de convite presencial
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkCard,
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable(enabled = !isScanningInviteQr) { scanInviteQr() }
+                        ) {
+                            Row(modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.QrCodeScanner,
+                                    contentDescription = "Ler QR de convite",
+                                    tint = RadarCyan, modifier = Modifier.size(30.dp))
+                                Spacer(Modifier.width(16.dp))
+                                Column {
+                                    Text("Ler QR de Convite", color = TextPrimary,
+                                        fontWeight = FontWeight.Bold)
+                                    Text("Aponte a câmera para o QR mostrado por alguém perto.",
+                                        color = TextSecondary,
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+
+                        // 3. Colar Convite
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = DarkCard,
@@ -329,8 +431,20 @@ fun ConversationsTab(
             )
         }
 
+        if (qrScannerError != null) {
+            AlertDialog(
+                onDismissRequest = { qrScannerError = null },
+                title = { Text("Leitor de QR", color = TextPrimary) },
+                text = { Text(qrScannerError ?: "", color = TextSecondary) },
+                confirmButton = {
+                    TextButton(onClick = { qrScannerError = null }) { Text("Entendi") }
+                },
+                containerColor = DarkSurface
+            )
+        }
+
         if (showPasteInviteDialog) {
-                    var pastedInviteText by remember { mutableStateOf("") }
+                    var pastedInviteText by remember(scannedInviteText) { mutableStateOf(scannedInviteText) }
                     var isRedeeming by remember { mutableStateOf(false) }
                     var pasteError by remember { mutableStateOf<String?>(null) }
                     val clipboard = LocalClipboardManager.current
@@ -448,13 +562,6 @@ fun ConversationsTab(
                     )
                 }
 
-                val supportHistory = remember(privateChats) {
-                    privateChats["suporte-oficial"]
-                        ?: privateChats["peer-suporte-oficial"]
-                        ?: privateChats["SUPORTE-OFICIAL"]
-                        ?: emptyList()
-                }
-
                 if (realConnectedPeople.isEmpty() && supportHistory.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -496,11 +603,11 @@ fun ConversationsTab(
                                         )
                                     )
                                     Text(
-                                        text = "1. Na aba 'Pessoas' ou no 'Mural Local', toque na estrela ★ para marcar alguém.",
+                                        text = "1. Para conversar por Bluetooth até ~10m, abra a aba Pessoas e toque em Conversar: não precisa de convite.",
                                         style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                                     )
                                     Text(
-                                        text = "2. Quando a outra pessoa também marcar você, a conversa privada à distância se abre aqui automaticamente!",
+                                        text = "2. Se quiserem continuar conversando além dos 10m, um envia convite de conexão mútua e o outro aceita.",
                                         style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                                     )
                                     Text(
@@ -543,6 +650,17 @@ fun ConversationsTab(
                                             Text("Colar Convite", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                         }
                                     }
+                                    OutlinedButton(
+                                        onClick = { scanInviteQr() },
+                                        enabled = !isScanningInviteQr,
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                                        border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.5f))
+                                    ) {
+                                        Icon(Icons.Default.QrCodeScanner, contentDescription = null,
+                                            tint = RadarCyan)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Ler QR de um convite próximo", color = RadarCyan)
+                                    }
                                 }
                             }
                         }
@@ -553,104 +671,91 @@ fun ConversationsTab(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         contentPadding = PaddingValues(bottom = 16.dp)
                     ) {
-                        if (supportHistory.isNotEmpty()) {
-                            item(key = "suporte-oficial") {
-                                val lastMsg = supportHistory.last()
+                        // As estrelas são conteúdo, não só um filtro da lista:
+                        // o usuário revê seus próprios acordos e datas ao entrar.
+                        if (priority.highlights.isNotEmpty()) {
+                            item(key = "important-title") {
+                                Column(modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Star, contentDescription = null,
+                                            tint = WarningAmber, modifier = Modifier.size(20.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("⭐ Mensagens importantes (${priority.highlights.size})",
+                                            color = WarningAmber,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold)
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                    Text("Seus acordos e lembranças ficam em primeiro lugar. Para alertas com data, agende um lembrete na mensagem.",
+                                        color = TextSecondary,
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            val visibleImportant = if (showAllImportant) priority.highlights else priority.highlights.take(4)
+                            items(
+                                items = visibleImportant,
+                                key = { "star-${ConversationPriority.canonicalPeerId(it.contact.technicalIdentityHash.ifBlank { it.contact.id })}-${it.message.id}" }
+                            ) { highlight ->
                                 Card(
-                                    shape = RoundedCornerShape(16.dp),
-                                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
-                                    border = BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.5f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            onOpenChat(
-                                                NearbyPerson(
-                                                    id = "suporte-oficial",
-                                                    technicalIdentityHash = "suporte-oficial",
-                                                    alias = "Suporte PessoasAqui",
-                                                    estimatedDistanceMeters = 0.0,
-                                                    proximityLabel = "Canal Oficial de Atendimento",
-                                                    isMutualConnection = true
-                                                )
-                                            )
-                                        }
+                                    modifier = Modifier.fillMaxWidth().clickable { onOpenChat(highlight.contact) },
+                                    colors = CardDefaults.cardColors(containerColor = DarkCardElevated),
+                                    border = BorderStroke(1.dp, WarningAmber.copy(alpha = 0.55f)),
+                                    shape = RoundedCornerShape(14.dp)
                                 ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(14.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(46.dp)
-                                                .clip(CircleShape)
-                                                .background(EmeraldGreen.copy(alpha = 0.15f)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Headset,
-                                                contentDescription = null,
-                                                tint = EmeraldGreen,
-                                                modifier = Modifier.size(24.dp)
-                                            )
+                                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                                        Row(modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically) {
+                                            Text(highlight.contact.alias, color = WarningAmber,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.weight(1f),
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(formatSmartDateTime(highlight.message.timestampMs),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = TextSecondary)
                                         }
-
-                                        Spacer(modifier = Modifier.width(12.dp))
-
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text(
-                                                    text = "Suporte PessoasAqui",
-                                                    style = MaterialTheme.typography.titleMedium.copy(
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = TextPrimary
-                                                    )
-                                                )
-                                                Surface(
-                                                    shape = RoundedCornerShape(6.dp),
-                                                    color = EmeraldGreen.copy(alpha = 0.2f),
-                                                    border = BorderStroke(1.dp, EmeraldGreen)
-                                                ) {
-                                                    Text(
-                                                        text = "OFICIAL",
-                                                        color = EmeraldGreen,
-                                                        fontSize = 9.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
-
-                                            Spacer(modifier = Modifier.height(4.dp))
-
-                                            Text(
-                                                text = lastMsg.text,
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    color = EmeraldGreen,
-                                                    fontWeight = FontWeight.Medium
-                                                ),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
+                                        Spacer(Modifier.height(5.dp))
+                                        Text(
+                                            text = when (highlight.message.messageType) {
+                                                MessageType.IMAGE -> "📷 Figurinha ou imagem importante"
+                                                MessageType.AUDIO -> "🎤 Áudio importante"
+                                                MessageType.DOCUMENT -> "📄 Documento importante"
+                                                else -> highlight.message.safeDisplayText
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = TextPrimary,
+                                            maxLines = 3,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Text("Abrir conversa para revisar", style = MaterialTheme.typography.labelSmall,
+                                            color = RadarCyan)
                                     }
                                 }
                             }
+                            if (priority.highlights.size > 4) {
+                                item(key = "important-expand") {
+                                    TextButton(
+                                        onClick = { showAllImportant = !showAllImportant },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(if (showAllImportant) "Mostrar menos" else
+                                            "Ver todas as ${priority.highlights.size} mensagens importantes",
+                                            color = WarningAmber)
+                                    }
+                                }
+                            }
+                            item(key = "important-divider") {
+                                HorizontalDivider(color = WarningAmber.copy(alpha = 0.2f))
+                            }
                         }
-
-                        items(realConnectedPeople, key = { it.id }) { contact ->
-                            // Busca histórico privado dessa pessoa para exibir prévia da última mensagem
-                            val history = privateChats[contact.id]
-                                ?: privateChats[contact.technicalIdentityHash]
-                                ?: emptyList()
+                        items(priority.orderedConversations, key = { "conversation-${it.contact.id}" }) { conversation ->
+                            val contact = conversation.contact
+                            val history = conversation.messages
                             val lastMsg = history.lastOrNull()
 
-                            val isSelected = contact.id in selectedContactIds
+                            val isOfficialSupport = ConversationPriority.canonicalPeerId(
+                                contact.technicalIdentityHash.ifBlank { contact.id }) == "SUPORTE-OFICIAL"
+                            val isSelected = !isOfficialSupport && contact.id in selectedContactIds
 
                             Card(
                                 shape = RoundedCornerShape(16.dp),
@@ -665,10 +770,14 @@ fun ConversationsTab(
                                     .pointerInput(contact.id, selectedContactIds.isNotEmpty()) {
                                         detectTapGestures(
                                             onLongPress = {
-                                                selectedContactIds = if (isSelected) selectedContactIds - contact.id else selectedContactIds + contact.id
+                                                if (!isOfficialSupport) {
+                                                    selectedContactIds = if (isSelected) selectedContactIds - contact.id else selectedContactIds + contact.id
+                                                }
                                             },
                                             onTap = {
-                                                if (selectedContactIds.isNotEmpty()) {
+                                                if (isOfficialSupport) {
+                                                    onOpenChat(contact)
+                                                } else if (selectedContactIds.isNotEmpty()) {
                                                     selectedContactIds = if (isSelected) selectedContactIds - contact.id else selectedContactIds + contact.id
                                                 } else {
                                                     onOpenChat(contact)
@@ -701,13 +810,14 @@ fun ConversationsTab(
                                             .background(Color(contact.avatarColorHex).copy(alpha = 0.2f)),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        Text(
-                                            text = contact.alias.take(1).uppercase(),
-                                            style = MaterialTheme.typography.titleMedium.copy(
-                                                color = Color(contact.avatarColorHex),
-                                                fontWeight = FontWeight.Bold
+                                        if (isOfficialSupport) {
+                                            Icon(Icons.Default.Headset, contentDescription = "Canal de suporte oficial",
+                                                tint = EmeraldGreen, modifier = Modifier.size(26.dp))
+                                        } else {
+                                            br.com.pessoasaqui.ui.components.PeerPrivacyAvatar(
+                                                person = contact, modifier = Modifier.fillMaxSize()
                                             )
-                                        )
+                                        }
                                     }
 
                                     Spacer(modifier = Modifier.width(12.dp))
@@ -731,6 +841,11 @@ fun ConversationsTab(
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
+                                                if (isOfficialSupport) {
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("OFICIAL", color = EmeraldGreen,
+                                                        style = MaterialTheme.typography.labelSmall)
+                                                }
 
                                                 val cClean = contact.technicalIdentityHash.ifBlank { contact.id }.removePrefix("peer-").trim().uppercase()
                                                 val cTagIds = contactTagAssignments[cClean] ?: emptySet()
@@ -775,7 +890,7 @@ fun ConversationsTab(
                                             lastMsg.messageType == MessageType.IMAGE -> "📷 Foto enviada"
                                             lastMsg.messageType == MessageType.AUDIO -> "🎤 Áudio (${lastMsg.audioDurationSeconds}s)"
                                             lastMsg.messageType == MessageType.DOCUMENT -> "📄 ${lastMsg.fileName ?: "Documento"}"
-                                            else -> lastMsg.text
+                                            else -> lastMsg.safeDisplayText
                                         }
 
                                         Text(
@@ -786,6 +901,21 @@ fun ConversationsTab(
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
+                                        if (conversation.importantCount > 0 || conversation.unreadCount > 0) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                buildString {
+                                                    if (conversation.importantCount > 0) append("⭐ ${conversation.importantCount} importante(s)")
+                                                    if (conversation.unreadCount > 0) {
+                                                        if (isNotEmpty()) append("  •  ")
+                                                        append("● ${conversation.unreadCount} não lida(s)")
+                                                    }
+                                                },
+                                                color = if (conversation.importantCount > 0) WarningAmber else RadarCyan,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 2
+                                            )
+                                        }
                                     }
 
                                     Spacer(modifier = Modifier.width(8.dp))

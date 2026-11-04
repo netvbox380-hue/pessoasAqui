@@ -13,8 +13,8 @@ android {
         applicationId = "br.com.pessoasaqui"
         minSdk = 24
         targetSdk = 36
-        versionCode = 26
-        versionName = "1.3.0"
+        versionCode = 27
+        versionName = "1.3.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -24,10 +24,15 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = file("pessoasaqui-release-key.jks")
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "pessoasaqui2026"
+            // A chave oficial fica fora do Git. Não há senha padrão ou fallback.
+            // Antigravity define PESSOASAQUI_UPLOAD_KEYSTORE no Windows.
+            storeFile = file(
+                System.getenv("PESSOASAQUI_UPLOAD_KEYSTORE")
+                    ?.takeIf { it.isNotBlank() } ?: "pessoasaqui-release-key.jks"
+            )
+            storePassword = System.getenv("KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
             keyAlias = "pessoasaqui"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: "pessoasaqui2026"
+            keyPassword = System.getenv("KEY_PASSWORD")?.takeIf { it.isNotBlank() }
         }
     }
 
@@ -97,6 +102,7 @@ dependencies {
 
     // QR Code Generation & Scanning
     implementation(libs.zxing.core)
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 
     // Google Play Billing In-App Purchases & Subscriptions
     implementation(libs.google.billing.ktx)

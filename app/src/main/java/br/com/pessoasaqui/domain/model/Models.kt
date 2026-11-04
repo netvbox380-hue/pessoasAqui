@@ -55,7 +55,9 @@ data class NearbyPerson(
     val isMutualConnection: Boolean = false, // True se ambos se marcaram (permite distância ilimitada)
     val isFamily: Boolean = false,
     val familyRole: FamilyRole? = null,
-    val isPhotoVisible: Boolean = false, // Foto oculta por padrão para desconhecidos
+    val isPhotoVisible: Boolean = false, // Legado. A foto real exige relação mútua válida.
+    val animalAvatarId: String? = null, // Apenas animal escolhido é público no BLE.
+    val mutualProfilePhotoBase64: String? = null, // E2EE, exibido EXCLUSIVAMENTE aos mútuos.
     val avatarColorHex: Long = 0xFF00E5FF,
     val lastSeenEpochMs: Long = System.currentTimeMillis(),
     val hasPendingFamilyRequest: Boolean = false,
@@ -63,6 +65,16 @@ data class NearbyPerson(
     val isOnline: Boolean = false
 ) {
     val isOnlineNow: Boolean get() = isOnline || (System.currentTimeMillis() - lastSeenEpochMs) < 60_000L
+}
+
+/**
+ * Status de entrega de mensagem no transporte direto ou em nuvem.
+ */
+@Serializable
+enum class MessageDeliveryStatus {
+    PENDING,   // Criada localmente, aguardando envio/ACK do destinatário
+    DELIVERED, // Entregue com confirmação criptográfica autenticada (ACK)
+    FAILED     // Falha definitiva de entrega (timeout, desconexão ou erro de autenticação)
 }
 
 /**
@@ -88,8 +100,20 @@ data class ChatMessage(
     val isImportant: Boolean = false,
     val isEdited: Boolean = false,
     val editedTimestampMs: Long = 0L,
-    val isDeleted: Boolean = false
-)
+    val isDeleted: Boolean = false,
+    val deliveryStatus: MessageDeliveryStatus = MessageDeliveryStatus.DELIVERED
+) {
+    /**
+     * Protege a interface contra registros cifrados antigos gravados quando a
+     * decifragem falhava. Não altera nem apaga o histórico criptografado.
+     */
+    val safeDisplayText: String
+        get() = if (text.startsWith("ENC_ECDH:") || text.startsWith("ENC:")) {
+            "🔒 Conteúdo criptografado indisponível"
+        } else {
+            text
+        }
+}
 
 /**
  * Estado de Chamada Criptografada Ativa (Áudio / Vídeo)

@@ -3,6 +3,8 @@ package br.com.pessoasaqui.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -16,12 +18,25 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import br.com.pessoasaqui.core.proximity.BleConstants
+import br.com.pessoasaqui.core.qrcode.QrCodeGenerator
+import br.com.pessoasaqui.core.qrcode.InviteLinkParser
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import br.com.pessoasaqui.core.subscription.SubscriptionTier
 import br.com.pessoasaqui.data.repository.PessoasAquiRepository
 import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import br.com.pessoasaqui.ui.components.AnimalGallery
+import br.com.pessoasaqui.ui.components.AnimalPortrait
+import br.com.pessoasaqui.ui.components.AvatarVisual
 import kotlinx.coroutines.flow.MutableStateFlow
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -39,14 +54,35 @@ fun MainScreen(
     var showIntentSelector by remember { mutableStateOf(false) }
     var showPlayground by remember { mutableStateOf(false) }
     var showTopMenu by remember { mutableStateOf(false) }
+    var showAvatarGallery by remember { mutableStateOf(false) }
+    var avatarError by remember { mutableStateOf<String?>(null) }
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var tempAliasInput by remember { mutableStateOf("") }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
     var isCreatingInvite by remember { mutableStateOf(false) }
+    var generatedInviteUrl by remember { mutableStateOf<String?>(null) }
+    var inviteGenerationError by remember { mutableStateOf<String?>(null) }
+    val clipboardManager = LocalClipboardManager.current
     var showSupportDialog by remember { mutableStateOf(false) }
 
     val people by repository.discoveredPeople.collectAsState()
+    val scope = rememberCoroutineScope()
     val offers by repository.localOffers.collectAsState()
+    val animalAvatar by repository.myAnimalAvatar.collectAsState()
+    val realProfilePhoto by repository.myRealPhoto.collectAsState()
+    val offerSyncError by repository.offerSyncError.collectAsState()
+    val profilePhotoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    repository.setMyRealPhotoFromUri(uri)
+                }
+                if (!ok) avatarError = "Não foi possível importar a foto. Escolha JPEG ou PNG menor."
+            }
+        }
+    }
     val localMessages by repository.localChatMessages.collectAsState()
     val privateChats by repository.privateChats.collectAsState()
     val currentIntent by repository.currentIntent.collectAsState()
@@ -62,7 +98,6 @@ fun MainScreen(
     val accountBanned by repository.accountBannedAlert.collectAsState()
     val contactTags by repository.contactTags.collectAsState()
     val contactTagAssignments by repository.contactTagAssignments.collectAsState()
-    val scope = rememberCoroutineScope()
     var showVipDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
     var showMainBroadcastDialog by remember { mutableStateOf(false) }
@@ -84,6 +119,11 @@ fun MainScreen(
         }
     }
 
+    // A adaptação considera os limites atuais da janela (multiwindow/dobráveis).
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    val windowMaxWidth = maxWidth
+    val useNavigationRail = windowMaxWidth >= 600.dp
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -104,7 +144,8 @@ fun MainScreen(
                 },
                 actions = {
                     // Badge indicadora de Assinante VIP
-                    if (subscriptionTier == SubscriptionTier.PRO_VIP) {
+                    if ((useNavigationRail || windowMaxWidth >= 470.dp) &&
+                        subscriptionTier == SubscriptionTier.PRO_VIP) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = WarningAmber.copy(alpha = 0.15f),
@@ -137,11 +178,13 @@ fun MainScreen(
                         }
                     }
 
-                    // Chip com o perfil do usuário ativo neste aparelho
-                    Surface(
+                    // Em janelas estreitas a ação permanece no menu de opções;
+                    // não comprimir o título nem cortar as ações da barra.
+                    if (useNavigationRail || windowMaxWidth >= 390.dp) Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = RadarCyan.copy(alpha = 0.12f),
                         modifier = Modifier
+                            .widthIn(max = if (useNavigationRail) 240.dp else 120.dp)
                             .clickable {
                                 tempAliasInput = currentAlias
                                 showEditProfileDialog = true
@@ -165,7 +208,8 @@ fun MainScreen(
                                     fontWeight = FontWeight.Bold,
                                     color = RadarCyan
                                 ),
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -185,7 +229,31 @@ fun MainScreen(
                             onDismissRequest = { showTopMenu = false },
                             modifier = Modifier.background(DarkSurface)
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Minha foto de perfil • Animais / Foto real") },
+                                leadingIcon = { Icon(Icons.Default.AccountCircle, contentDescription = null) },
+                                onClick = { showTopMenu = false; showAvatarGallery = true }
+                            )
                             if (selectedTabIndex == 1) {
+                                // Recursos continuam acessíveis quando os chips
+                                // não cabem na barra superior de um aparelho pequeno.
+                                DropdownMenuItem(
+                                    text = { Text("Editar Meu Apelido", color = TextPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = RadarCyan) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        tempAliasInput = currentAlias
+                                        showEditProfileDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Plano VIP", color = WarningAmber) },
+                                    leadingIcon = { Icon(Icons.Default.WorkspacePremium, contentDescription = null, tint = WarningAmber) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showVipDialog = true
+                                    }
+                                )
                                 // Menu contextual da tela de Conversas: Lembretes e Transmissão
                                 DropdownMenuItem(
                                     text = { Text("Agendar Lembrete", color = TextPrimary) },
@@ -283,7 +351,7 @@ fun MainScreen(
             )
         },
         bottomBar = {
-            NavigationBar(
+            if (!useNavigationRail) NavigationBar(
                 containerColor = DarkSurface,
                 tonalElevation = 8.dp
             ) {
@@ -356,11 +424,46 @@ fun MainScreen(
         },
         containerColor = DeepBlack
     ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
+        Row(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            if (useNavigationRail) {
+                NavigationRail(containerColor = DarkSurface) {
+                    Spacer(Modifier.height(12.dp))
+                    listOf(
+                        Triple(0, Icons.Default.People, "Pessoas"),
+                        Triple(1, Icons.Default.ChatBubble, "Conversas"),
+                        Triple(2, Icons.Default.Campaign, "Ofertas")
+                    ).forEach { (tab, icon, title) ->
+                        NavigationRailItem(
+                            selected = selectedTabIndex == tab,
+                            onClick = {
+                                selectedTabIndex = tab
+                                onTabSelected(tab)
+                            },
+                            icon = { Icon(icon, contentDescription = title) },
+                            label = { Text(title) },
+                            colors = NavigationRailItemDefaults.colors(
+                                selectedIconColor = RadarCyan,
+                                selectedTextColor = RadarCyan,
+                                unselectedIconColor = TextSecondary,
+                                unselectedTextColor = TextSecondary
+                            )
+                        )
+                    }
+                }
+            }
+
+            Box(
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                contentAlignment = Alignment.TopCenter
+            ) {
+            // Limita a largura das áreas de conteúdo em tablets/desktop sem
+            // impor zoom ou densidade artificial a telas pequenas.
+            Box(
+                modifier = Modifier
+                    .widthIn(max = if (selectedTabIndex == 1) 980.dp else 1120.dp)
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+            ) {
             // Se a identidade deste aparelho foi transferida para outro aparelho (Seção 18)
             if (isSessionRevoked) {
                 Box(
@@ -447,68 +550,30 @@ fun MainScreen(
                                 isCreatingInvite = true
                                 repository.createOneTimeInviteLink { url ->
                                     isCreatingInvite = false
-                                    if (url != null) {
-                                        val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                            putExtra(android.content.Intent.EXTRA_SUBJECT, "Convite Seguro - PessoasAqui")
-                                            putExtra(
-                                                android.content.Intent.EXTRA_TEXT,
-                                                "Olá! Estou te convidando para nos conectarmos no PessoasAqui com conversa privada, chamadas de voz e vídeo criptografadas à distância.\n\nToque no link abaixo para aceitar meu convite de conexão mútua (link seguro de uso único):\n$url"
-                                            )
-                                            type = "text/plain"
-                                        }
-                                        val shareIntent = android.content.Intent.createChooser(sendIntent, "Compartilhar Convite Seguro")
-                                        context.startActivity(shareIntent)
+                                    if (url != null && InviteLinkParser.parse(url) != null) {
+                                        generatedInviteUrl = url
+                                        inviteGenerationError = null
+                                    } else {
+                                        inviteGenerationError = "Não foi possível criar um convite válido. Verifique a conexão com o servidor."
                                     }
                                 }
                             }
                         },
                         onRedeemInviteLink = { rawInput, onResult ->
-                            val text = rawInput.trim()
-
-                            // Extrai a URL caso o usuário tenha colado a mensagem completa do WhatsApp ou outros apps
-                            val urlPattern = Regex("""(https?://[^\s]+|pessoasaqui://[^\s]+)""")
-                            val matchedUrl = urlPattern.find(text)?.value ?: text
-                            val parsedUri = try { android.net.Uri.parse(matchedUrl) } catch (_: Exception) { null }
-
-                            val id = parsedUri?.getQueryParameter("id")
-                                ?: parsedUri?.getQueryParameter("inviteId")
-                                ?: Regex("""[?&](?:id|inviteId)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val token = parsedUri?.getQueryParameter("token")
-                                ?: Regex("""[?&]token=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val sender = parsedUri?.getQueryParameter("sender")
-                                ?: parsedUri?.getQueryParameter("senderIdentity")
-                                ?: Regex("""[?&](?:sender|senderIdentity)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val rawAlias = parsedUri?.getQueryParameter("alias")
-                                ?: parsedUri?.getQueryParameter("senderAlias")
-                                ?: Regex("""[?&](?:alias|senderAlias)=([^&\s]+)""").find(text)?.groupValues?.get(1)
-                            val alias = rawAlias?.let {
-                                try { java.net.URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it }
-                            } ?: "Usuário"
-
-                            val sig = parsedUri?.getQueryParameter("sig")
-                                ?: parsedUri?.getQueryParameter("signature")
-                                ?: Regex("""[?&](?:sig|signature)=([a-zA-Z0-9_\-]+)""").find(text)?.groupValues?.get(1)
-
-                            val exp = parsedUri?.getQueryParameter("exp")?.toLongOrNull()
-                                ?: parsedUri?.getQueryParameter("expiresAt")?.toLongOrNull()
-                                ?: Regex("""[?&](?:exp|expiresAt)=([0-9]+)""").find(text)?.groupValues?.get(1)?.toLongOrNull()
-
-                            if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
+                            val invite = InviteLinkParser.parse(rawInput)
+                            if (invite == null) {
+                                onResult(false, "Convite inválido. Aceitamos somente links oficiais PessoasAqui.", null)
+                            } else {
                                 repository.redeemOneTimeInvite(
-                                    inviteId = id.trim(),
-                                    token = token.trim(),
-                                    senderIdentity = sender.trim(),
-                                    senderAlias = alias.trim(),
-                                    signature = sig?.trim(),
-                                    expiresAt = exp
+                                    inviteId = invite.id,
+                                    token = invite.token,
+                                    senderIdentity = invite.sender,
+                                    senderAlias = invite.alias,
+                                    signature = invite.signature,
+                                    expiresAt = invite.expiresAt
                                 ) { success, msg, peer ->
                                     onResult(success, msg, peer)
                                 }
-                            } else {
-                                onResult(false, "Link ou formato de convite inválido.", null)
                             }
                         },
                         contactTags = contactTags,
@@ -517,10 +582,43 @@ fun MainScreen(
 
                     2 -> OffersTab(
                         offers = offers,
+                        backendWarning = offerSyncError,
                         myId = repository.getMyIdentity(),
                         myAlias = currentAlias,
                         onToggleMarkAuthor = { authorId ->
-                            repository.toggleMarkPerson(authorId)
+                            // Marcar é ato explícito, não pode desmarcar por engano.
+                            // A identidade deve estar realmente listada no Radar BLE.
+                            val peer = radarPeople.firstOrNull {
+                                it.technicalIdentityHash.ifBlank { it.id }
+                                    .removePrefix("peer-").equals(
+                                        authorId.removePrefix("peer-"), ignoreCase = true
+                                    ) && repository.isOfferPeerInRange(
+                                        it.technicalIdentityHash.ifBlank { it.id }
+                                    )
+                            }
+                            if (peer != null) {
+                                repository.setMarkPerson(peer.technicalIdentityHash.ifBlank { peer.id }, mark = true)
+                            }
+                        },
+                        isAuthorNearby = { authorId ->
+                            radarPeople.any {
+                                it.technicalIdentityHash.ifBlank { it.id }
+                                    .removePrefix("peer-").equals(
+                                        authorId.removePrefix("peer-"), ignoreCase = true
+                                    ) && repository.isOfferPeerInRange(
+                                        it.technicalIdentityHash.ifBlank { it.id }
+                                    )
+                            }
+                        },
+                        onOpenAuthorChat = { authorId ->
+                            radarPeople.firstOrNull {
+                                it.technicalIdentityHash.ifBlank { it.id }
+                                    .removePrefix("peer-").equals(
+                                        authorId.removePrefix("peer-"), ignoreCase = true
+                                    ) && repository.isOfferPeerInRange(
+                                        it.technicalIdentityHash.ifBlank { it.id }
+                                    )
+                            }?.let { onOpenChat(it) }
                         },
                         onPostOffer = { prof, desc, img, link ->
                             repository.postLocalOffer(prof, desc, img, link)
@@ -533,6 +631,169 @@ fun MainScreen(
                         }
                     )
                 }
+            }
+
+            if (showAvatarGallery) {
+                AlertDialog(
+                    onDismissRequest = { showAvatarGallery = false },
+                    title = { Text("Privacidade da foto de perfil") },
+                    text = {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 490.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                "Pessoas a ~10 m verão apenas o animal escolhido ou nenhuma foto. " +
+                                "Sua foto real será transmitida somente por conversa criptografada a conexões mútuas confirmadas.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                AvatarVisual(animalAvatar, realProfilePhoto, Modifier.size(62.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text("Meu perfil", fontWeight = FontWeight.Bold)
+                                    Text(if (animalAvatar == null) "Animal: nenhum"
+                                         else "Animal: ${AnimalGallery.animals.firstOrNull { it.first == animalAvatar }?.second}",
+                                         style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                            TextButton(onClick = { repository.setMyAnimalAvatar(null) }) {
+                                Text("Nenhum animal • ícone neutro no Radar")
+                            }
+                            AnimalGallery.animals.chunked(2).forEach { row ->
+                                Row(modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    row.forEach { (id,label) ->
+                                        Column(
+                                            modifier = Modifier.weight(1f)
+                                                .clickable { repository.setMyAnimalAvatar(id) }
+                                                .background(
+                                                    if (animalAvatar == id) RadarCyan.copy(alpha=.18f)
+                                                    else DarkSurface,
+                                                    RoundedCornerShape(14.dp)
+                                                ).padding(8.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            AnimalPortrait(id, Modifier.size(74.dp))
+                                            Text(label, style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
+                            }
+                            Button(onClick = {
+                                profilePhotoPicker.launch("image/*")
+                            }, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Default.PhotoCamera, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Escolher foto real (somente mútuos)")
+                            }
+                            OutlinedButton(onClick = {
+                                if (!repository.removeMyRealPhoto())
+                                    avatarError = "Não foi possível remover a foto privada."
+                            }, modifier = Modifier.fillMaxWidth()) {
+                                Text("Remover minha foto real")
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showAvatarGallery = false }) {
+                            Text("Concluir")
+                        }
+                    }
+                )
+            }
+            avatarError?.let { error ->
+                AlertDialog(
+                    onDismissRequest = { avatarError = null },
+                    title = { Text("Foto de perfil") },
+                    text = { Text(error) },
+                    confirmButton = {
+                        TextButton(onClick = { avatarError = null }) { Text("OK") }
+                    }
+                )
+            }
+
+            // O QR contém exatamente o mesmo link de uso único.
+            // O segredo não é salvo nem enviado a qualquer serviço adicional.
+            generatedInviteUrl?.let { url ->
+                val qr = remember(url) { QrCodeGenerator.generateQrCodeBitmap(url, 512, 512) }
+                AlertDialog(
+                    onDismissRequest = { generatedInviteUrl = null },
+                    title = { Text("Convite: link ou QR", color = TextPrimary) },
+                    text = {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 570.dp)
+                                .verticalScroll(rememberScrollState()),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            if (qr != null) {
+                                Image(
+                                    bitmap = qr,
+                                    contentDescription = "Código QR do convite único",
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.widthIn(max = 250.dp)
+                                        .fillMaxWidth().aspectRatio(1f)
+                                )
+                            } else {
+                                Text("Não foi possível desenhar o QR. Compartilhe o link.", color = WarningAmber)
+                            }
+                            Text("Mostre este QR a quem está perto. Para quem está longe, compartilhe o link. A conexão permanente requer acesso à internet para validar o convite.",
+                                color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+                            Text("Uso único: a primeira pessoa a resgatar estabelece o vínculo. Qualquer pessoa com este código ou link pode tentar usá-lo; compartilhe somente com alguém de confiança.",
+                                color = WarningAmber, style = MaterialTheme.typography.bodySmall)
+                            val expires = InviteLinkParser.parse(url)?.expiresAt
+                            if (expires != null) {
+                                Text("Expira: " + java.text.SimpleDateFormat("dd/MM/yyyy HH:mm",
+                                    java.util.Locale.getDefault()).format(java.util.Date(expires)),
+                                    color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Text("O link e o QR representam o mesmo convite; usar um invalida o outro. Fechar esta janela NÃO revoga o convite; ele continua válido até o resgate ou expiração.",
+                                color = RadarCyan, style = MaterialTheme.typography.labelSmall)
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(android.content.Intent.EXTRA_TEXT,
+                                    "Convite pessoal PessoasAqui (uso único):\\n$url")
+                            }
+                            context.startActivity(android.content.Intent.createChooser(sendIntent,
+                                "Compartilhar link de convite"))
+                        }) {
+                            Text("Compartilhar link", color = RadarCyan)
+                        }
+                    },
+                    dismissButton = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = {
+                                val clip = android.content.ClipData.newPlainText("Convite PessoasAqui", url)
+                                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                                    clip.description.extras = android.os.PersistableBundle().apply {
+                                        putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+                                    }
+                                }
+                                (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                    as android.content.ClipboardManager).setPrimaryClip(clip)
+                            }) { Text("Copiar", color = WarningAmber) }
+                            TextButton(onClick = { generatedInviteUrl = null }) { Text("Fechar") }
+                        }
+                    },
+                    containerColor = DarkSurface
+                )
+            }
+
+            if (inviteGenerationError != null) {
+                AlertDialog(
+                    onDismissRequest = { inviteGenerationError = null },
+                    title = { Text("Convite indisponível") },
+                    text = { Text(inviteGenerationError ?: "") },
+                    confirmButton = {
+                        TextButton(onClick = { inviteGenerationError = null }) { Text("Entendi") }
+                    }
+                )
             }
 
             // BottomSheet de Intenções do Usuário
@@ -785,6 +1046,9 @@ fun MainScreen(
                     onDismiss = { showRemindersDialog = false }
                 )
             }
+            }
+            }
         }
+    }
     }
 }

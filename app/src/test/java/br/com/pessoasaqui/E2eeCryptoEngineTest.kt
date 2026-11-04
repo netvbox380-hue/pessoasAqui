@@ -68,9 +68,26 @@ class E2eeCryptoEngineTest {
 
         val (ciphertext, iv) = E2eeCryptoEngine.encrypt(secretMessage, aliceId, bobId)
 
-        // Eve tenta decifrar se passando por Bob ou Alice
-        val eveAttempt = E2eeCryptoEngine.decrypt(ciphertext, iv, aliceId, eveId)
-        assertNotEquals("Terceiro não autorizado não pode decifrar a mensagem", secretMessage, eveAttempt)
+        // O envelope cifrado nunca é devolvido ao chamador após falhar a autenticação.
+        try {
+            E2eeCryptoEngine.decrypt(ciphertext, iv, aliceId, eveId)
+            fail("Terceiro não autorizado deve receber falha de autenticação")
+        } catch (_: SecurityException) {
+            // Falha fechada: sem exposição de ENC/ENC_ECDH no histórico.
+        }
+    }
+
+    @Test
+    fun testDamagedCiphertextCannotBecomeChatText() {
+        val sender = "A1B2C3D4"
+        val recipient = "1A2B3C4D"
+        val (cipher, iv) = E2eeCryptoEngine.encrypt("[CALL_INIT:false:Alice]", sender, recipient)
+        try {
+            E2eeCryptoEngine.decrypt(cipher, "invalid-IV", sender, recipient)
+            fail("Uma falha de IV não pode devolver ENC como texto")
+        } catch (_: SecurityException) {
+            // O aplicativo deve ignorar o comando antes de persistir uma bolha.
+        }
     }
 
     @Test

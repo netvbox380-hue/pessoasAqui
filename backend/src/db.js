@@ -115,9 +115,28 @@ async function query(sql, params = []) {
   return { rows: [], rowCount: 0 };
 }
 
+async function withTransaction(work) {
+  if (!isPostgres || !pool || circuitBreakerTripped) {
+    throw new Error('PostgreSQL transacional indisponível');
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await work((sql, params = []) => client.query(sql, params));
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   initDatabase,
   query,
+  withTransaction,
   localStore,
   isPostgres: () => isPostgres && !circuitBreakerTripped
 };

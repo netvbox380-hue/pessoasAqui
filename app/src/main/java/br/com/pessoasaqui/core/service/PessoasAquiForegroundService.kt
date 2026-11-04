@@ -130,7 +130,16 @@ class PessoasAquiForegroundService : Service() {
                 .setContentIntent(pendingIntent)
                 .build()
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Android 14+: este serviço mantém presença e comunicação BLE.
+                // O tipo conectado corresponde ao trabalho executado; não usar
+                // dataSync como substituto para rádio Bluetooth.
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
                     NOTIFICATION_ID,
                     notification,

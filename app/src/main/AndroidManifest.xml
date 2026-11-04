@@ -62,6 +62,10 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.PessoasAqui">
 
+        <!-- Preinstall QR scanner module for Play Store installations. -->
+        <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="barcode_ui" />
+
         <service
             android:name=".core.service.PessoasAquiForegroundService"
             android:enabled="true"

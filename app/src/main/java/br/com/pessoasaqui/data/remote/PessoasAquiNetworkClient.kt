@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
  * Cliente de Rede HTTP e WebSockets do PessoasAqui.
  * Conecta o aplicativo ao servidor backend (seja local ou hospedado no Render / Supabase).
  */
-class PessoasAquiNetworkClient(
+open class PessoasAquiNetworkClient(
     var baseUrl: String = "https://pessoasaqui3.onrender.com",
     var wsUrl: String = "wss://pessoasaqui3.onrender.com"
 ) {
@@ -49,6 +49,7 @@ class PessoasAquiNetworkClient(
     private var lastOnPeerOnline: ((RemotePeer) -> Unit)? = null
     private var lastOnPeerOffline: ((String) -> Unit)? = null
     private var lastOnMutualConnection: ((String, String) -> Unit)? = null
+    private var lastOnMutualConnectionBroken: ((String, String) -> Unit)? = null
     private var lastOnPeerMarkedYou: ((String, String) -> Unit)? = null
 
     var onOfferPublished: ((OfferItem) -> Unit)? = null
@@ -73,6 +74,7 @@ class PessoasAquiNetworkClient(
                     onPeerOnline = lastOnPeerOnline,
                     onPeerOffline = lastOnPeerOffline,
                     onMutualConnection = lastOnMutualConnection,
+                    onMutualConnectionBroken = lastOnMutualConnectionBroken,
                     onPeerMarkedYou = lastOnPeerMarkedYou,
                     myPublicKeyBase64 = lastPublicKeyBase64,
                     signChallenge = lastSignChallenge
@@ -179,70 +181,107 @@ class PessoasAquiNetworkClient(
     }
 
     /**
-     * Emite autorização de recuperação de identidade por um familiar
+     * Credenciamento assinado: proprietário autoriza uma chave familiar.
+     * Requer PostgreSQL e prova ECDSA válida da identidade titular.
      */
-    suspend fun issueFamilyRecovery(
+    suspend fun registerFamilyRecoveryDelegate(
         targetIdentity: String,
-        familyIdentity: String
-    ): Result<String> = withContext(Dispatchers.IO) {
+        familyIdentity: String,
+        familyPublicKey: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("targetIdentity", targetIdentity)
                 put("familyIdentity", familyIdentity)
+                put("familyPublicKey", familyPublicKey)
+                put("identityProof", identityProof.toJson())
             }
-            val request = Request.Builder()
-                .url("$baseUrl/api/family/recovery/issue")
-                .post(json.toString().toRequestBody(jsonMediaType))
-                .build()
-
+            val request = Request.Builder().url("$baseUrl/api/family/recovery/delegate")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
             client.newCall(request).execute().use { response ->
-                val bodyStr = response.body?.string() ?: "{}"
-                val resObj = JSONObject(bodyStr)
-                if (response.isSuccessful) {
-                    Result.success(resObj.getString("recoveryKey"))
-                } else {
-                    Result.failure(IOException(resObj.optString("error", "Erro ao emitir autorização")))
-                }
+                val obj = JSONObject(response.body?.string() ?: "{}")
+                if (response.isSuccessful && obj.optBoolean("success")) Result.success(true)
+                else Result.failure(IOException(obj.optString("error", "Falha ao autorizar familiar")))
             }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
+    /** Revoga autorização familiar e todos os códigos pendentes. */
+    suspend fun revokeFamilyRecoveryDelegate(
+        targetIdentity: String,
+        familyIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("targetIdentity", targetIdentity)
+                put("familyIdentity", familyIdentity)
+                put("identityProof", identityProof.toJson())
+            }
+            val request = Request.Builder().url("$baseUrl/api/family/recovery/revoke")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val obj = JSONObject(response.body?.string() ?: "{}")
+                if (response.isSuccessful && obj.optBoolean("success")) Result.success(true)
+                else Result.failure(IOException(obj.optString("error", "Não foi possível revogar a autorização")))
+            }
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
+    /** A assinatura do familiar vincula autorização ao alvo. */
+    suspend fun issueFamilyRecovery(
+        targetIdentity: String,
+        familyIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<RecoveryIssueResponse> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("targetIdentity", targetIdentity)
+                put("familyIdentity", familyIdentity)
+                put("identityProof", identityProof.toJson())
+            }
+            val request = Request.Builder().url("$baseUrl/api/family/recovery/issue")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val obj = JSONObject(response.body?.string() ?: "{}")
+                if (response.isSuccessful && obj.optBoolean("success")) {
+                    Result.success(RecoveryIssueResponse(
+                        recoveryKey = obj.getString("recoveryKey"),
+                        targetIdentity = obj.getString("targetIdentity"),
+                        expiresAtEpochMs = obj.getLong("expiresAtEpochMs")
+                    ))
+                } else Result.failure(IOException(obj.optString("error", "Falha ao gerar autorização")))
+            }
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     /**
-     * Reivindica a identidade no novo aparelho ("Entre na sua")
+     * Novo dispositivo prova posse da nova chave; o PIN não viaja para o
+     * servidor e é reservado à descriptografia posterior do cofre.
      */
     suspend fun claimFamilyRecovery(
         recoveryKey: String,
-        pin: String,
-        newDeviceFingerprint: String
+        newDeviceIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("recoveryKey", recoveryKey)
-                put("pin", pin)
-                put("newDeviceFingerprint", newDeviceFingerprint)
+                put("newDeviceIdentity", newDeviceIdentity)
+                put("identityProof", identityProof.toJson())
             }
-            val request = Request.Builder()
-                .url("$baseUrl/api/family/recovery/claim")
-                .post(json.toString().toRequestBody(jsonMediaType))
-                .build()
-
+            val request = Request.Builder().url("$baseUrl/api/family/recovery/claim")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
             client.newCall(request).execute().use { response ->
-                val bodyStr = response.body?.string() ?: "{}"
-                val resObj = JSONObject(bodyStr)
-                if (response.isSuccessful) {
-                    Result.success(resObj.getString("targetIdentity"))
+                val obj = JSONObject(response.body?.string() ?: "{}")
+                if (response.isSuccessful && obj.optBoolean("success")) {
+                    Result.success(obj.getString("targetIdentity"))
                 } else {
-                    val errMsg = resObj.optString("error", "Erro ao recuperar identidade")
-                    val lockoutSec = resObj.optInt("remainingSeconds", resObj.optInt("lockoutSeconds", 0))
-                    val fullErr = if (lockoutSec > 0) "$errMsg (Bloqueio de $lockoutSec s)" else errMsg
-                    Result.failure(IOException(fullErr))
+                    Result.failure(IOException(obj.optString("error", "Recuperação não autorizada")))
                 }
             }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     /**
@@ -258,6 +297,7 @@ class PessoasAquiNetworkClient(
         onPeerOnline: ((RemotePeer) -> Unit)? = null,
         onPeerOffline: ((String) -> Unit)? = null,
         onMutualConnection: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
+        onMutualConnectionBroken: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
         onPeerMarkedYou: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
         myPublicKeyBase64: String? = null,
         signChallenge: ((ByteArray) -> String)? = null
@@ -276,6 +316,7 @@ class PessoasAquiNetworkClient(
         lastOnPeerOnline = onPeerOnline
         lastOnPeerOffline = onPeerOffline
         lastOnMutualConnection = onMutualConnection
+        lastOnMutualConnectionBroken = onMutualConnectionBroken
         lastOnPeerMarkedYou = onPeerMarkedYou
 
         val request = Request.Builder().url(wsUrl).build()
@@ -316,6 +357,11 @@ class PessoasAquiNetworkClient(
                             if (partnerId.isNotBlank()) {
                                 onMutualConnection?.invoke(partnerId, partnerAlias)
                             }
+                        }
+                        "MUTUAL_CONNECTION_BROKEN" -> {
+                            val partnerId = obj.optString("partnerIdentity")
+                            val partnerAlias = obj.optString("partnerAlias", "Contato")
+                            if (partnerId.isNotBlank()) onMutualConnectionBroken?.invoke(partnerId, partnerAlias)
                         }
                         "PEER_MARKED_YOU" -> {
                             val partnerId = obj.optString("partnerIdentity")
@@ -382,7 +428,8 @@ class PessoasAquiNetworkClient(
                                     distanceMeters = o.optDouble("distanceMeters", 10.0),
                                     proximityLabel = o.optString("proximityLabel", "Profissional Próximo • 10m"),
                                     imageBase64 = o.optString("imageBase64").takeIf { it.isNotBlank() },
-                                    externalLink = o.optString("externalLink").takeIf { it.isNotBlank() }
+                                    externalLink = o.optString("externalLink").takeIf { it.isNotBlank() },
+                                    createdAtMs = o.optLong("createdAt", System.currentTimeMillis())
                                 )
                                 onOfferPublished?.invoke(item)
                             }
@@ -435,7 +482,7 @@ class PessoasAquiNetworkClient(
     /**
      * Envia envelope cifrado E2EE pelo WebSocket
      */
-    fun sendE2eeEnvelope(recipientHash: String, ciphertext: String, ivNonce: String, messageId: String = java.util.UUID.randomUUID().toString()): Boolean {
+    open fun sendE2eeEnvelope(recipientHash: String, ciphertext: String, ivNonce: String, messageId: String = java.util.UUID.randomUUID().toString()): Boolean {
         if (!isWsConnected) return false
         val ws = activeWebSocket ?: return false
         val envelope = JSONObject().apply {
@@ -611,6 +658,9 @@ class PessoasAquiNetworkClient(
             client.newCall(request).execute().use { response ->
                 val bodyStr = response.body?.string() ?: "{}"
                 val obj = JSONObject(bodyStr)
+                if (!response.isSuccessful || !obj.optBoolean("success", false)) {
+                    return@withContext Result.failure(IOException("Falha ao consultar status de conexões: HTTP ${response.code}"))
+                }
                 val markedArr = obj.optJSONArray("markedByMe")
                 val markingArr = obj.optJSONArray("markingMe")
                 val mutualArr = obj.optJSONArray("mutual")
@@ -658,7 +708,7 @@ class PessoasAquiNetworkClient(
     /**
      * Publica ou atualiza uma oferta/divulgação local no servidor
      */
-    suspend fun publishOffer(offer: OfferItem): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun publishOffer(offer: OfferItem, identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("id", offer.id)
@@ -670,6 +720,7 @@ class PessoasAquiNetworkClient(
                 put("externalLink", offer.externalLink ?: "")
                 put("distanceMeters", offer.distanceMeters)
                 put("proximityLabel", offer.proximityLabel)
+                put("identityProof", identityProof.toJson())
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/offers/publish")
@@ -677,7 +728,13 @@ class PessoasAquiNetworkClient(
                 .build()
 
             client.newCall(request).execute().use { response ->
-                Result.success(response.isSuccessful)
+                if (response.isSuccessful) Result.success(true)
+                else {
+                    val error = runCatching {
+                        JSONObject(response.body?.string() ?: "{}").optString("error")
+                    }.getOrDefault("Falha HTTP ${response.code}")
+                    Result.failure(IOException(error))
+                }
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -687,15 +744,26 @@ class PessoasAquiNetworkClient(
     /**
      * Remove uma oferta/divulgação local do servidor
      */
-    suspend fun deleteOffer(offerId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun deleteOffer(offerId: String, authorId: String, identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            val payload = JSONObject().apply {
+                put("offerId", offerId)
+                put("authorId", authorId)
+                put("identityProof", identityProof.toJson())
+            }
             val request = Request.Builder()
-                .url("$baseUrl/api/offers/$offerId")
-                .delete()
+                .url("$baseUrl/api/offers/remove")
+                .post(payload.toString().toRequestBody(jsonMediaType))
                 .build()
 
             client.newCall(request).execute().use { response ->
-                Result.success(response.isSuccessful)
+                if (response.isSuccessful) Result.success(true)
+                else {
+                    val error = runCatching {
+                        JSONObject(response.body?.string() ?: "{}").optString("error")
+                    }.getOrDefault("Falha HTTP ${response.code}")
+                    Result.failure(IOException(error))
+                }
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -730,7 +798,8 @@ class PessoasAquiNetworkClient(
                                 distanceMeters = o.optDouble("distanceMeters", 10.0),
                                 proximityLabel = o.optString("proximityLabel", "Profissional Próximo • 10m"),
                                 imageBase64 = o.optString("imageBase64").takeIf { it.isNotBlank() },
-                                externalLink = o.optString("externalLink").takeIf { it.isNotBlank() }
+                                externalLink = o.optString("externalLink").takeIf { it.isNotBlank() },
+                                createdAtMs = o.optLong("createdAt", System.currentTimeMillis())
                             )
                         )
                     }
@@ -745,11 +814,12 @@ class PessoasAquiNetworkClient(
     /**
      * Cria um convite criptografado de uso único no servidor
      */
-    suspend fun createOneTimeInvite(senderIdentity: String, senderAlias: String): Result<CreateInviteResponse> = withContext(Dispatchers.IO) {
+    suspend fun createOneTimeInvite(senderIdentity: String, senderAlias: String, identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof): Result<CreateInviteResponse> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("senderIdentity", senderIdentity)
                 put("senderAlias", senderAlias)
+                put("identityProof", identityProof.toJson())
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/invites/create")
@@ -792,7 +862,8 @@ class PessoasAquiNetworkClient(
         senderIdentity: String? = null,
         senderAlias: String? = null,
         signature: String? = null,
-        expiresAt: Long? = null
+        expiresAt: Long? = null,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
     ): Result<RedeemInviteResponse> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
@@ -800,6 +871,7 @@ class PessoasAquiNetworkClient(
                 put("token", token)
                 put("receiverIdentity", receiverIdentity)
                 put("receiverAlias", receiverAlias)
+                put("identityProof", identityProof.toJson())
                 if (!senderIdentity.isNullOrBlank()) put("senderIdentity", senderIdentity)
                 if (!senderAlias.isNullOrBlank()) put("senderAlias", senderAlias)
                 if (!signature.isNullOrBlank()) put("signature", signature)

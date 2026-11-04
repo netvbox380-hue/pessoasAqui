@@ -78,6 +78,14 @@ class ProximitySimulator(
         loadPersistedMessages()
     }
 
+    var shouldPersistPrivateChat: ((peerId: String) -> Boolean)? = null
+
+    private fun persistPrivateChatIfEligible(cleanId: String, messages: List<ChatMessage>) {
+        if (shouldPersistPrivateChat == null || shouldPersistPrivateChat?.invoke(cleanId) == true) {
+            persistenceManager?.savePrivateChat(cleanId, messages)
+        }
+    }
+
     fun setPersistenceManager(pm: ChatMessagePersistenceManager) {
         this.persistenceManager = pm
         loadPersistedMessages()
@@ -305,9 +313,15 @@ class ProximitySimulator(
     }
 
     /**
-     * Envia mensagem privada para conexão mútua (qualquer distância)
+     * Envia mensagem privada para conexão mútua (qualquer distância) ou temporária BLE (10m).
      */
-    fun sendPrivateMessage(recipientId: String, text: String, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
+    fun sendPrivateMessage(
+        recipientId: String,
+        text: String,
+        myAlias: String,
+        messageId: String = UUID.randomUUID().toString(),
+        deliveryStatus: br.com.pessoasaqui.domain.model.MessageDeliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
+    ) {
         val msg = ChatMessage(
             id = messageId,
             senderId = "me",
@@ -315,7 +329,8 @@ class ProximitySimulator(
             text = text,
             isLocalOnly = false,
             isEncrypted = true,
-            isFromMe = true
+            isFromMe = true,
+            deliveryStatus = deliveryStatus
         )
         val cleanId = recipientId.removePrefix("peer-")
         val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: emptyList()
@@ -325,13 +340,88 @@ class ProximitySimulator(
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, newList)
+        persistPrivateChatIfEligible(cleanId, newList)
+    }
+
+    /**
+     * Registra localmente o resultado de uma chamada do Modo B.
+     * Não transmite comando de controle para a UI e reutiliza a persistência
+     * criptografada dos chats permanentes, sem alterar históricos existentes.
+     */
+    fun recordCallHistory(
+        peerId: String,
+        description: String,
+        outgoing: Boolean,
+        myAlias: String,
+        entryId: String = UUID.randomUUID().toString()
+    ) {
+        val cleanId = peerId.removePrefix("peer-")
+        val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
+        if (currentList.any { it.id == entryId }) return
+
+        val entry = ChatMessage(
+            id = entryId,
+            senderId = if (outgoing) "me" else cleanId,
+            senderAlias = if (outgoing) myAlias else "Chamadas",
+            text = description,
+            isFromMe = outgoing,
+            messageType = MessageType.SYSTEM,
+            isEncrypted = true
+        )
+        val updated = currentList + entry
+        val chats = _privateChats.value.toMutableMap()
+        chats[cleanId] = updated
+        chats["peer-$cleanId"] = updated
+        _privateChats.value = chats
+        persistPrivateChatIfEligible(cleanId, updated)
+    }
+
+    /**
+     * Atualiza o status de entrega de uma mensagem (PENDENTE -> ENTREGUE ou FALHA).
+     */
+    fun updateMessageDeliveryStatus(
+        recipientId: String,
+        messageId: String,
+        status: br.com.pessoasaqui.domain.model.MessageDeliveryStatus
+    ) {
+        val cleanId = recipientId.removePrefix("peer-")
+        val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: return
+        val idx = currentList.indexOfFirst { it.id == messageId }
+        if (idx != -1) {
+            val updated = currentList.toMutableList()
+            updated[idx] = updated[idx].copy(deliveryStatus = status)
+            val updatedMap = _privateChats.value.toMutableMap()
+            updatedMap[recipientId] = updated
+            updatedMap[cleanId] = updated
+            updatedMap["peer-$cleanId"] = updated
+            _privateChats.value = updatedMap
+            persistPrivateChatIfEligible(cleanId, updated)
+        }
+    }
+
+    /**
+     * Atualiza o apelido do remetente nas mensagens recebidas ao autenticar nome completo.
+     */
+    fun updatePeerSenderAlias(senderId: String, newAlias: String) {
+        val cleanId = senderId.removePrefix("peer-")
+        val currentList = _privateChats.value[senderId] ?: _privateChats.value[cleanId] ?: return
+        val updated = currentList.map { msg ->
+            if (!msg.isFromMe) msg.copy(senderAlias = newAlias) else msg
+        }
+        val updatedMap = _privateChats.value.toMutableMap()
+        updatedMap[senderId] = updated
+        updatedMap[cleanId] = updated
+        updatedMap["peer-$cleanId"] = updated
+        _privateChats.value = updatedMap
     }
 
     /**
      * Recebe mensagem privada entregue de outro dispositivo
      */
     fun receivePrivateMessage(senderId: String, senderAlias: String, text: String, messageId: String = "") {
+        // Defesa adicional: mesmo que outro fluxo ignore o roteador de controle,
+        // envelopes cifrados e sinais de chamada nunca se tornam mensagens.
+        if (text.startsWith("ENC_ECDH:") || text.startsWith("ENC:") || text.startsWith("[CALL_")) return
         val cleanId = senderId.removePrefix("peer-")
         val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
 
@@ -346,7 +436,7 @@ class ProximitySimulator(
             updatedMap[cleanId] = updatedList
             updatedMap["peer-$cleanId"] = updatedList
             _privateChats.value = updatedMap
-            persistenceManager?.savePrivateChat(cleanId, updatedList)
+            persistPrivateChatIfEligible(cleanId, updatedList)
             return
         }
 
@@ -366,7 +456,7 @@ class ProximitySimulator(
                 updatedMap[cleanId] = updatedList
                 updatedMap["peer-$cleanId"] = updatedList
                 _privateChats.value = updatedMap
-                persistenceManager?.savePrivateChat(cleanId, updatedList)
+                persistPrivateChatIfEligible(cleanId, updatedList)
             }
             return
         }
@@ -387,7 +477,7 @@ class ProximitySimulator(
             updatedMap[cleanId] = updatedList
             updatedMap["peer-$cleanId"] = updatedList
             _privateChats.value = updatedMap
-            persistenceManager?.savePrivateChat(cleanId, updatedList)
+            persistPrivateChatIfEligible(cleanId, updatedList)
             return
         }
 
@@ -459,7 +549,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, newList)
+        persistPrivateChatIfEligible(cleanId, newList)
     }
 
     fun sendAudioMessage(
@@ -492,7 +582,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, newList)
+        persistPrivateChatIfEligible(cleanId, newList)
     }
 
     fun sendImageMessage(recipientId: String, base64: String, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
@@ -518,7 +608,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, newList)
+        persistPrivateChatIfEligible(cleanId, newList)
     }
 
     fun sendDocumentMessage(recipientId: String, fileName: String, base64: String, sizeBytes: Long, myAlias: String, messageId: String = UUID.randomUUID().toString()) {
@@ -546,7 +636,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, newList)
+        persistPrivateChatIfEligible(cleanId, newList)
     }
 
     /**
@@ -605,7 +695,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = updatedList
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        persistPrivateChatIfEligible(cleanId, updatedList)
         return true
     }
 
@@ -626,7 +716,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = updatedList
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        persistPrivateChatIfEligible(cleanId, updatedList)
         return newStatus
     }
 
@@ -653,7 +743,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = updatedList
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        persistPrivateChatIfEligible(cleanId, updatedList)
         return true
     }
 
@@ -671,7 +761,7 @@ class ProximitySimulator(
         updatedMap[cleanId] = updatedList
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        persistPrivateChatIfEligible(cleanId, updatedList)
         return true
     }
 
@@ -705,19 +795,23 @@ class ProximitySimulator(
         updatedMap[cleanId] = updatedList
         updatedMap["peer-$cleanId"] = updatedList
         _privateChats.value = updatedMap
-        persistenceManager?.savePrivateChat(cleanId, updatedList)
+        persistPrivateChatIfEligible(cleanId, updatedList)
         return true
     }
 
     /**
-     * Limpa completamente o chat privado de um contato especÃ­fico da memÃ³ria e do disco.
+     * Limpa as mensagens privadas em memória RAM de uma sessão efêmera.
+     * O disco físico é preservado para contatos históricos/desfeitos,
+     * sendo deletado apenas sob ação explícita de exclusão do usuário.
      */
     fun clearPrivateChat(peerId: String) {
         val cleanId = peerId.removePrefix("peer-")
         val updatedMap = _privateChats.value.toMutableMap()
         updatedMap.remove(cleanId)
         updatedMap.remove("peer-$cleanId")
+        updatedMap.remove(peerId)
+        updatedMap.remove(cleanId.uppercase())
+        updatedMap.remove(cleanId.lowercase())
         _privateChats.value = updatedMap
-        persistenceManager?.deletePrivateChat(cleanId)
     }
 }

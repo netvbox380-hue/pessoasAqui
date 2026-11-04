@@ -20,6 +20,10 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.barcode.common.Barcode
+import androidx.compose.ui.platform.LocalContext
 import br.com.pessoasaqui.core.crypto.PinSecurityManager
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.ui.theme.*
@@ -28,7 +32,7 @@ import kotlinx.coroutines.launch
 /**
  * Tela de Recuperação e Transferência de Identidade Criptográfica.
  * Arquitetura segura sem dados tradicionais (sem e-mail/senha).
- * Fluxo de recuperação e transferência de identidade via autorização de familiar + PIN pessoal.
+ * Fluxo de recuperação com aprovação familiar assinada; PIN do backup é independente.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,6 +45,15 @@ fun EntreNaSuaRecoveryScreen(
     onBack: () -> Unit
 ) {
     val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+    val qrScanner = remember(context) {
+        GmsBarcodeScanning.getClient(
+            context, GmsBarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .enableAutoZoom()
+                .build()
+        )
+    }
     val coroutineScope = rememberCoroutineScope()
     val recoverySessionId = remember { "session-device-new" }
 
@@ -50,6 +63,7 @@ fun EntreNaSuaRecoveryScreen(
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var isSuccess by remember { mutableStateOf(false) }
+    var isReadingQr by remember { mutableStateOf(false) }
 
     val lockoutState = pinSecurityManager.getLockoutState(recoverySessionId)
 
@@ -155,7 +169,7 @@ fun EntreNaSuaRecoveryScreen(
                     }
                 }
             } else if (validatedAuth == null) {
-                // Passo 1: Inserir a Chave ou Simular Leitura do QR Code emitido pelo familiar
+                // Passo 1: ler QR real ou inserir chave assinada emitida pelo familiar
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = DarkSurface),
@@ -181,7 +195,7 @@ fun EntreNaSuaRecoveryScreen(
                             value = recoveryKeyInput,
                             onValueChange = { recoveryKeyInput = it.uppercase() },
                             label = { Text("Chave de Recuperação / QR Payload") },
-                            placeholder = { Text("Ex: PA-REC-994A1F82") },
+                            placeholder = { Text("PA-REC- + 64 caracteres hexadecimais") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
                             trailingIcon = {
@@ -205,6 +219,33 @@ fun EntreNaSuaRecoveryScreen(
                             )
                         )
 
+                        OutlinedButton(
+                            onClick = {
+                                if (!isReadingQr) {
+                                    isReadingQr = true
+                                    qrScanner.startScan().addOnSuccessListener { barcode ->
+                                        val key = barcode.rawValue.orEmpty().trim().uppercase()
+                                        if (Regex("^PA-REC-[A-F0-9]{64}$").matches(key)) {
+                                            recoveryKeyInput = key
+                                            statusMessage = "QR reconhecido. A autorização será verificada no servidor."
+                                        } else {
+                                            statusMessage = "QR inválido. Use o código oficial de recuperação familiar."
+                                        }
+                                    }.addOnFailureListener {
+                                        statusMessage = "Leitor indisponível. Utilize Colar ou digite a chave."
+                                    }.addOnCompleteListener {
+                                        isReadingQr = false
+                                    }
+                                }
+                            },
+                            enabled = !isReadingQr,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.QrCodeScanner, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (isReadingQr) "Abrindo leitor..." else "Ler QR de recuperação")
+                        }
+
                         Button(
                             onClick = {
                                 val key = recoveryKeyInput.trim().uppercase()
@@ -212,14 +253,14 @@ fun EntreNaSuaRecoveryScreen(
                                 if (auth != null) {
                                     validatedAuth = auth
                                     statusMessage = "Autorização de ${auth.authorizedByFamilyName} validada!"
-                                } else if (key.startsWith("PA-REC-") || key.length >= 6) {
+                                } else if (Regex("^PA-REC-[A-F0-9]{64}$").matches(key)) {
                                     validatedAuth = RecoveryAuthorization(
                                         targetIdentityHash = "REMOTE",
                                         authorizedByFamilyName = "Familiar Autorizado",
                                         recoveryKey = key,
                                         expiresAtEpochMs = System.currentTimeMillis() + 15 * 60 * 1000
                                     )
-                                    statusMessage = "Chave de autorização identificada. Prossiga para o PIN."
+                                    statusMessage = "Formato reconhecido. A validade será conferida pelo servidor ao confirmar."
                                 } else {
                                     statusMessage = "Chave inválida ou expirada. Verifique se o familiar gerou a chave recentemente."
                                 }
@@ -274,14 +315,14 @@ fun EntreNaSuaRecoveryScreen(
                         )
 
                         Text(
-                            text = "O familiar NÃO conhece o seu PIN. Digite seu PIN pessoal cadastrado nesta identidade.",
+                            text = "O familiar não conhece seu PIN. Ele será usado somente para abrir o backup criptografado, se disponível. A transferência da identidade exige autorização familiar assinada, verificada pelo servidor.",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
 
                         OutlinedTextField(
                             value = pinInput,
                             onValueChange = { pinInput = it },
-                            label = { Text("Seu PIN Pessoal") },
+                            label = { Text("PIN do backup criptografado") },
                             singleLine = true,
                             enabled = !lockoutState.isLocked,
                             modifier = Modifier.fillMaxWidth(),
@@ -300,21 +341,16 @@ fun EntreNaSuaRecoveryScreen(
                                         isLoading = false
                                         if (result.isSuccess) {
                                             isSuccess = true
-                                            pinSecurityManager.registerUserPin(pinInput)
+                                            // O PIN só é confirmado quando um cofre real
+                                            // descriptografa corretamente; não sobrescrever
+                                            // o PIN antigo antes dessa validação.
                                             onRecoverySuccess(result.getOrThrow())
                                         } else {
                                             statusMessage = result.exceptionOrNull()?.message
                                         }
                                     }
                                 } else {
-                                    val result = pinSecurityManager.verifyPinForRecovery(recoverySessionId, pinInput)
-                                    if (result.isSuccess) {
-                                        isSuccess = true
-                                        pinSecurityManager.registerUserPin(pinInput)
-                                        onRecoverySuccess(validatedAuth!!.targetIdentityHash)
-                                    } else {
-                                        statusMessage = result.exceptionOrNull()?.message
-                                    }
+                                    statusMessage = "Recuperação local insegura desativada. Atualize o aplicativo."
                                 }
                             },
                             enabled = pinInput.isNotBlank() && !lockoutState.isLocked && !isLoading,
@@ -334,7 +370,7 @@ fun EntreNaSuaRecoveryScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("Restaurando...", fontWeight = FontWeight.Bold)
                             } else {
-                                Text("Confirmar PIN e Restaurar Identidade", fontWeight = FontWeight.Bold)
+                                Text("Confirmar autorização e transferir identidade", fontWeight = FontWeight.Bold)
                             }
                         }
                     }

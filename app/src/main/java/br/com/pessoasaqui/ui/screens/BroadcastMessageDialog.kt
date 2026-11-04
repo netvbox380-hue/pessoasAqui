@@ -172,7 +172,7 @@ fun BroadcastMessageDialog(
     ) {
         Surface(
             modifier = Modifier
-                .widthIn(min = 320.dp, max = 520.dp)
+                .widthIn(max = 680.dp)
                 .fillMaxWidth(0.95f)
                 .heightIn(max = 680.dp)
                 .fillMaxHeight(0.92f)

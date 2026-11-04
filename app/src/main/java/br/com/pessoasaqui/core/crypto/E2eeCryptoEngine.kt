@@ -51,6 +51,13 @@ object E2eeCryptoEngine {
         } catch (_: Exception) {}
     }
 
+    /** A chave pública conhecida é apenas candidata; o servidor confirma
+     * criptograficamente que pertence ao identificador do familiar. */
+    fun getPeerPublicKeyBase64(identity: String): String? {
+        val clean = identity.removePrefix("peer-").trim().uppercase()
+        return peerPublicKeys[clean]?.encoded?.let { Base64Helper.encode(it) }
+    }
+
     /**
      * Utilitário multiplataforma para codificação Base64 (compatível com Android Runtime e JVM Unit Tests)
      */
@@ -158,9 +165,9 @@ object E2eeCryptoEngine {
             val ciphertextBase64 = Base64Helper.encode(ciphertextBytes)
             val ivBase64 = Base64Helper.encode(iv)
             Pair("$prefix$ciphertextBase64", "$ivBase64|$sortedPair")
-        } catch (_: Exception) {
-            // Em caso de falha rara, retorna texto original como fallback
-            Pair(plaintext, "")
+        } catch (e: Exception) {
+            // Nunca enviar texto puro quando a cifragem falhar.
+            throw IllegalStateException("Falha de cifragem E2EE; envio cancelado", e)
         }
     }
 
@@ -219,8 +226,10 @@ object E2eeCryptoEngine {
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), spec)
             val decryptedBytes = cipher.doFinal(ciphertextBytes)
             String(decryptedBytes, StandardCharsets.UTF_8)
-        } catch (_: Exception) {
-            payload
+        } catch (e: Exception) {
+            // Nunca expor um envelope cifrado como mensagem de chat. Em caso de
+            // chave/IV ausente, desatualizada ou tag inválida, falhar fechado.
+            throw SecurityException("Não foi possível autenticar o conteúdo E2EE", e)
         }
     }
 

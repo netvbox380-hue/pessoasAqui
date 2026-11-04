@@ -7,6 +7,8 @@ import br.com.pessoasaqui.core.crypto.DeviceSessionManager
 import br.com.pessoasaqui.core.crypto.E2eeCryptoEngine
 import br.com.pessoasaqui.core.crypto.PinSecurityManager
 import br.com.pessoasaqui.core.media.CallMediaEngine
+import br.com.pessoasaqui.core.media.CallSignalingProtocol
+import br.com.pessoasaqui.core.media.CallSessionStateMachine
 import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.moderation.ContentModerationManager
 import br.com.pessoasaqui.core.proximity.BleManager
@@ -63,11 +65,156 @@ class PessoasAquiRepository(
     val bleManager: BleManager? = null,
     val networkClient: PessoasAquiNetworkClient = PessoasAquiNetworkClient(),
     val distanceEstimator: DistanceEstimator = DistanceEstimator(),
-    injectedChatPersistence: br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager? = null
+    injectedChatPersistence: br.com.pessoasaqui.core.chat.ChatMessagePersistenceManager? = null,
+    injectedBleTransportCoordinator: br.com.pessoasaqui.core.proximity.BleDirectTransportCoordinator? = null
 ) {
+    companion object {
+        const val TEMPORARY_SESSION_GRACE_PERIOD_MS = 30000L // 30s de tolerância contra jitter/oscilação BLE
+        const val TEMPORARY_SESSION_EXPIRATION_MS = 45000L   // 45s de ausência para encerramento e purga
+    }
+
+
     val diskCrypto = LocalDiskCryptoManager(context)
     private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.IO)
+    private val profilePhotoStore = context?.let {
+        br.com.pessoasaqui.core.profile.ProfilePhotoStore(it)
+    }
+    private val _myAnimalAvatar = MutableStateFlow(
+        prefs?.getString("public_animal_avatar_v1", null)
+            ?.takeIf(br.com.pessoasaqui.ui.components.AnimalGallery::isValid)
+    )
+    val myAnimalAvatar: StateFlow<String?> = _myAnimalAvatar.asStateFlow()
+    private val _myRealPhoto = MutableStateFlow(
+        profilePhotoStore?.readPhoto(cryptoIdentityManager.getTechnicalIdentity())
+    )
+    val myRealPhoto: StateFlow<String?> = _myRealPhoto.asStateFlow()
+    private val peerAnimalAvatars = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val bleAvatarSentAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val avatarPhotoSentByPeer = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val receivedAvatarVersion = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun setMyAnimalAvatar(id: String?): Boolean {
+        if (id != null && !br.com.pessoasaqui.ui.components.AnimalGallery.isValid(id))return false
+        prefs?.edit()?.putString("public_animal_avatar_v1", id)?.apply()
+        _myAnimalAvatar.value = id
+        broadcastBleAvatar(force = true)
+        return true
+    }
+
+    fun setMyRealPhotoFromUri(uri: android.net.Uri): Boolean {
+        val store = profilePhotoStore ?: return false
+        val base64 = store.createCompressedPhoto(uri) ?: return false
+        if (!store.savePhoto(getMyIdentity(), base64)) return false
+        _myRealPhoto.value = base64
+        broadcastRealPhotoToMutual()
+        return true
+    }
+
+    fun removeMyRealPhoto(): Boolean {
+        if (profilePhotoStore?.savePhoto(getMyIdentity(), null) == false) return false
+        _myRealPhoto.value = null
+        broadcastRealPhotoToMutual()
+        return true
+    }
+
+    private fun sendRealPhotoToMutual(peerId: String) {
+        val peer = cleanId(peerId)
+        if (!isPeerMutualById(peer)) return
+        val photo = _myRealPhoto.value
+        val version = photo?.let {
+            java.security.MessageDigest.getInstance("SHA-256")
+                .digest(it.toByteArray()).take(8)
+                .joinToString("") { x -> "%02x".format(x.toInt() and 0xff) }
+        } ?: "none"
+        if (avatarPhotoSentByPeer[peer] == version) return
+        avatarPhotoSentByPeer[peer] = version
+        // MODO B E2EE. Nunca enviar foto real em BLE advertising/Ofertas.
+        val sent = sendPrivateMessage(peer, "[PA_REAL_PHOTO_V1:${photo ?: "NONE"}]")
+        if (!sent.isAllowed) avatarPhotoSentByPeer.remove(peer,version)
+    }
+
+    private fun broadcastRealPhotoToMutual() {
+        avatarPhotoSentByPeer.clear()
+        savedMutualPeople.toList().forEach { sendRealPhotoToMutual(it) }
+    }
+
+    private fun isPeerMutualById(peerId: String): Boolean =
+        cleanId(peerId) in savedMutualPeople &&
+        cleanId(peerId) !in revokedMutualPeople
+
+    private fun broadcastBleAvatar(force: Boolean = false) {
+        _realDiscoveredPeople.value.forEach {
+            val id = cleanId(it.technicalIdentityHash.ifBlank { it.id })
+            if (hasFreshNativeBlePresence(id)) sendBleAvatarToPeer(id,force)
+        }
+    }
+
+    private fun sendBleAvatarToPeer(peerId: String,force:Boolean=false) {
+        val id = cleanId(peerId)
+        if (!hasFreshNativeBlePresence(id)) return
+        val now=System.currentTimeMillis()
+        val prior=bleAvatarSentAt[id]?:0L
+        if(!force&&now-prior<90_000L)return
+        bleAvatarSentAt[id]=now
+        val animal=_myAnimalAvatar.value ?: "none"
+        val accepted=bleTransportCoordinator.sendTemporaryMessage(
+            id,"[PA_AVATAR_V1:$animal]",_currentAlias.value
+        )
+        if(!accepted)bleAvatarSentAt.remove(id,now)
+    }
+
+    private fun receiveBleAvatar(peerId: String,payload: String) {
+        val id=cleanId(peerId)
+        if(!hasFreshNativeBlePresence(id) || !payload.endsWith("]") || payload.length>40)return
+        val animal=payload.removePrefix("[PA_AVATAR_V1:").dropLast(1)
+        if(animal=="none")peerAnimalAvatars.remove(id)
+        else if(br.com.pessoasaqui.ui.components.AnimalGallery.isValid(animal))
+            peerAnimalAvatars[id]=animal
+        else return
+        _realDiscoveredPeople.value=_realDiscoveredPeople.value.map {
+            if(cleanId(it.technicalIdentityHash.ifBlank { it.id })==id)
+                applyConnectionState(it.copy(animalAvatarId=peerAnimalAvatars[id]))
+            else it
+        }
+        updateUnifiedData()
+    }
+
+    // Um vínculo familiar local não é suficiente para recuperar uma identidade.
+    // O credenciamento exige assinatura do proprietário e persistência confirmada.
+    private val recoveryEnrollmentInFlight =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val recoveryEnrollmentConfirmed =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val recoveryEnrollmentApproved =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val pendingOutgoingFamilyRequests =
+        java.util.concurrent.ConcurrentHashMap<String, FamilyRole>()
+
+    private fun enrollFamilyRecoveryIfPossible(personId: String) {
+        val familyId = cleanId(personId).uppercase()
+        if (familyId.isBlank() || familyId == getMyIdentity().uppercase() ||
+            familyId !in recoveryEnrollmentApproved ||
+            familyId in recoveryEnrollmentConfirmed) return
+        val peer = _realDiscoveredPeople.value.firstOrNull {
+            cleanId(it.technicalIdentityHash.ifBlank { it.id }).uppercase() == familyId &&
+                it.isFamily
+        } ?: return
+        val publicKey = E2eeCryptoEngine.getPeerPublicKeyBase64(familyId) ?: return
+        if (!recoveryEnrollmentInFlight.add(familyId)) return
+        scope.launch {
+            try {
+                val status = authorizeFamilyForRecovery(familyId, publicKey)
+                if (status.isSuccess) recoveryEnrollmentConfirmed.add(familyId)
+                else Log.w("PessoasAqui", "Familiar ainda não habilitado para recuperação segura: " +
+                    (status.exceptionOrNull()?.message ?: "sem conexão"))
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Autorização de recuperação não persistida: ${e.message}")
+            } finally {
+                recoveryEnrollmentInFlight.remove(familyId)
+            }
+        }
+    }
 
     val voiceNoteManager = VoiceNoteManager()
 
@@ -111,6 +258,12 @@ class PessoasAquiRepository(
         ChatMessagePersistenceManager(ctx)
     }
 
+    val bleTransportCoordinator: br.com.pessoasaqui.core.proximity.BleDirectTransportCoordinator =
+        injectedBleTransportCoordinator ?: br.com.pessoasaqui.core.proximity.BleDirectTransportCoordinator(
+            context = context,
+            cryptoIdentityManager = cryptoIdentityManager
+        )
+
     val p2pVaultManager: P2PVaultManager? = context?.let { ctx ->
         P2PVaultManager(ctx)
     }
@@ -149,6 +302,36 @@ class PessoasAquiRepository(
 
     // Pessoas reais detectadas fisicamente via rádio BLE ou presença WebSocket
     private val _realDiscoveredPeople = MutableStateFlow<List<NearbyPerson>>(emptyList())
+    // Presença BLE física é independente da telemetria de presença WebSocket/Render.
+    // Um PEER_OFFLINE de rede nunca pode apagar alguém detectado no rádio.
+    private val lastNativeBleSeenMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    internal fun recordNativeBlePresence(peerId: String, seenAtMs: Long = System.currentTimeMillis()) {
+        val id = cleanId(peerId)
+        if (id.isNotBlank()) lastNativeBleSeenMs[id] = seenAtMs
+    }
+
+    /** Para abrir chat a partir de anúncio é necessária descoberta BLE REAL.
+     * Presença do Render, contato salvo ou distância visual não são evidência.
+     */
+    fun hasFreshNativeBlePresence(peerId: String, now: Long = System.currentTimeMillis()): Boolean {
+        val seen = lastNativeBleSeenMs[cleanId(peerId)] ?: return false
+        return seen <= now && now - seen < TEMPORARY_SESSION_EXPIRATION_MS
+    }
+
+    /** Para anúncios, janela mais rígida que a sessão de chat:
+     * nenhuma oferta remota sobrevive a 12 s sem descoberta física recente.
+     * A estimativa RSSI tem margem de erro e não é GPS/medição exata.
+     */
+    fun isOfferPeerInRange(peerId:String, now:Long=System.currentTimeMillis()):Boolean {
+        val id=cleanId(peerId)
+        val seen=lastNativeBleSeenMs[id]?:return false
+        if(seen>now||now-seen>12_000L)return false
+        return _realDiscoveredPeople.value.any {
+            cleanId(it.technicalIdentityHash.ifBlank { it.id })==id &&
+                it.estimatedDistanceMeters <= br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS
+        }
+    }
     private var lastStablePeerOrder: List<String> = emptyList()
 
     // Conjuntos persistidos de marcações e conexões mútuas em SharedPreferences
@@ -162,6 +345,17 @@ class PessoasAquiRepository(
         (prefs?.getStringSet("saved_mutual_people", emptySet()) ?: emptySet()).toMutableSet()
     )
 
+    // Revogações persistem localmente até que o usuário aprove novamente o vínculo.
+    // Isso impede que eventos atrasados, snapshots de presença e histórico salvo o reativem.
+    private val revokedMutualPeople = java.util.Collections.synchronizedSet(
+        (prefs?.getStringSet("saved_revoked_mutual_people", emptySet()) ?: emptySet()).toMutableSet()
+    )
+    // Se estiver offline, a retirada é aplicada imediatamente neste aparelho e enviada
+    // ao backend na próxima oportunidade. Não declara revogação remota antes do sucesso.
+    private val pendingUnmarkPeople = java.util.Collections.synchronizedSet(
+        (prefs?.getStringSet("pending_unmark_people", emptySet()) ?: emptySet()).toMutableSet()
+    )
+
     fun cleanId(id: String): String = id.removePrefix("peer-").trim().uppercase()
 
     fun saveConnectionsToPrefs() {
@@ -169,45 +363,212 @@ class PessoasAquiRepository(
             ?.putStringSet("saved_marked_people", HashSet(savedMarkedPeople))
             ?.putStringSet("saved_marking_me_people", HashSet(savedMarkingMePeople))
             ?.putStringSet("saved_mutual_people", HashSet(savedMutualPeople))
-            ?.remove("saved_revoked_mutual_people")
+            ?.putStringSet("saved_revoked_mutual_people", HashSet(revokedMutualPeople))
+            ?.putStringSet("pending_unmark_people", HashSet(pendingUnmarkPeople))
             ?.apply()
         saveSavedContactsToPrefs()
+    }
+
+
+    fun isPeerPermanent(peerId: String): Boolean {
+        val cid = cleanId(peerId)
+        if (cid.isBlank()) return false
+        val p = _realDiscoveredPeople.value.find { cleanId(it.id) == cid || cleanId(it.technicalIdentityHash) == cid }
+        // Um flag antigo em NearbyPerson não comprova vínculo. Família tem política própria.
+        return p?.isFamily == true || (cid !in revokedMutualPeople && cid in savedMutualPeople)
+    }
+
+    /** Somente confirmação vinda do backend (ou montagem explícita de cenário em teste). */
+    internal fun confirmMutualConnectionFromServer(peerId: String) {
+        val cid = cleanId(peerId)
+        if (cid.isBlank() || cid in revokedMutualPeople) return
+        savedMarkedPeople.add(cid)
+        savedMarkingMePeople.add(cid)
+        savedMutualPeople.add(cid)
+        saveConnectionsToPrefs()
+        _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
+            if (cleanId(peer.technicalIdentityHash.ifBlank { peer.id }) == cid) {
+                peer.copy(isMarkedByMe = true, isMarkingMe = true, isMutualConnection = true, isPhotoVisible = true)
+            } else peer
+        }
+        updateUnifiedData()
+        promoteTemporarySessionToMutual(cid) // Opção A, somente depois da confirmação
+        // Compartilhamento exclusivamente E2EE e após reciprocidade confirmada.
+        scope.launch { sendRealPhotoToMutual(cid) }
+    }
+
+    /** Derruba o privilégio permanente imediatamente, inclusive com UI e cache antigos. */
+    internal fun revokeMutualLocally(peerId: String, removeMyMark: Boolean = false, queueRemoteUnmark: Boolean = false) {
+        val cid = cleanId(peerId)
+        if (cid.isBlank()) return
+        revokedMutualPeople.add(cid)
+        savedMutualPeople.remove(cid)
+        savedMarkingMePeople.remove(cid)
+        avatarPhotoSentByPeer.remove(cid)
+        profilePhotoStore?.savePhoto(cid, null)
+        // Em nenhum caso preservar imagem real visível após revogação.
+        if (removeMyMark) savedMarkedPeople.remove(cid)
+        if (queueRemoteUnmark) pendingUnmarkPeople.add(cid)
+        if (_activeCallState.value?.peerHash?.let(::cleanId) == cid) {
+            finishActiveCall(notifyPeer = false)
+        }
+        _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
+            if (cleanId(peer.technicalIdentityHash.ifBlank { peer.id }) == cid) {
+                peer.copy(
+                    isMarkedByMe = if (removeMyMark) false else cid in savedMarkedPeople,
+                    isMarkingMe = false,
+                    isMutualConnection = false,
+                    isPhotoVisible = false,
+                    mutualProfilePhotoBase64 = null
+                )
+            } else peer
+        }
+        saveConnectionsToPrefs()
+        updateUnifiedData()
+    }
+
+    /** Reconciliação de mão única: servidor informa o estado, cliente NÃO o recria no servidor. */
+    internal fun reconcileConnectionStatus(
+        markedByMe: Collection<String>, markingMe: Collection<String>, mutual: Collection<String>
+    ) {
+        val blocked = revokedMutualPeople.toSet()
+        val own = markedByMe.map(::cleanId).filter { it.isNotBlank() && it !in blocked }.toSet()
+        val remote = markingMe.map(::cleanId).filter { it.isNotBlank() && it !in blocked }.toSet()
+        val confirmed = mutual.map(::cleanId).filter { it.isNotBlank() && it !in blocked && it in own && it in remote }.toSet()
+        val previouslyConfirmed = savedMutualPeople.toSet()
+        val newlyConfirmed = confirmed - previouslyConfirmed
+        // Um snapshot incompleto ou antigo não é prova de revogação explícita.
+        // Não criar veto persistente a partir de ausência em /status: a conexão
+        // poderá ser confirmada novamente quando o backend voltar a sincronizar.
+        // Tombstones são criadas somente por unmark local ou evento de revogação.
+        savedMarkedPeople.clear(); savedMarkedPeople.addAll(own)
+        savedMarkingMePeople.clear(); savedMarkingMePeople.addAll(remote)
+        savedMutualPeople.clear(); savedMutualPeople.addAll(confirmed)
+        _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
+            val cid = cleanId(peer.technicalIdentityHash.ifBlank { peer.id })
+            val active = cid in confirmed
+            peer.copy(
+                isMarkedByMe = cid in own || cid in confirmed,
+                isMarkingMe = cid in remote || cid in confirmed,
+                isMutualConnection = active,
+                isPhotoVisible = active,
+                mutualProfilePhotoBase64 = if (active) profilePhotoStore?.readPhoto(cid) else null
+            )
+        }
+        saveConnectionsToPrefs()
+        updateUnifiedData()
+        newlyConfirmed.forEach { promoteTemporarySessionToMutual(it) }
+        // Após reconectar, publicar foto E2EE apenas às identidades confirmadas.
+        // Versão/hash impede reenvios a cada heartbeat.
+        scope.launch { confirmed.forEach { sendRealPhotoToMutual(it) } }
+    }
+
+    /**
+     * Política Oficial da ETAPA 2 (Opção A - Preservação Automática do Histórico Temporário):
+     * Promove o histórico em memória de uma sessão temporária para armazenamento local criptografado (AES-256-GCM)
+     * única e exclusivamente mediante conexão mútua confirmada, preservando mensagens prévias e evitando duplicações.
+     */
+    fun promoteTemporarySessionToMutual(peerId: String) {
+        val clean = cleanId(peerId)
+        if (clean.isBlank()) return
+        // 1. Confirmar que a conexão mútua ou familiar foi validamente estabelecida
+        if (!isPeerPermanent(clean)) return
+
+        // 2. Recuperar as mensagens temporárias existentes na memória
+        val memoryMsgs = _unifiedPrivateChats.value[clean]
+            ?: _unifiedPrivateChats.value["peer-$clean"]
+            ?: _unifiedPrivateChats.value[clean.lowercase()]
+            ?: proximitySimulator.privateChats.value[clean]
+            ?: emptyList()
+
+        // 3. Evitar duplicação ou sobrescrita: mescla histórico prévio do disco com as mensagens de proximidade
+        val existingDiskMsgs = chatPersistence?.loadAllPrivateChats()?.let { all ->
+            all[clean.lowercase()] ?: all[clean] ?: emptyList()
+        } ?: emptyList()
+
+        val merged = (existingDiskMsgs + memoryMsgs)
+            .distinctBy { it.id }
+            .sortedBy { it.timestampMs }
+
+        // 4. Preserva automaticamente o histórico consolidado no disco criptografado
+        if (merged.isNotEmpty()) {
+            chatPersistence?.savePrivateChat(clean, merged)
+            proximitySimulator.loadPersistedMessages()
+        }
+    }
+
+    fun cleanupExpiredTemporarySessions(
+        now: Long = System.currentTimeMillis(),
+        expirationMs: Long = TEMPORARY_SESSION_EXPIRATION_MS
+    ): List<String> {
+        val current = _realDiscoveredPeople.value.toMutableList()
+        val expiredPeers = current.filter { peer ->
+            val isPermanent = isPeerPermanent(peer.technicalIdentityHash.ifBlank { peer.id })
+            val elapsed = now - peer.lastSeenEpochMs
+            !isPermanent && elapsed >= expirationMs
+        }
+
+        if (expiredPeers.isEmpty()) return emptyList()
+
+        val expiredIds = mutableListOf<String>()
+        expiredPeers.forEach { p ->
+            val cid = cleanId(p.technicalIdentityHash.ifBlank { p.id })
+            expiredIds.add(cid)
+            lastNativeBleSeenMs.remove(cid)
+            bleOfferSnapshots.remove(cid)
+            bleOfferSentAt.remove(cid)
+            bleAvatarSentAt.remove(cid)
+            peerAnimalAvatars.remove(cid)
+            proximitySimulator.clearPrivateChat(cid)
+            // Preservação estrita: sessões temporárias existem apenas na memória RAM.
+            // Históricos legados em disco NUNCA são apagados por timeout de afastamento BLE.
+            // Exclusão de arquivos em disco é prerrogativa exclusiva de ação voluntária do usuário.
+        }
+
+        val remaining = current.filter { it !in expiredPeers }
+        _realDiscoveredPeople.value = remaining
+        updateUnifiedData()
+
+        // Purga sessões lógicas expiradas no coordenador BLE com memory wiping seguro
+        bleTransportCoordinator.cleanupExpiredSessions(now)
+
+        return expiredIds
     }
 
     fun isPeerMarkedByMe(person: NearbyPerson): Boolean {
         val cid = cleanId(person.technicalIdentityHash)
         val pid = cleanId(person.id)
-        return person.isMarkedByMe ||
-                (cid.isNotBlank() && savedMarkedPeople.contains(cid)) ||
-                (pid.isNotBlank() && savedMarkedPeople.contains(pid))
+        return (cid.isNotBlank() && cid in savedMarkedPeople) ||
+                (pid.isNotBlank() && pid in savedMarkedPeople)
     }
 
     fun isPeerMarkingMe(person: NearbyPerson): Boolean {
         val cid = cleanId(person.technicalIdentityHash)
         val pid = cleanId(person.id)
-        return person.isMarkingMe ||
-                (cid.isNotBlank() && savedMarkingMePeople.contains(cid)) ||
-                (pid.isNotBlank() && savedMarkingMePeople.contains(pid))
+        return (cid.isNotBlank() && cid in savedMarkingMePeople) ||
+                (pid.isNotBlank() && pid in savedMarkingMePeople)
     }
 
     fun isPeerMutual(person: NearbyPerson): Boolean {
         if (person.isFamily) return true
-        val cid = cleanId(person.technicalIdentityHash)
-        val pid = cleanId(person.id)
-        if ((cid.isNotBlank() && savedMutualPeople.contains(cid)) ||
-            (pid.isNotBlank() && savedMutualPeople.contains(pid))) {
-            return true
-        }
-        val marked = isPeerMarkedByMe(person)
-        val marking = isPeerMarkingMe(person)
-        return marked && marking
+        val cid = cleanId(person.technicalIdentityHash.ifBlank { person.id })
+        return cid.isNotBlank() && cid !in revokedMutualPeople && cid in savedMutualPeople
+    }
+
+    fun isPeerMutual(peerId: String): Boolean {
+        val cid = cleanId(peerId)
+        if (cid.isBlank()) return false
+        if (cid in revokedMutualPeople) return false
+        if (cid in savedMutualPeople) return true
+        val p = _realDiscoveredPeople.value.find { cleanId(it.id) == cid || cleanId(it.technicalIdentityHash) == cid }
+        return p?.isFamily == true
     }
 
     fun applyConnectionState(person: NearbyPerson): NearbyPerson {
         val cid = cleanId(if (person.technicalIdentityHash.isNotBlank()) person.technicalIdentityHash else person.id)
         val marked = isPeerMarkedByMe(person)
         val marking = isPeerMarkingMe(person)
-        val mutual = isPeerMutual(person) || (marked && marking)
+        val mutual = isPeerMutual(person) // marcações recíprocas sem confirmação NÃO concedem Modo B
 
         return person.copy(
             id = cid,
@@ -215,7 +576,9 @@ class PessoasAquiRepository(
             isMarkedByMe = marked || mutual,
             isMarkingMe = marking || mutual,
             isMutualConnection = mutual,
-            isPhotoVisible = mutual || person.isFamily
+            isPhotoVisible = mutual,
+            animalAvatarId = peerAnimalAvatars[cid] ?: person.animalAvatarId,
+            mutualProfilePhotoBase64 = if (mutual) profilePhotoStore?.readPhoto(cid) else null
         )
     }
 
@@ -401,7 +764,7 @@ class PessoasAquiRepository(
     fun saveSavedContactsToPrefs() {
         try {
             val currentList = _realDiscoveredPeople.value.filter {
-                (it.isMutualConnection || it.isFamily || isPeerMutual(it)) && !it.id.startsWith("sim-", ignoreCase = true)
+                (isPeerPermanent(it.technicalIdentityHash.ifBlank { it.id }) || it.isFamily) && !it.id.startsWith("sim-", ignoreCase = true)
             }
             val existingSaved = loadSavedContactsFromPrefs().filter {
                 !it.id.startsWith("sim-", ignoreCase = true)
@@ -411,14 +774,14 @@ class PessoasAquiRepository(
             val mergedMap = LinkedHashMap<String, NearbyPerson>()
             existingSaved.forEach { p ->
                 val k = cleanId(p.technicalIdentityHash.ifBlank { p.id })
-                if (k.isNotBlank() && (k in savedMutualPeople || p.isFamily)) {
+                if (k.isNotBlank() && (p.isFamily || (k in savedMutualPeople && k !in revokedMutualPeople))) {
                     mergedMap[k] = p
                 }
             }
             currentList.forEach { p ->
                 val k = cleanId(p.technicalIdentityHash.ifBlank { p.id })
                 if (k.isNotBlank()) {
-                    if (p.isMutualConnection || p.isFamily || k in savedMutualPeople) {
+                    if (p.isFamily || (k in savedMutualPeople && k !in revokedMutualPeople)) {
                         mergedMap[k] = p
                     } else {
                         mergedMap.remove(k)
@@ -485,6 +848,58 @@ class PessoasAquiRepository(
     private val _realOffers = MutableStateFlow<List<OfferItem>>(loadUserOffersFromPrefs())
     private val _unifiedOffers = MutableStateFlow<List<OfferItem>>(emptyList())
     val localOffers: StateFlow<List<OfferItem>> = _unifiedOffers.asStateFlow()
+    // Ofertas de terceiros só entram na lista quando chegam por BLE/GATT.
+    // Nunca persistir a sessão temporária ou enviar foto de perfil no anúncio.
+    private val bleOfferSnapshots = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<OfferItem>>>()
+    private val bleOfferSentAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val _offerSyncError = MutableStateFlow<String?>(null)
+    val offerSyncError: StateFlow<String?> = _offerSyncError.asStateFlow()
+
+    private fun sendBleOfferSnapshot(peerId: String, force: Boolean = false) {
+        val id = cleanId(peerId)
+        if (!isOfferPeerInRange(id)) return
+        val now = System.currentTimeMillis()
+        val lastSent = bleOfferSentAt[id] ?: 0L
+        if (!force && now - lastSent < 75_000L) return
+        val mine = _realOffers.value.filter {
+            cleanId(it.authorId) == cleanId(getMyIdentity())
+        }.take(3)
+        // Um snapshot vazio remove ofertas antigas. Sem oferta publicada,
+        // um contato novo não precisa receber tráfego desnecessário.
+        if (mine.isEmpty() && lastSent == 0L) return
+        val payload = br.com.pessoasaqui.core.proximity.BleOfferProtocol.encode(
+            getMyIdentity(), mine
+        ) ?: return
+        bleOfferSentAt[id] = now
+        val accepted = bleTransportCoordinator.sendTemporaryMessage(
+            id, payload, _currentAlias.value
+        )
+        if (!accepted) bleOfferSentAt.remove(id, now)
+    }
+
+    private fun broadcastBleOffers(force: Boolean = true) {
+        _realDiscoveredPeople.value.filter {
+            it.estimatedDistanceMeters <= br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS &&
+                isOfferPeerInRange(it.technicalIdentityHash.ifBlank { it.id })
+        }.forEach { sendBleOfferSnapshot(it.technicalIdentityHash.ifBlank { it.id }, force) }
+    }
+
+    private fun receiveBleOffers(sender: String, payload: String) {
+        val id = cleanId(sender)
+        if (!isOfferPeerInRange(id)) return
+        val decoded = br.com.pessoasaqui.core.proximity.BleOfferProtocol.decode(id, payload)
+            ?: return
+        val peer = _realDiscoveredPeople.value.firstOrNull {
+            cleanId(it.technicalIdentityHash.ifBlank { it.id }) == id
+        } ?: return
+        if (peer.estimatedDistanceMeters > br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS) return
+        bleOfferSnapshots[id] = System.currentTimeMillis() to decoded.map {
+            it.copy(distanceMeters = peer.estimatedDistanceMeters,
+                proximityLabel = "BLE • até ~10 m")
+        }
+        updateUnifiedData()
+    }
+
 
     private val _unifiedLocalChatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val localChatMessages: StateFlow<List<ChatMessage>> = _unifiedLocalChatMessages.asStateFlow()
@@ -496,6 +911,85 @@ class PessoasAquiRepository(
 
     private val _activeCallState = MutableStateFlow<ActiveCallState?>(null)
     val activeCallState: StateFlow<ActiveCallState?> = _activeCallState.asStateFlow()
+
+    private val callStateLock = Any()
+    @Volatile private var activeCallGeneration: String? = null
+    private var callConnectedAtMs: Long = 0L
+    private var outgoingCallTimeoutJob: Job? = null
+    private val callLifecycle = CallSessionStateMachine()
+    // Impede nova chamada entre a transição terminal e a liberação da mídia.
+    @Volatile private var callCleanupInProgress = false
+
+    private fun markActiveCallConnected() {
+        synchronized(callStateLock) {
+            if (callConnectedAtMs == 0L) callConnectedAtMs = System.currentTimeMillis()
+            outgoingCallTimeoutJob?.cancel()
+            outgoingCallTimeoutJob = null
+        }
+    }
+
+    private fun finishActiveCall(
+        timedOut: Boolean = false,
+        remoteEnded: Boolean = false,
+        notifyPeer: Boolean = !remoteEnded,
+        remoteDeclined: Boolean = false,
+        remoteBusy: Boolean = false
+    ) {
+        val completed = synchronized(callStateLock) {
+            val current = _activeCallState.value ?: return
+            val durationSeconds = if (current.isConnected && callConnectedAtMs > 0L) {
+                ((System.currentTimeMillis() - callConnectedAtMs) / 1000L).coerceAtLeast(0L)
+            } else 0L
+            val callId = activeCallGeneration ?: CallSignalingProtocol.newCallId()
+            val reason = callLifecycle.finish(callId, cleanId(current.peerHash),
+                byTimeout = timedOut, byRemotePeer = remoteEnded,
+                remoteDeclined = remoteDeclined, remoteBusy = remoteBusy) ?: return
+            callCleanupInProgress = true
+            _activeCallState.value = null
+            activeCallGeneration = null
+            callConnectedAtMs = 0L
+            outgoingCallTimeoutJob?.cancel()
+            outgoingCallTimeoutJob = null
+            Pair(Triple(current, durationSeconds, callId), reason)
+        }
+        val (callDetails, reason) = completed
+        val (current, durationSeconds, callId) = callDetails
+        try {
+            callRingtoneWakeManager?.stopAllCallAlerts()
+            callMediaEngine?.stopCallMedia()
+
+            val type = if (current.isVideo) "📹 Videochamada" else "📞 Chamada de voz"
+            val outcome = when (reason) {
+                CallSessionStateMachine.FinishReason.COMPLETED -> if (current.isIncoming) "recebida" else "realizada"
+                CallSessionStateMachine.FinishReason.CANCELLED -> "cancelada"
+                CallSessionStateMachine.FinishReason.DECLINED -> "recusada"
+                CallSessionStateMachine.FinishReason.MISSED -> "perdida"
+                CallSessionStateMachine.FinishReason.NO_ANSWER -> "não atendida"
+                CallSessionStateMachine.FinishReason.BUSY -> "ocupada"
+            }
+            val durationText = if (current.isConnected) " — ${durationSeconds / 60}min ${durationSeconds % 60}s" else ""
+            proximitySimulator.recordCallHistory(
+                peerId = current.peerHash,
+                description = "$type $outcome$durationText",
+                outgoing = !current.isIncoming,
+                myAlias = _currentAlias.value,
+                entryId = "call-$callId"
+            )
+            updateUnifiedData()
+
+            if (notifyPeer) {
+                val terminal = CallSignalingProtocol.EndReason.valueOf(reason.name)
+                val endSignal = CallSignalingProtocol.encode(CallSignalingProtocol.Command.END, callId, terminal)
+                sendPrivateMessage(current.peerHash, endSignal)
+                scope.launch {
+                    delay(200L)
+                    sendPrivateMessage(current.peerHash, endSignal)
+                }
+            }
+        } finally {
+            callCleanupInProgress = false
+        }
+    }
 
     private val _pendingFamilyRequest = MutableStateFlow<Pair<NearbyPerson, FamilyRole>?>(null)
     val pendingFamilyRequest: StateFlow<Pair<NearbyPerson, FamilyRole>?> = _pendingFamilyRequest.asStateFlow()
@@ -513,9 +1007,12 @@ class PessoasAquiRepository(
     private var lastSupportSyncMs = 0L
 
     init {
-        prefs?.edit()?.remove("saved_revoked_mutual_people")?.apply()
+        // Revogações não podem ser apagadas ao reiniciar, evitando ressuscitar vínculos antigos.
         chatPersistence?.let { cp ->
             proximitySimulator.setPersistenceManager(cp)
+        }
+        proximitySimulator.shouldPersistPrivateChat = { peerId ->
+            isPeerPermanent(peerId)
         }
 
         val restoredContacts = loadSavedContactsFromPrefs()
@@ -527,6 +1024,14 @@ class PessoasAquiRepository(
         scope.launch {
             proximitySimulator.localChatMessages.collect {
                 updateUnifiedData()
+            }
+        }
+        // Atualiza a aba Ofertas quando uma descoberta BLE expira e não há
+        // novos eventos de scanner (por ex. celular se afasta ou rádio é desligado).
+        scope.launch {
+            while (true) {
+                delay(5_000L)
+                if (bleOfferSnapshots.isNotEmpty()) updateUnifiedData()
             }
         }
         scope.launch {
@@ -566,7 +1071,80 @@ class PessoasAquiRepository(
             }
         }
 
-        startPresencePollingLoop()
+        // Configura Coordenador de Transporte Bluetooth Direto (ETAPA 3D & 3E)
+        bleTransportCoordinator.onTemporaryMessageReceived = { peerId, text, _ ->
+            val cleanSender = cleanId(peerId)
+            if (br.com.pessoasaqui.core.proximity.BleOfferProtocol.isOfferPayload(text)) {
+                receiveBleOffers(cleanSender, text)
+            } else if (text.startsWith("[PA_AVATAR_V1:")) {
+                receiveBleAvatar(cleanSender, text)
+            } else if (!isPeerPermanent(cleanSender)) {
+                // Protocolo interno não vira mensagem de conversa.
+                val peerAlias = _realDiscoveredPeople.value.firstOrNull {
+                    cleanId(it.id) == cleanSender || cleanId(it.technicalIdentityHash) == cleanSender
+                }?.alias ?: "Pessoa Próxima"
+                proximitySimulator.receivePrivateMessage(cleanSender, peerAlias, text)
+                updateUnifiedData()
+            }
+        }
+
+        // Confirmação física real de entrega via ACK verificado
+        bleTransportCoordinator.onDeliveryConfirmedWithUuid = { peerId, _, messageUuid ->
+            val cleanSender = cleanId(peerId)
+            if (messageUuid.isNotBlank()) {
+                proximitySimulator.updateMessageDeliveryStatus(
+                    cleanSender,
+                    messageUuid,
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
+                )
+                updateUnifiedData()
+            }
+        }
+
+        // Notificação real de falha de entrega (timeout ou desconexão)
+        bleTransportCoordinator.onDeliveryFailed = { peerId, _, messageUuid, _ ->
+            val cleanSender = cleanId(peerId)
+            if (messageUuid.isNotBlank()) {
+                proximitySimulator.updateMessageDeliveryStatus(
+                    cleanSender,
+                    messageUuid,
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                )
+                updateUnifiedData()
+            }
+        }
+
+        // Recepção segura do nome completo autenticado via metadados AES-256-GCM
+        bleTransportCoordinator.onPeerAliasReceived = { peerId, fullAlias ->
+            val cleanSender = cleanId(peerId)
+            updatePeerFullAlias(cleanSender, fullAlias)
+        }
+
+        bleManager?.onDeviceAddressDiscovered = { peerHash, address ->
+            bleTransportCoordinator.recordPeerDeviceAddress(peerHash, address)
+        }
+        bleManager?.onBluetoothStateChanged = { enabled ->
+            try {
+                if (!enabled) {
+                    // O Android encerra conexões GATT ao desligar o adaptador:
+                    // descartar handles antigos antes da próxima inicialização.
+                    bleTransportCoordinator.stop()
+                } else if (_hasGrantedPermissions.value) {
+                    // Mesmo se o app iniciou com Bluetooth desligado (sem callbacks
+                    // anteriores), iniciar GATT + advertising + scanner por inteiro.
+                    startNativeBleHardware()
+                }
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Falha ao sincronizar GATT com estado do Bluetooth: ${e.message}")
+            }
+        }
+
+        // Objetos criados nos testes JVM (sem Context Android) não devem
+        // executar polling real e consumir recursos do Render.
+        if (context != null) {
+            startPresencePollingLoop()
+            startBleMaintenanceLoop()
+        }
 
         // Se o perfil já estiver configurado, registra identidade no Supabase / Render
         if (_hasCompletedProfile.value) {
@@ -582,52 +1160,91 @@ class PessoasAquiRepository(
 
     private val processedMessageIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
-    private fun processIncomingPayload(senderHash: String, senderAlias: String, rawPayload: String, iv: String = "", messageId: String = "") {
+    internal fun processIncomingPayload(senderHash: String, senderAlias: String, rawPayload: String, iv: String = "", messageId: String = "") {
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        val cleanSender = cleanId(senderHash)
+        // Uma falha de autenticação/decifragem nunca vira bolha de chat nem
+        // sinalização de chamada. Não marcar o ID como processado antes de
+        // validar a mensagem: uma retransmissão futura pode ter dados válidos.
+        val payload = try {
+            E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, cryptoIdentityManager.getActivePrivateKey())
+        } catch (_: SecurityException) {
+            Log.w("PessoasAqui", "Envelope E2EE não autenticado; descartado sem exibir dados cifrados")
+            return
+        }
+        if (payload.startsWith("ENC_ECDH:") || payload.startsWith("ENC:")) {
+            Log.w("PessoasAqui", "Envelope cifrado inesperado após decifragem; descartado")
+            return
+        }
         if (messageId.isNotBlank()) {
-            if (processedMessageIds.contains(messageId)) return
-            processedMessageIds.add(messageId)
-            if (processedMessageIds.size > 2000) {
-                processedMessageIds.clear()
+            synchronized(processedMessageIds) {
+                if (!processedMessageIds.add(messageId)) return
+                if (processedMessageIds.size > 2000) processedMessageIds.clear()
             }
         }
 
-        val myId = cryptoIdentityManager.getTechnicalIdentity()
-        val cleanSender = cleanId(senderHash)
-        // Decifra o payload E2EE se estiver protegido com AES-256-GCM ou ECDH
-        val payload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, cryptoIdentityManager.getActivePrivateKey())
-
         when {
-            payload.startsWith("[CALL_AUDIO_FRAME:") -> {
-                val b64 = payload.removePrefix("[CALL_AUDIO_FRAME:").removeSuffix("]")
-                // Se o chamador recebe áudio do destinatário mas seu estado ainda marca 'não conectado',
-                // significa que o destinatário atendeu! Conecta imediatamente e inicia sua mídia.
-                val current = _activeCallState.value
-                if (current != null && !current.isConnected && !current.isIncoming) {
-                    callRingtoneWakeManager?.stopAllCallAlerts()
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
-                    callMediaEngine?.startCallMedia(current.isVideo)
-                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
+            payload.startsWith("[PA_REAL_PHOTO_V1:") -> {
+                // Envelope já foi autenticado/decifrado por E2EE.
+                // Nunca aceitar foto privada de desconhecidos no Modo A.
+                if (!isPeerMutualById(cleanSender) || !payload.endsWith("]") ||
+                    payload.length > 160030) return
+                val data = payload.removePrefix("[PA_REAL_PHOTO_V1:").dropLast(1)
+                val saved = if (data == "NONE") profilePhotoStore?.savePhoto(cleanSender,null)
+                    else profilePhotoStore?.savePhoto(cleanSender,data)
+                if (saved == true) {
+                    _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
+                        if (cleanId(peer.technicalIdentityHash.ifBlank { peer.id }) == cleanSender)
+                            applyConnectionState(peer) else peer
+                    }
+                    updateUnifiedData()
                 }
-                callMediaEngine?.playRemoteAudioFrame(b64)
+            }
+            payload.startsWith("[CALL_AUDIO_FRAME:") -> {
+                // Mídia não constitui aceitação: o usuário precisa atender.
+                val active = _activeCallState.value
+                if (active?.isConnected == true && cleanId(active.peerHash) == cleanSender) {
+                    callMediaEngine?.playRemoteAudioFrame(payload.removePrefix("[CALL_AUDIO_FRAME:").removeSuffix("]"))
+                }
             }
             payload.startsWith("[CALL_VIDEO_FRAME:") -> {
-                val b64 = payload.removePrefix("[CALL_VIDEO_FRAME:").removeSuffix("]")
-                // Se o chamador recebe vídeo do destinatário mas seu estado ainda marca 'não conectado',
-                // conecta imediatamente e inicia sua transmissão.
-                val current = _activeCallState.value
-                if (current != null && !current.isConnected && !current.isIncoming) {
-                    callRingtoneWakeManager?.stopAllCallAlerts()
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = true, remoteVideoFrameBase64 = b64)
-                    callMediaEngine?.startCallMedia(true)
-                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
-                } else {
-                    _activeCallState.value = _activeCallState.value?.copy(remoteVideoFrameBase64 = b64)
+                val active = _activeCallState.value
+                if (active?.isConnected == true && active.isVideo &&
+                    cleanId(active.peerHash) == cleanSender) {
+                    val frame = payload.removePrefix("[CALL_VIDEO_FRAME:").removeSuffix("]")
+                    _activeCallState.value = active.copy(remoteVideoFrameBase64 = frame)
                 }
             }
             payload.startsWith("[CALL_INIT:") -> {
+                // Chamadas são exclusivas de vínculos permanentes. Retransmissões
+                // CALL_INIT não podem reiniciar o toque nem o timer da ligação.
+                if (!isPeerPermanent(cleanSender)) return
+                val candidate = CallSignalingProtocol.invitationCallId(payload)
+                if (_activeCallState.value != null || callCleanupInProgress) {
+                    // Convite duplicado da mesma ligação: ignorar sem afetar
+                    // o telefone. Convite diferente: responder "ocupado".
+                    if (candidate != null && candidate != activeCallGeneration) {
+                        sendPrivateMessage(cleanSender,
+                            CallSignalingProtocol.encode(
+                                CallSignalingProtocol.Command.END, candidate,
+                                CallSignalingProtocol.EndReason.BUSY))
+                    }
+                    return
+                }
+
                 val parts = payload.removePrefix("[CALL_INIT:").removeSuffix("]").split(":")
                 val isVideo = parts.getOrNull(0)?.toBoolean() ?: false
                 val callerAlias = parts.getOrNull(1) ?: senderAlias
+                val generation = candidate ?: CallSignalingProtocol.newCallId()
+                // O histórico do Modo B é persistido criptografado. Impede
+                // reabrir uma chamada concluída após morte/reinício do processo.
+                if (proximitySimulator.privateChats.value[cleanSender].orEmpty()
+                        .any { it.id == "call-$generation" }) return
+                synchronized(callStateLock) {
+                    if (!callLifecycle.begin(generation, cleanSender, isVideo, incoming = true)) return
+                    activeCallGeneration = generation
+                    callConnectedAtMs = 0L
+                }
                 _activeCallState.value = ActiveCallState(
                     isIncoming = true,
                     peerHash = cleanSender,
@@ -639,31 +1256,50 @@ class PessoasAquiRepository(
                     callerHash = cleanSender,
                     callerAlias = callerAlias,
                     isVideo = isVideo,
-                    onAutoTimeout = { endCall() }
+                    onAutoTimeout = {
+                        if (activeCallGeneration == generation) finishActiveCall(timedOut = true)
+                    }
                 )
             }
             payload.startsWith("[CALL_ACCEPT]") -> {
-                callRingtoneWakeManager?.stopAllCallAlerts()
-                val current = _activeCallState.value
-                if (current != null && !current.isConnected) {
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
-                    callMediaEngine?.startCallMedia(current.isVideo)
-                    // Confirmação de recebimento (handshake bidirecional)
-                    sendPrivateMessage(current.peerHash, "[CALL_ACK]")
+                // Aceite e timeout competem entre callbacks de rede diferentes.
+                // A transição e o estado visível devem mudar atomicamente.
+                val accepted = synchronized(callStateLock) {
+                    val current = _activeCallState.value
+                    val callId = activeCallGeneration
+                    if (current != null && !current.isIncoming && !current.isConnected &&
+                        cleanId(current.peerHash) == cleanSender &&
+                        CallSignalingProtocol.belongsToCall(payload, CallSignalingProtocol.Command.ACCEPT, callId) &&
+                        callLifecycle.accept(callId!!, cleanSender, byLocalUser = false)) {
+                        _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+                        markActiveCallConnected()
+                        Pair(current, callId!!)
+                    } else null
+                }
+                accepted?.let { (current, callId) ->
+                    if (activeCallGeneration == callId) {
+                        callRingtoneWakeManager?.stopAllCallAlerts()
+                        callMediaEngine?.startCallMedia(current.isVideo)
+                        sendPrivateMessage(current.peerHash,
+                            CallSignalingProtocol.encode(CallSignalingProtocol.Command.ACK, callId))
+                    }
                 }
             }
             payload.startsWith("[CALL_ACK]") -> {
-                callRingtoneWakeManager?.stopAllCallAlerts()
-                val current = _activeCallState.value
-                if (current != null && !current.isConnected) {
-                    _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
-                    callMediaEngine?.startCallMedia(current.isVideo)
-                }
+                // ACK é confirmação de sinalização, jamais aceite.
             }
             payload.startsWith("[CALL_END]") -> {
-                callRingtoneWakeManager?.stopAllCallAlerts()
-                callMediaEngine?.stopCallMedia()
-                _activeCallState.value = null
+                val current = _activeCallState.value
+                if (current != null && cleanId(current.peerHash) == cleanSender &&
+                    CallSignalingProtocol.belongsToCall(payload, CallSignalingProtocol.Command.END, activeCallGeneration)) {
+                    val terminal = CallSignalingProtocol.terminationReason(payload)
+                    finishActiveCall(
+                        remoteEnded = true,
+                        notifyPeer = false,
+                        remoteDeclined = terminal == CallSignalingProtocol.EndReason.DECLINED,
+                        remoteBusy = terminal == CallSignalingProtocol.EndReason.BUSY
+                    )
+                }
             }
             payload.startsWith("[FAMILY_REQ:") -> {
                 val parts = payload.removePrefix("[FAMILY_REQ:").removeSuffix("]").split(":")
@@ -685,6 +1321,13 @@ class PessoasAquiRepository(
                 val roleName = parts.getOrNull(0) ?: FamilyRole.OUTRO.name
                 val partnerAlias = parts.getOrNull(1) ?: senderAlias
                 val role = try { FamilyRole.valueOf(roleName) } catch (_: Exception) { FamilyRole.OUTRO }
+                // Um FAMILY_ACCEPT não solicitado não pode criar relação
+                // familiar nem conceder recuperação do proprietário.
+                val expected = pendingOutgoingFamilyRequests.remove(cleanSender.uppercase())
+                if (expected != role) {
+                    Log.w("PessoasAqui", "FAMILY_ACCEPT não solicitado ignorado para $cleanSender")
+                    return
+                }
                 setFamilyRole(cleanSender, role)
                 proximitySimulator.receivePrivateMessage(
                     cleanSender,
@@ -714,13 +1357,8 @@ class PessoasAquiRepository(
 
                 keys.forEach { savedMarkingMePeople.add(it) }
                 val isMarked = targetPeer?.let { isPeerMarkedByMe(it) } ?: keys.any { savedMarkedPeople.contains(it) }
-                val isNowMutual = isMarked
-                if (isNowMutual) {
-                    keys.forEach {
-                        savedMutualPeople.add(it)
-                        savedMarkedPeople.add(it)
-                    }
-                }
+                val isNowMutual = isPeerPermanent(cleanSender)
+                // MARK_ON é apenas indicação de pedido, não prova de dupla aprovação.
                 saveConnectionsToPrefs()
 
                 val updatedPeer = if (idx != -1) {
@@ -758,7 +1396,6 @@ class PessoasAquiRepository(
                 updateUnifiedData()
 
                 if (isNowMutual) {
-                    sendPrivateMessage(cleanSender, "[MARK_MUTUAL:${_currentAlias.value}]")
                     proximitySimulator.receivePrivateMessage(
                         cleanSender,
                         "Sistema",
@@ -775,103 +1412,14 @@ class PessoasAquiRepository(
                 }
             }
             payload.startsWith("[MARK_OFF:") -> {
-                val currentReal = _realDiscoveredPeople.value.toMutableList()
-                val idx = currentReal.indexOfFirst { cleanId(it.id) == cleanSender || cleanId(it.technicalIdentityHash) == cleanSender }
-                val targetPeer = if (idx != -1) currentReal[idx] else null
-                val hashId = cleanId(targetPeer?.technicalIdentityHash?.ifBlank { cleanSender } ?: cleanSender)
-                val pId = cleanId(targetPeer?.id ?: cleanSender)
-                val aliasId = cleanId(targetPeer?.alias ?: "")
-
-                val keys = listOfNotNull(
-                    hashId.takeIf { it.isNotBlank() },
-                    pId.takeIf { it.isNotBlank() },
-                    cleanSender.takeIf { it.isNotBlank() }
-                ).distinct()
-
-                keys.forEach {
-                    savedMarkingMePeople.remove(it)
-                    savedMutualPeople.remove(it)
-                }
-                saveConnectionsToPrefs()
-
-                if (idx != -1) {
-                    val p = currentReal[idx]
-                    val updated = p.copy(
-                        isMarkingMe = false,
-                        isMutualConnection = p.isFamily,
-                        isPhotoVisible = p.isFamily
-                    )
-                    currentReal[idx] = updated
-                    _realDiscoveredPeople.value = currentReal
-                    updateUnifiedData()
-                }
+                // Compatibilidade com notificações antigas do backend: invalida o
+                // vínculo local, não tenta revivê-lo a partir de um chat antigo.
+                revokeMutualLocally(cleanSender)
             }
             payload.startsWith("[MARK_MUTUAL:") -> {
-                val callerAlias = payload.removePrefix("[MARK_MUTUAL:").removeSuffix("]").ifBlank { senderAlias }
-                val currentReal = _realDiscoveredPeople.value.toMutableList()
-                val idx = currentReal.indexOfFirst {
-                    cleanId(it.id) == cleanSender || cleanId(it.technicalIdentityHash) == cleanSender ||
-                    (callerAlias.isNotBlank() && !it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(callerAlias, ignoreCase = true))
-                }
-
-                val targetPeer = if (idx != -1) currentReal[idx] else null
-                val hashId = cleanId(targetPeer?.technicalIdentityHash?.ifBlank { cleanSender } ?: cleanSender)
-                val pId = cleanId(targetPeer?.id ?: cleanSender)
-                val aliasId = cleanId(callerAlias)
-
-                val keys = listOfNotNull(
-                    hashId.takeIf { it.isNotBlank() },
-                    pId.takeIf { it.isNotBlank() },
-                    cleanSender.takeIf { it.isNotBlank() }
-                ).distinct()
-
-                keys.forEach {
-                    savedMarkingMePeople.add(it)
-                    savedMarkedPeople.add(it)
-                    savedMutualPeople.add(it)
-                }
-                saveConnectionsToPrefs()
-
-                val updatedPeer = if (idx != -1) {
-                    val p = currentReal[idx]
-                    val updated = p.copy(
-                        id = cleanSender,
-                        technicalIdentityHash = cleanSender,
-                        alias = if (p.alias.startsWith("Pessoa Próxima #") && callerAlias.isNotBlank()) callerAlias else p.alias,
-                        isMarkedByMe = true,
-                        isMarkingMe = true,
-                        isMutualConnection = true,
-                        isPhotoVisible = true,
-                        lastSeenEpochMs = System.currentTimeMillis()
-                    )
-                    currentReal[idx] = updated
-                    updated
-                } else {
-                    val newPeer = NearbyPerson(
-                        id = cleanSender,
-                        technicalIdentityHash = cleanSender,
-                        alias = if (callerAlias.isNotBlank()) callerAlias else senderAlias,
-                        estimatedDistanceMeters = 500.0,
-                        proximityLabel = "Conexão Mútua • Ilimitada",
-                        isMarkedByMe = true,
-                        isMarkingMe = true,
-                        isMutualConnection = true,
-                        isPhotoVisible = true,
-                        avatarColorHex = 0xFF00E5FF,
-                        lastSeenEpochMs = System.currentTimeMillis()
-                    )
-                    currentReal.add(0, newPeer)
-                    newPeer
-                }
-                _realDiscoveredPeople.value = currentReal
-                updateUnifiedData()
-
-                proximitySimulator.receivePrivateMessage(
-                    cleanSender,
-                    "Sistema",
-                    "✨ Conexão Mútua Estabelecida com ${updatedPeer.alias}! Comunicação à distância, chamadas e mídia liberadas.",
-                    messageId
-                )
+                // Eventos legados ou atrasados não são prova de vínculo permanente.
+                // A conexão só é confirmada pelo evento oficial do servidor ou por /status.
+                Log.d("PessoasAqui", "Ignorando controle MARK_MUTUAL legado; aguardando confirmação do servidor")
             }
             payload.startsWith("[VAULT_STORE:") -> {
                 val b64 = payload.removePrefix("[VAULT_STORE:").removeSuffix("]")
@@ -879,7 +1427,9 @@ class PessoasAquiRepository(
                     try {
                         val jsonStr = String(E2eeCryptoEngine.Base64Helper.decode(b64), Charsets.UTF_8)
                         val vault = p2pVaultManager?.deserializeVaultFromJson(jsonStr)
-                        if (vault != null) {
+                        if (vault != null &&
+                            cleanId(vault.ownerIdentityHash).equals(cleanSender, ignoreCase = true) &&
+                            isPeerPermanent(cleanSender)) {
                             val stored = p2pVaultManager?.storePeerVault(vault) ?: false
                             if (stored) {
                                 sendPrivateMessage(cleanSender, "[VAULT_ACK:${vault.version}]")
@@ -898,6 +1448,9 @@ class PessoasAquiRepository(
             payload.startsWith("[VAULT_QUERY:") -> {
                 val targetOwnerHash = payload.removePrefix("[VAULT_QUERY:").removeSuffix("]").trim().lowercase()
                 scope.launch(Dispatchers.IO) {
+                    // Não entregar ciphertext de terceiro a contato não autorizado.
+                    if (!targetOwnerHash.equals(cleanSender, ignoreCase = true) ||
+                        !isPeerPermanent(cleanSender)) return@launch
                     val vault = p2pVaultManager?.getStoredPeerVault(targetOwnerHash)
                     if (vault != null) {
                         val jsonStr = p2pVaultManager?.serializeVaultToJson(vault) ?: ""
@@ -912,7 +1465,9 @@ class PessoasAquiRepository(
                     try {
                         val jsonStr = String(E2eeCryptoEngine.Base64Helper.decode(b64), Charsets.UTF_8)
                         val vault = p2pVaultManager?.deserializeVaultFromJson(jsonStr)
-                        if (vault != null) {
+                        if (vault != null &&
+                            cleanId(vault.ownerIdentityHash).equals(getMyIdentity(), ignoreCase = true) &&
+                            isPeerPermanent(cleanSender)) {
                             val current = _receivedVaultResponses.value.toMutableList()
                             current.add(vault)
                             _receivedVaultResponses.value = current
@@ -923,8 +1478,40 @@ class PessoasAquiRepository(
                 }
             }
             else -> {
+                // Um comando interno de versão futura ou malformado não é texto.
+                if (payload.startsWith("[CALL_")) return
+                val isPermanent = isPeerPermanent(cleanSender)
+                // Este método recebe somente payloads da INTERNET. Mensagens do Modo A
+                // devem chegar por onTemporaryMessageReceived (BLE), nunca pelo Render,
+                // mesmo que o contato esteja fisicamente presente no Radar.
+                if (!isPermanent) {
+                    Log.d("PessoasAqui", "Descartando mensagem de rede para contato temporário $cleanSender")
+                    return
+                }
                 proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload, messageId)
                 callRingtoneWakeManager?.notifyIncomingMessageIfBackground(senderAlias, payload)
+            }
+        }
+    }
+
+    /**
+     * Manutenção BLE independente do backend. Ao perder Wi-Fi/Render, o Radar
+     * continua limpando sessões físicas expiradas e recuperando scan/advertise.
+     * Não reinicia o servidor GATT durante sessões já autenticadas.
+     */
+    private fun startBleMaintenanceLoop() {
+        // A expiração de contatos é uma política de sessões, não um comando
+        // para reiniciar o rádio. O scanner é gerido por eventos do Android.
+        if (bleManager == null) return
+        scope.launch {
+            while (true) {
+                delay(5000L)
+                if (!_hasGrantedPermissions.value) continue
+                try {
+                    cleanupExpiredTemporarySessions()
+                } catch (e: Exception) {
+                    Log.w("PessoasAqui", "Manutenção de sessões BLE: ${e.message}")
+                }
             }
         }
     }
@@ -940,36 +1527,19 @@ class PessoasAquiRepository(
                     // 1. Envia Heartbeat HTTP para manter a presença viva no Render / Supabase
                     networkClient.sendPresenceHeartbeat(myId, myAlias, myIntent)
 
-                    // 2. Busca status de conexões mútuas no backend
+                    // 2. Primeiro envia revogações pendentes (pode ter sido solicitado offline).
+                    // Nunca repovoar o servidor com vínculos da memória: isso ressuscitava
+                    // relações desfeitas pela outra pessoa.
+                    for (peerId in pendingUnmarkPeople.toList()) {
+                        val result = networkClient.unmarkConnection(myId, peerId)
+                        if (result.getOrNull() == true) {
+                            pendingUnmarkPeople.remove(peerId)
+                            saveConnectionsToPrefs()
+                        }
+                    }
                     val statusResult = networkClient.fetchConnectionStatus(myId)
                     statusResult.getOrNull()?.let { st ->
-                        var changed = false
-                        val serverMutual = st.mutual.map { cleanId(it) }.toSet()
-                        val serverMarkedByMe = st.markedByMe.map { cleanId(it) }.toSet()
-                        val serverMarkingMe = st.markingMe.map { cleanId(it) }.toSet()
-
-                        serverMarkedByMe.forEach { cid ->
-                            if (savedMarkedPeople.add(cid)) changed = true
-                        }
-                        serverMarkingMe.forEach { cid ->
-                            if (savedMarkingMePeople.add(cid)) changed = true
-                        }
-                        serverMutual.forEach { cid ->
-                            if (savedMutualPeople.add(cid)) changed = true
-                            if (savedMarkedPeople.add(cid)) changed = true
-                            if (savedMarkingMePeople.add(cid)) changed = true
-                        }
-
-                        if (changed) {
-                            saveConnectionsToPrefs()
-                            updateUnifiedData()
-                        }
-
-                        // Sincroniza ativamente com o servidor para repovoar a memória do backend (resiliente a reinício de container no Render)
-                        if (savedMutualPeople.isNotEmpty()) {
-                            networkClient.syncMutualConnections(myId, savedMutualPeople.toList())
-                            networkClient.sendMutualSyncMessage(savedMutualPeople.toList())
-                        }
+                        reconcileConnectionStatus(st.markedByMe, st.markingMe, st.mutual)
                     }
 
                     // 3. Busca pessoas próximas registradas no backend
@@ -995,7 +1565,10 @@ class PessoasAquiRepository(
                             val item = if (isMine) ro.copy(proximityLabel = "Seu anúncio • 10m") else ro
                             val idx = current.indexOfFirst { it.id == item.id }
                             if (idx != -1) {
-                                current[idx] = item
+                                if (current[idx] != item) {
+                                    current[idx] = item
+                                    offersChanged = true // Edição remota deve recompor a aba Ofertas.
+                                }
                             } else {
                                 current.add(item)
                                 offersChanged = true
@@ -1025,69 +1598,37 @@ class PessoasAquiRepository(
                                 processIncomingPayload(cleanSender, senderAlias, payload, iv, msgId)
                             },
                             onMutualConnection = { partnerId, partnerAlias ->
-                                val cleanPartnerId = cleanId(partnerId)
-                                val resolvedAlias = partnerAlias.ifBlank { "Conexão Mútua" }
-                                savedMutualPeople.add(cleanPartnerId)
-                                savedMarkedPeople.add(cleanPartnerId)
-                                savedMarkingMePeople.add(cleanPartnerId)
-                                saveConnectionsToPrefs()
-
-                                val currentReal = _realDiscoveredPeople.value.toMutableList()
-                                val idx = currentReal.indexOfFirst { cleanId(it.id) == cleanPartnerId || cleanId(it.technicalIdentityHash) == cleanPartnerId }
-                                if (idx != -1) {
-                                    val p = currentReal[idx]
-                                    currentReal[idx] = p.copy(
-                                        alias = if (p.alias.startsWith("Pessoa Próxima #") || p.alias.isBlank()) resolvedAlias else p.alias,
-                                        isMarkedByMe = true,
-                                        isMarkingMe = true,
-                                        isMutualConnection = true,
-                                        isPhotoVisible = true
-                                    )
-                                } else {
-                                    val newPerson = NearbyPerson(
-                                        id = cleanPartnerId,
-                                        technicalIdentityHash = cleanPartnerId,
-                                        alias = resolvedAlias,
-                                        estimatedDistanceMeters = 500.0,
-                                        proximityLabel = "Conexão Mútua • Ilimitada",
-                                        isMarkedByMe = true,
-                                        isMarkingMe = true,
-                                        isMutualConnection = true,
-                                        isPhotoVisible = true,
-                                        lastSeenEpochMs = System.currentTimeMillis()
-                                    )
-                                    currentReal.add(0, applyConnectionState(newPerson))
+                                val cid = cleanId(partnerId)
+                                // O evento de socket pode chegar atrasado. Só o status bilateral
+                                // atual do servidor concede Modo B após consulta bem-sucedida.
+                                if (cid !in revokedMutualPeople) scope.launch {
+                                    val status = networkClient.fetchConnectionStatus(myId).getOrNull()
+                                    if (status != null) {
+                                        reconcileConnectionStatus(status.markedByMe, status.markingMe, status.mutual)
+                                        if (isPeerPermanent(cid)) {
+                                            val current = _realDiscoveredPeople.value.toMutableList()
+                                            val idx = current.indexOfFirst { cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cid }
+                                            if (idx >= 0 && current[idx].alias.startsWith("Pessoa Próxima #")) {
+                                                current[idx] = current[idx].copy(alias = partnerAlias)
+                                                _realDiscoveredPeople.value = current
+                                                updateUnifiedData()
+                                            }
+                                        }
+                                    }
                                 }
-                                _realDiscoveredPeople.value = currentReal
-                                updateUnifiedData()
-                                saveSavedContactsToPrefs()
-                                proximitySimulator.receivePrivateMessage(
-                                    cleanPartnerId,
-                                    "Sistema",
-                                    "✨ Conexão Mútua Estabelecida pelo Servidor! Comunicação à distância liberada.",
-                                    UUID.randomUUID().toString()
-                                )
+                            },
+                            onMutualConnectionBroken = { partnerId, _ ->
+                                revokeMutualLocally(partnerId)
                             },
                             onPeerMarkedYou = { markerId, _ ->
                                 val cleanMarker = cleanId(markerId)
                                 savedMarkingMePeople.add(cleanMarker)
-                                val isMutual = savedMarkedPeople.contains(cleanMarker)
-                                if (isMutual) {
-                                    savedMutualPeople.add(cleanMarker)
-                                }
                                 saveConnectionsToPrefs()
-
-                                val currentReal = _realDiscoveredPeople.value.toMutableList()
-                                val idx = currentReal.indexOfFirst { cleanId(it.id) == cleanMarker || cleanId(it.technicalIdentityHash) == cleanMarker }
-                                if (idx != -1) {
-                                    val p = currentReal[idx]
-                                    val updated = p.copy(
-                                        isMarkingMe = true,
-                                        isMutualConnection = isMutual || p.isFamily,
-                                        isPhotoVisible = isMutual || p.isFamily
-                                    )
-                                    currentReal[idx] = updated
-                                    _realDiscoveredPeople.value = currentReal
+                                val current = _realDiscoveredPeople.value.toMutableList()
+                                val idx = current.indexOfFirst { cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cleanMarker }
+                                if (idx >= 0) {
+                                    current[idx] = applyConnectionState(current[idx])
+                                    _realDiscoveredPeople.value = current
                                     updateUnifiedData()
                                 }
                             },
@@ -1108,20 +1649,9 @@ class PessoasAquiRepository(
                         )
                     }
 
-                    // 6. Limpeza automática de fantasmas e pessoas que saíram do alcance (> 15 segundos)
-                    // Pessoas com conexão mútua, parentesco ou marcação NUNCA são removidas pelo timeout de alcance!
-                    val now = System.currentTimeMillis()
-                    val activeList = _realDiscoveredPeople.value.filter { peer ->
-                        val cid = cleanId(peer.technicalIdentityHash)
-                        val isValidHex = cid.matches(Regex("^[0-9A-F]{8,16}$"))
-                        val isRecent = (now - peer.lastSeenEpochMs) < 15000L
-                        val isSpecial = peer.isMutualConnection || peer.isFamily || isPeerMutual(peer) || isPeerMarkedByMe(peer) || isPeerMarkingMe(peer)
-                        (isValidHex && isRecent) || isSpecial
-                    }
-                    if (activeList.size != _realDiscoveredPeople.value.size) {
-                        _realDiscoveredPeople.value = activeList
-                        updateUnifiedData()
-                    }
+                    // 6. Limpeza automática e segura de sessões temporárias expiradas (> 45s de afastamento)
+                    // Contatos mútuos e familiares são permanentes e protegidos contra expiração física.
+                    cleanupExpiredTemporarySessions()
                 } catch (e: Throwable) {
                     Log.w("PessoasAqui", "Polling de presença: ${e.message}")
                 }
@@ -1140,6 +1670,7 @@ class PessoasAquiRepository(
      * - Suporta 200+ pessoas com estabilidade total e zero tremor.
      */
     fun sortWithHysteresis(peers: List<NearbyPerson>): List<NearbyPerson> {
+        if (peers.isEmpty()) return emptyList()
         val previousOrder = lastStablePeerOrder ?: emptyList()
         val prevIndexMap = previousOrder.withIndex().associate { it.value to it.index }
 
@@ -1189,21 +1720,39 @@ class PessoasAquiRepository(
             .distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
             .map { applyConnectionState(it) }
         _unifiedDiscoveredPeople.value = sortWithHysteresis(applied)
-        _unifiedOffers.value = _realOffers.value
+        val nowForOffers = System.currentTimeMillis()
+        val mineForOffers = _realOffers.value.filter {
+            cleanId(it.authorId) == cleanId(getMyIdentity())
+        }
+        val nearbyBle = bleOfferSnapshots.flatMap { (owner, entry) ->
+            val peer = _realDiscoveredPeople.value.firstOrNull {
+                cleanId(it.technicalIdentityHash.ifBlank { it.id }) == owner
+            }
+            if (nowForOffers - entry.first > TEMPORARY_SESSION_EXPIRATION_MS ||
+                !isOfferPeerInRange(owner, nowForOffers) ||
+                peer == null ||
+                peer.estimatedDistanceMeters > br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS
+            ) emptyList() else entry.second.map {
+                it.copy(distanceMeters = peer.estimatedDistanceMeters)
+            }
+        }
+        // Um resultado da API não comprova proximidade física.
+        _unifiedOffers.value = (mineForOffers + nearbyBle)
+            .distinctBy { it.id }
 
         // Apenas mensagens reais trocadas ou persistidas (isolamento absoluto)
         _unifiedLocalChatMessages.value = proximitySimulator.localChatMessages.value
         _unifiedPrivateChats.value = proximitySimulator.privateChats.value
     }
 
-    private fun handleRemotePresenceSync(remotePeers: List<RemotePeer>) {
+    internal fun handleRemotePresenceSync(remotePeers: List<RemotePeer>) {
         val myId = cleanId(cryptoIdentityManager.getTechnicalIdentity())
         val myAlias = _currentAlias.value.trim()
         val current = _realDiscoveredPeople.value.toMutableList()
 
         val validPeers = remotePeers.filter { p ->
-            cleanId(p.identityHash) != myId &&
-            (p.alias.isBlank() || myAlias.isBlank() || !p.alias.trim().equals(myAlias, ignoreCase = true))
+            // Apenas a identidade técnica identifica o próprio aparelho.
+            cleanId(p.identityHash) != myId
         }
 
         val distinctPeers = validPeers.distinctBy { cleanId(it.identityHash) }
@@ -1213,18 +1762,16 @@ class PessoasAquiRepository(
             p.publicKeyBase64?.let { pubKey ->
                 E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
             }
-            if (p.isMutual) {
-                savedMutualPeople.add(cId)
-                savedMarkedPeople.add(cId)
-                savedMarkingMePeople.add(cId)
-            }
-            if (p.isMarkedByMe) savedMarkedPeople.add(cId)
-            if (p.isMarkingMe) savedMarkingMePeople.add(cId)
+            if (current.any {
+                    cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cId && it.isFamily
+                }) enrollFamilyRecoveryIfPossible(cId)
+            // Presença remota é telemetria, NÃO autorização de relacionamento.
+            // Somente /connections/status ou evento de confirmação do backend altera o vínculo.
 
             val safeIntent = try { UserIntent.valueOf(p.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
             val idx = current.indexOfFirst {
-                cleanId(it.technicalIdentityHash) == cId || cleanId(it.id) == cId ||
-                (!it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(p.alias, ignoreCase = true))
+                // Apelido NÃO é identidade técnica: duas pessoas podem ter o mesmo nome.
+                cleanId(it.technicalIdentityHash) == cId || cleanId(it.id) == cId
             }
             if (idx != -1) {
                 // Atualiza contato já existente (detectado fisicamente pelo BLE nativo ou conexão prévia)
@@ -1234,9 +1781,10 @@ class PessoasAquiRepository(
                     technicalIdentityHash = cId,
                     alias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) existing.alias else p.alias,
                     intent = safeIntent,
-                    lastSeenEpochMs = System.currentTimeMillis()
+                    // A nuvem não comprova proximidade: não renova o relógio BLE.
+                    lastSeenEpochMs = if (lastNativeBleSeenMs.containsKey(cId)) existing.lastSeenEpochMs else System.currentTimeMillis()
                 ))
-            } else if (p.isMutual || savedMutualPeople.contains(cId)) {
+            } else if (isPeerPermanent(cId)) {
                 // Presença remota de Conexão Mútua comprovada pré-existente
                 current.add(
                     applyConnectionState(NearbyPerson(
@@ -1259,41 +1807,35 @@ class PessoasAquiRepository(
         }
         saveConnectionsToPrefs()
 
-        // Remove do radar qualquer registro com meu próprio id ou apelido
+        // Apelidos repetidos são válidos; remover apenas a identidade própria.
         val cleanedList = current.filter { peer ->
-            cleanId(peer.technicalIdentityHash) != myId &&
-            (myAlias.isBlank() || !peer.alias.trim().equals(myAlias, ignoreCase = true))
+            cleanId(peer.technicalIdentityHash) != myId
         }
 
         _realDiscoveredPeople.value = cleanedList
         updateUnifiedData()
     }
 
-    private fun handlePeerOnline(peer: RemotePeer) {
+    internal fun handlePeerOnline(peer: RemotePeer) {
         val myId = cleanId(cryptoIdentityManager.getTechnicalIdentity())
         val myAlias = _currentAlias.value.trim()
         val cId = cleanId(peer.identityHash)
         if (cId == myId) return
-        if (myAlias.isNotBlank() && peer.alias.trim().equals(myAlias, ignoreCase = true)) return
+        // O apelido remoto pode ser igual ao local; isso não torna a identidade igual.
 
         peer.publicKeyBase64?.let { pubKey ->
             E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
         }
+        if (_realDiscoveredPeople.value.any {
+                cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cId && it.isFamily
+            }) enrollFamilyRecoveryIfPossible(cId)
 
-        if (peer.isMutual) {
-            savedMutualPeople.add(cId)
-            savedMarkedPeople.add(cId)
-            savedMarkingMePeople.add(cId)
-            saveConnectionsToPrefs()
-        }
-        if (peer.isMarkedByMe) savedMarkedPeople.add(cId)
-        if (peer.isMarkingMe) savedMarkingMePeople.add(cId)
+        // Estado de presença não concede privilégios permanentes.
 
         val safeIntent = try { UserIntent.valueOf(peer.intent) } catch (_: Exception) { UserIntent.QUERO_CONVERSAR }
         val current = _realDiscoveredPeople.value.toMutableList()
         val idx = current.indexOfFirst {
-            cleanId(it.technicalIdentityHash) == cId || cleanId(it.id) == cId ||
-            (!it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(peer.alias, ignoreCase = true))
+            cleanId(it.technicalIdentityHash) == cId || cleanId(it.id) == cId
         }
         if (idx != -1) {
             val existing = current[idx]
@@ -1302,11 +1844,12 @@ class PessoasAquiRepository(
                 technicalIdentityHash = cId,
                 alias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) existing.alias else peer.alias,
                 intent = safeIntent,
-                lastSeenEpochMs = System.currentTimeMillis()
+                // Eventos da internet não mantêm artificialmente o Radar ligado.
+                lastSeenEpochMs = if (lastNativeBleSeenMs.containsKey(cId)) existing.lastSeenEpochMs else System.currentTimeMillis()
             ))
             _realDiscoveredPeople.value = current
             updateUnifiedData()
-        } else if (peer.isMutual || savedMutualPeople.contains(cId)) {
+        } else if (isPeerPermanent(cId)) {
             val newPeer = applyConnectionState(NearbyPerson(
                 id = cId,
                 technicalIdentityHash = cId,
@@ -1328,17 +1871,30 @@ class PessoasAquiRepository(
         // Estranhos online na nuvem são descartados: o radar local é restrito ao rádio BLE físico!
     }
 
-    private fun handlePeerOffline(peerHash: String) {
+    internal fun handlePeerOffline(peerHash: String) {
         val cleanPeerHash = cleanId(peerHash)
         val current = _realDiscoveredPeople.value.filter {
             val matches = cleanId(it.technicalIdentityHash) == cleanPeerHash || cleanId(it.id) == cleanPeerHash
             if (matches) {
-                // Conexões mútuas e familiares NUNCA desaparecem da lista ao desconectar ou trocar de rede
-                it.isMutualConnection || it.isFamily || isPeerMutual(it)
+                // Desconexão WebSocket NÃO significa saída dos 10 m: a validade do
+                // BLE só é determinada pelos anúncios de rádio e timeout próprio.
+                isPeerPermanent(it.technicalIdentityHash.ifBlank { it.id }) ||
+                    lastNativeBleSeenMs.containsKey(cleanPeerHash)
             } else {
                 true
             }
         }
+        if (current.size != _realDiscoveredPeople.value.size) {
+            _realDiscoveredPeople.value = current
+            updateUnifiedData()
+        }
+    }
+
+    fun addDiscoveredPeer(person: NearbyPerson) {
+        val current = _realDiscoveredPeople.value.toMutableList()
+        val cId = cleanId(person.technicalIdentityHash.ifBlank { person.id })
+        current.removeAll { cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cId }
+        current.add(0, applyConnectionState(person))
         _realDiscoveredPeople.value = current
         updateUnifiedData()
     }
@@ -1405,6 +1961,7 @@ class PessoasAquiRepository(
 
     private fun startNativeBleHardware() {
         try {
+            bleTransportCoordinator.start()
             bleManager?.let { ble ->
                 if (ble.isBluetoothEnabled) {
                     ble.startAdvertising(
@@ -1417,19 +1974,23 @@ class PessoasAquiRepository(
                         val myAlias = _currentAlias.value
                         val peerCleanId = cleanId(realPeer.technicalIdentityHash)
                         if (peerCleanId == myId || cleanId(realPeer.id) == myId) return@startScanning
-                        if (realPeer.alias.isNotBlank() && myAlias.isNotBlank() && realPeer.alias.equals(myAlias, ignoreCase = true)) return@startScanning
+                        // Nomes iguais não impedem descoberta de identidades distintas.
+                        recordNativeBlePresence(peerCleanId, realPeer.lastSeenEpochMs)
+                        if (realPeer.estimatedDistanceMeters <=
+                            br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS) {
+                            sendBleOfferSnapshot(peerCleanId)
+                            sendBleAvatarToPeer(peerCleanId)
+                        }
 
                         val currentList = _realDiscoveredPeople.value.toMutableList()
                         val idx = currentList.indexOfFirst {
-                            cleanId(it.id) == peerCleanId ||
-                            cleanId(it.technicalIdentityHash) == peerCleanId ||
-                            (!it.alias.startsWith("Pessoa Próxima #") && it.alias.equals(realPeer.alias, ignoreCase = true))
+                            cleanId(it.id) == peerCleanId || cleanId(it.technicalIdentityHash) == peerCleanId
                         }
                         if (idx != -1) {
                             val existing = currentList[idx]
-                            val resolvedAlias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) {
+                            val resolvedAlias = if (existing.alias.isNotBlank() && existing.alias != "Pessoa Próxima" && !existing.alias.startsWith("Pessoa Próxima #")) {
                                 existing.alias
-                            } else if (!realPeer.alias.startsWith("Pessoa Próxima #")) {
+                            } else if (realPeer.alias.isNotBlank() && realPeer.alias != "Pessoa Próxima" && !realPeer.alias.startsWith("Pessoa Próxima #")) {
                                 realPeer.alias
                             } else {
                                 existing.alias
@@ -1466,8 +2027,53 @@ class PessoasAquiRepository(
         }
     }
 
+    /**
+     * Atualiza o nome completo autenticado do participante recebido via metadados criptografados GATT (AES-256-GCM).
+     */
+    fun updatePeerFullAlias(peerId: String, fullAlias: String) {
+        if (fullAlias.isBlank()) return
+        val cleanPeer = cleanId(peerId)
+        val currentReal = _realDiscoveredPeople.value.toMutableList()
+        val idx = currentReal.indexOfFirst {
+            cleanId(it.id) == cleanPeer || cleanId(it.technicalIdentityHash) == cleanPeer
+        }
+        if (idx != -1) {
+            val existing = currentReal[idx]
+            currentReal[idx] = existing.copy(alias = fullAlias)
+            _realDiscoveredPeople.value = currentReal
+        }
+        proximitySimulator.updatePeerSenderAlias(cleanPeer, fullAlias)
+        updateUnifiedData()
+    }
+
     fun restartBleHardware() {
         startNativeBleHardware()
+    }
+
+    /** Recupera descoberta ao voltar ao app, sem forçar reinício do GATT ativo. */
+    fun setBleAppForeground(visible: Boolean) {
+        if (!_hasGrantedPermissions.value) return
+        try {
+            bleManager?.setAppForeground(visible)
+        } catch (e: Exception) {
+            Log.w("PessoasAqui", "Transição de visibilidade BLE: ${e.message}")
+        }
+    }
+
+    fun ensureBleHealthOnForeground(forceRefresh: Boolean = false) {
+        if (!_hasGrantedPermissions.value) return
+        val ble = bleManager ?: return
+        if (!ble.isBluetoothEnabled) return
+        try {
+            if (!bleTransportCoordinator.serverManager.isServerRunning) {
+                bleTransportCoordinator.start()
+            }
+            // forceRefresh apenas compatibilidade com a interface anterior:
+            // recuperação real ocorre por erro de rádio e mudanças de ciclo de vida.
+            ble.ensureDiscoveryContinuity()
+        } catch (e: Exception) {
+            Log.w("PessoasAqui", "Falha ao verificar BLE ao voltar ao app: ${e.message}")
+        }
     }
 
     fun setAlias(newAlias: String): Boolean {
@@ -1517,11 +2123,15 @@ class PessoasAquiRepository(
                 val cCid = cleanId(it.technicalIdentityHash)
                 val cPid = cleanId(it.id)
                 cleanTargetId == cCid || cleanTargetId == cPid
-            }
-            if (fallback != null) {
-                currentReal.add(fallback)
-                idx = currentReal.size - 1
-            }
+            } ?: NearbyPerson(
+                id = cleanTargetId,
+                technicalIdentityHash = cleanTargetId,
+                alias = "Contato $cleanTargetId",
+                estimatedDistanceMeters = 5.0,
+                proximityLabel = "5m"
+            )
+            currentReal.add(fallback)
+            idx = currentReal.size - 1
         }
 
         var updatedPeer: NearbyPerson? = null
@@ -1532,38 +2142,30 @@ class PessoasAquiRepository(
             val pId = cleanId(current.id)
             val aliasId = cleanId(current.alias)
 
-            val keys = listOfNotNull(
-                hashId.takeIf { it.isNotBlank() },
-                pId.takeIf { it.isNotBlank() },
-                aliasId.takeIf { it.isNotBlank() && !it.startsWith("PESSOA") },
-                cleanTargetId.takeIf { it.isNotBlank() && !it.startsWith("PESSOA") }
-            ).distinct()
-
-            val wasMarkingMe = current.isMarkingMe || isPeerMarkingMe(current) || keys.any { savedMarkingMePeople.contains(it) }
+            // Identidade técnica é a chave de vínculo; nunca persistir apelido como autorização.
+            val keys = listOf(hashId, pId).filter { it.isNotBlank() }.distinct()
+            val targetId = hashId.ifBlank { cleanTargetId }
             val newMarkedByMe = mark
-            val isNowMutual = (newMarkedByMe && wasMarkingMe) || explicitMutual || current.isFamily
 
-            if (newMarkedByMe) {
+            if (mark) {
+                // A aprovação é unilateral até o servidor confirmar reciprocidade.
+                revokedMutualPeople.remove(targetId) // apenas uma nova ação explícita limpa o veto
                 keys.forEach { savedMarkedPeople.add(it) }
-                if (isNowMutual) {
-                    keys.forEach {
-                        savedMutualPeople.add(it)
-                        savedMarkingMePeople.add(it)
-                    }
-                }
             } else {
+                // Revoga no aparelho AGORA; backend será notificado mesmo se estiver offline.
+                revokeMutualLocally(targetId, removeMyMark = true, queueRemoteUnmark = true)
                 keys.forEach {
                     savedMarkedPeople.remove(it)
                     savedMutualPeople.remove(it)
                 }
             }
             saveConnectionsToPrefs()
-            saveSavedContactsToPrefs()
 
+            val isNowMutual = isPeerPermanent(targetId)
             val updated = current.copy(
                 isMarkedByMe = newMarkedByMe,
-                isMarkingMe = wasMarkingMe || isNowMutual,
-                isMutualConnection = isNowMutual || current.isFamily,
+                isMarkingMe = targetId in savedMarkingMePeople,
+                isMutualConnection = isNowMutual,
                 isPhotoVisible = isNowMutual || current.isFamily,
                 lastSeenEpochMs = System.currentTimeMillis()
             )
@@ -1573,88 +2175,51 @@ class PessoasAquiRepository(
             updateUnifiedData()
 
             val myId = cryptoIdentityManager.getTechnicalIdentity()
-            val myAlias = _currentAlias.value
-
-            // 1. Envia sinal P2P cifrado em tempo real para o outro aparelho
-            if (newMarkedByMe) {
-                sendPrivateMessage(updated.technicalIdentityHash, "[MARK_ON:$myAlias]")
-                if (isNowMutual) {
-                    sendPrivateMessage(updated.technicalIdentityHash, "[MARK_MUTUAL:$myAlias]")
-                }
-            } else {
-                sendPrivateMessage(updated.technicalIdentityHash, "[MARK_OFF:$myAlias]")
-            }
-
-            // 2. Registra no backend Supabase / Render
-            scope.launch {
+            // Convite e revogação são eventos de relacionamento (internet), NÃO mensagens BLE.
+            // O chat temporário por Bluetooth não depende de convite/aceitação.
+            if (context != null) scope.launch {
                 try {
-                    if (newMarkedByMe) {
-                        val markResp = networkClient.markConnection(
-                            fromIdentity = myId,
-                            toIdentity = updated.technicalIdentityHash
-                        )
-                        markResp.getOrNull()?.let { backendIsMutual ->
-                            if (backendIsMutual || isNowMutual) {
-                                keys.forEach {
-                                    savedMutualPeople.add(it)
-                                    savedMarkedPeople.add(it)
-                                    savedMarkingMePeople.add(it)
-                                }
-                                saveConnectionsToPrefs()
-                                val cur = _realDiscoveredPeople.value.toMutableList()
-                                val i = cur.indexOfFirst {
-                                    cleanId(it.id) in keys || cleanId(it.technicalIdentityHash) in keys
-                                }
-                                if (i != -1) {
-                                    cur[i] = cur[i].copy(isMarkedByMe = true, isMarkingMe = true, isMutualConnection = true, isPhotoVisible = true)
-                                    _realDiscoveredPeople.value = cur
-                                    updateUnifiedData()
-                                    saveSavedContactsToPrefs()
-                                }
+                    if (mark) {
+                        // Se houve revogação offline anterior, ela deve ser entregue
+                        // antes de um pedido NOVO. Evita a corrida mark/unmark no servidor.
+                        if (targetId in pendingUnmarkPeople) {
+                            val unmark = networkClient.unmarkConnection(myId, targetId)
+                            if (unmark.getOrNull() != true) {
+                                Log.w("PessoasAqui", "Não foi possível confirmar revogação anterior; conexão permanece pendente")
+                                return@launch
                             }
+                            pendingUnmarkPeople.remove(targetId)
+                            saveConnectionsToPrefs()
+                        }
+                        val result = networkClient.markConnection(myId, targetId)
+                        if (result.getOrNull() == true && targetId !in revokedMutualPeople && targetId in savedMarkedPeople) {
+                            confirmMutualConnectionFromServer(targetId)
+                        } else if (result.isFailure) {
+                            Log.w("PessoasAqui", "Marcação não confirmada pelo servidor: ${result.exceptionOrNull()?.message}")
                         }
                     } else {
-                        // DESFAZER MARCAÇÃO: Remove marcação no servidor e assegura limpeza local
-                        networkClient.unmarkConnection(
-                            fromIdentity = myId,
-                            toIdentity = updated.technicalIdentityHash
-                        )
-                        keys.forEach {
-                            savedMutualPeople.remove(it)
-                            savedMarkedPeople.remove(it)
-                            savedMarkingMePeople.remove(it)
+                        val result = networkClient.unmarkConnection(myId, targetId)
+                        if (result.getOrNull() == true) {
+                            pendingUnmarkPeople.remove(targetId)
+                            saveConnectionsToPrefs()
+                        } else {
+                            Log.w("PessoasAqui", "Revogação pendente de sincronização com servidor")
                         }
-                        saveConnectionsToPrefs()
-                        saveSavedContactsToPrefs()
                     }
                 } catch (e: Exception) {
-                    Log.w("PessoasAqui", "Erro ao sincronizar marcação no backend: ${e.message}")
+                    Log.w("PessoasAqui", "Erro ao sincronizar vínculo com servidor: ${e.message}")
                 }
             }
 
-            // Mensagem de feedback no chat privado
-            if (isNowMutual) {
-                proximitySimulator.receivePrivateMessage(
-                    updated.technicalIdentityHash,
-                    "Sistema",
-                    "✨ Conexão Mútua Estabelecida com ${updated.alias}! Comunicação à distância, chamadas e mídia liberadas.",
-                    UUID.randomUUID().toString()
-                )
-            } else if (newMarkedByMe) {
-                proximitySimulator.receivePrivateMessage(
-                    updated.technicalIdentityHash,
-                    "Sistema",
-                    "★ Você marcou ${updated.alias}. Aguardando a outra pessoa marcar você de volta para confirmar a conexão mútua.",
-                    UUID.randomUUID().toString()
-                )
+            // Feedback local não deve anunciar vínculo permanente antes da confirmação.
+            val feedback = if (newMarkedByMe) {
+                "★ Você solicitou conexão com ${updated.alias}. A conversa temporária por Bluetooth continua disponível sem convite."
             } else {
-                proximitySimulator.receivePrivateMessage(
-                    updated.technicalIdentityHash,
-                    "Sistema",
-                    "Marcação removida para ${updated.alias}.",
-                    UUID.randomUUID().toString()
-                )
+                "Marcação removida para ${updated.alias}. A revogação será sincronizada com o servidor."
             }
+            proximitySimulator.receivePrivateMessage(
+                targetId, "Sistema", feedback, UUID.randomUUID().toString()
+            )
         }
 
         // Também atualiza o simulador se estiver em modo demo
@@ -1705,12 +2270,22 @@ class PessoasAquiRepository(
             proximitySimulator.updateLocalOffer(newOffer)
         }
         updateUnifiedData()
+        broadcastBleOffers()
 
         scope.launch {
             try {
-                networkClient.publishOffer(newOffer)
+                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation = "OFFER_PUBLISH",
+                    identity = getMyIdentity(), alias = newOffer.id,
+                    token = br.com.pessoasaqui.core.crypto.OfferIdentityPayload.canonical(newOffer),
+                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge = cryptoIdentityManager::signChallenge
+                )
+                networkClient.publishOffer(newOffer, proof).getOrThrow()
+                _offerSyncError.value = null
             } catch (e: Exception) {
-                Log.e("PessoasAqui", "Erro ao publicar oferta no backend: ${e.message}")
+                _offerSyncError.value = "Oferta visível localmente por BLE. Publicação online não confirmada."
+                Log.w("PessoasAqui", "Falha ao sincronizar publicação de oferta: ${e.message}")
             }
         }
     }
@@ -1739,30 +2314,52 @@ class PessoasAquiRepository(
                 proximitySimulator.updateLocalOffer(updated)
             }
             updateUnifiedData()
-
+            broadcastBleOffers()
             scope.launch {
                 try {
-                    networkClient.publishOffer(updated)
+                    val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                        operation = "OFFER_PUBLISH",
+                        identity = getMyIdentity(), alias = updated.id,
+                        token = br.com.pessoasaqui.core.crypto.OfferIdentityPayload.canonical(updated),
+                        publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                        signChallenge = cryptoIdentityManager::signChallenge
+                    )
+                    networkClient.publishOffer(updated, proof).getOrThrow()
+                    _offerSyncError.value = null
                 } catch (e: Exception) {
-                    Log.e("PessoasAqui", "Erro ao atualizar oferta no backend: ${e.message}")
+                    _offerSyncError.value = "Alteração local atualizada por BLE; backend não confirmou."
+                    Log.w("PessoasAqui", "Falha ao sincronizar edição de oferta: ${e.message}")
                 }
             }
         }
     }
 
     fun deleteLocalOffer(offerId: String) {
+        if (_realOffers.value.none {
+                it.id == offerId && cleanId(it.authorId) == cleanId(getMyIdentity())
+            }) return
         _realOffers.value = _realOffers.value.filter { it.id != offerId }
         saveUserOffersToPrefs()
         if (_isDemoMode.value) {
             proximitySimulator.deleteLocalOffer(offerId)
         }
         updateUnifiedData()
+        broadcastBleOffers()
 
         scope.launch {
             try {
-                networkClient.deleteOffer(offerId)
+                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation = "OFFER_DELETE", identity = getMyIdentity(),
+                    alias = offerId,
+                    token = br.com.pessoasaqui.core.crypto.OfferIdentityPayload.canonicalDelete(offerId),
+                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge = cryptoIdentityManager::signChallenge
+                )
+                networkClient.deleteOffer(offerId, getMyIdentity(), proof).getOrThrow()
+                _offerSyncError.value = null
             } catch (e: Exception) {
-                Log.e("PessoasAqui", "Erro ao remover oferta no backend: ${e.message}")
+                _offerSyncError.value = "Anúncio removido neste aparelho e no BLE, mas a exclusão online está pendente."
+                Log.w("PessoasAqui", "Falha ao sincronizar exclusão de oferta: ${e.message}")
             }
         }
     }
@@ -1787,26 +2384,22 @@ class PessoasAquiRepository(
      */
     fun createOneTimeInviteLink(onResult: (String?) -> Unit) {
         scope.launch {
-            try {
-                val res = networkClient.createOneTimeInvite(getMyIdentity(), getMyAlias())
-                if (res.isSuccess) {
-                    onResult(res.getOrNull()?.inviteUrl)
-                } else {
-                    val invId = "inv_${UUID.randomUUID().toString().take(12)}"
-                    val token = UUID.randomUUID().toString()
-                    val myId = getMyIdentity()
-                    val alias = getMyAlias()
-                    val url = "https://pessoasaqui3.onrender.com/invite?id=$invId&token=$token&sender=$myId&alias=${java.net.URLEncoder.encode(alias, "UTF-8")}"
-                    onResult(url)
-                }
-            } catch (_: Exception) {
-                val invId = "inv_${UUID.randomUUID().toString().take(12)}"
-                val token = UUID.randomUUID().toString()
-                val myId = getMyIdentity()
-                val alias = getMyAlias()
-                val url = "https://pessoasaqui3.onrender.com/invite?id=$invId&token=$token&sender=$myId&alias=${java.net.URLEncoder.encode(alias, "UTF-8")}"
-                onResult(url)
+            val link = try {
+                // Convite válido só existe quando criado/assinado no backend.
+                // Nunca produzir um URL offline fictício nem expor token inventado.
+                val alias = getMyAlias().trim().take(64).ifBlank { "Usuário" }
+                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation = "CREATE", identity = getMyIdentity(), alias = alias,
+                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge = cryptoIdentityManager::signChallenge
+                )
+                networkClient.createOneTimeInvite(getMyIdentity(), alias, proof)
+                    .getOrNull()?.inviteUrl
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Não foi possível criar convite seguro: ${e.message}")
+                null
             }
+            onResult(link)
         }
     }
 
@@ -1832,11 +2425,19 @@ class PessoasAquiRepository(
             }
 
             try {
+                val receiverAlias = getMyAlias().trim().take(64).ifBlank { "Usuário Convidado" }
+                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation = "REDEEM", identity = myId, alias = receiverAlias,
+                    inviteId = inviteId, token = token,
+                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge = cryptoIdentityManager::signChallenge
+                )
                 val res = networkClient.redeemOneTimeInvite(
                     inviteId = inviteId,
                     token = token,
                     receiverIdentity = myId,
-                    receiverAlias = getMyAlias(),
+                    receiverAlias = receiverAlias,
+                    identityProof = proof,
                     senderIdentity = cleanSender,
                     senderAlias = senderAlias,
                     signature = signature,
@@ -1844,10 +2445,9 @@ class PessoasAquiRepository(
                 )
 
                 if (res.isSuccess) {
-                    savedMutualPeople.add(cleanSender)
-                    savedMarkedPeople.add(cleanSender)
-                    savedMarkingMePeople.add(cleanSender)
-                    saveConnectionsToPrefs()
+                    // Resgate válido é nova aceitação explícita das duas partes.
+                    revokedMutualPeople.remove(cleanSender)
+                    confirmMutualConnectionFromServer(cleanSender)
 
                     val peer = NearbyPerson(
                         id = cleanSender,
@@ -1904,17 +2504,79 @@ class PessoasAquiRepository(
         }
         val cleanRecipient = matchedPeer?.technicalIdentityHash?.let { cleanId(it) }?.takeIf { it.isNotBlank() } ?: rawClean
 
-        val isSignaling = text.startsWith("[CALL_") || text.startsWith("[FAMILY_") || text.startsWith("[MARK_") ||
+        val isSignaling = text.startsWith("[PA_REAL_PHOTO_V1:") ||
+                          text.startsWith("[CALL_") || text.startsWith("[FAMILY_") || text.startsWith("[MARK_") ||
                           text == "[READ_ACK]" || text.startsWith("[MSG_EDIT:") || text.startsWith("[MSG_DELETE:")
         val isAudio = text.startsWith("[AUDIO:")
         val isImage = text.startsWith("[IMAGE:")
         val isDoc = text.startsWith("[DOC:")
         val msgId = UUID.randomUUID().toString()
 
+        val isPermanent = isPeerPermanent(cleanRecipient)
+
+        if (!isPermanent) {
+            // O Modo A permite SOMENTE texto; mídia/chamadas são recursos permanentes.
+            // Nunca adiciona mídia à RAM nem tenta encaminhá-la ao BLE (máx. 4096 B).
+            if (isAudio || isImage || isDoc || text.startsWith("[CALL_")) {
+                return ContentModerationManager.ModerationResult(
+                    isAllowed = false,
+                    reason = "Fotos, áudios, arquivos e chamadas exigem vínculo permanente confirmado."
+                )
+            }
+            // MODO A: Conversa Temporária
+            // Criação local com status inicial PENDING até confirmação física por ACK
+            if (!isSignaling && !isAudio && !isImage && !isDoc) {
+                val mod = moderationManager.evaluateContent(deviceSessionManager.getDeviceId(), text)
+                if (!mod.isAllowed) return mod
+                proximitySimulator.sendPrivateMessage(
+                    recipientId = cleanRecipient,
+                    text = text,
+                    myAlias = _currentAlias.value,
+                    messageId = msgId,
+                    deliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.PENDING
+                )
+            } else if (isAudio) {
+                val content = text.removePrefix("[AUDIO:").removeSuffix("]")
+                val parts = content.split(":", limit = 2)
+                val dur = parts.getOrNull(0)?.toIntOrNull() ?: 3
+                val b64 = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+                proximitySimulator.sendAudioMessage(cleanRecipient, dur, _currentAlias.value, msgId, b64)
+            } else if (isImage) {
+                val base64 = text.removePrefix("[IMAGE:").removeSuffix("]")
+                proximitySimulator.sendImageMessage(cleanRecipient, base64, _currentAlias.value, msgId)
+            } else if (isDoc) {
+                val parts = text.removePrefix("[DOC:").removeSuffix("]").split(":", limit = 3)
+                val fileName = parts.getOrNull(0) ?: "documento.pdf"
+                val size = parts.getOrNull(1)?.toLongOrNull() ?: 0L
+                val base64 = parts.getOrNull(2) ?: ""
+                proximitySimulator.sendDocumentMessage(cleanRecipient, fileName, base64, size, _currentAlias.value, msgId)
+            }
+
+            // Roteamento exclusivamente via rádio Bluetooth BLE GATT direto.
+            // Sem contato com a Internet / Render / WebSocket / HTTP.
+            // Em caso de falha de rádio, NUNCA faz fallback para o servidor Render.
+            val accepted = bleTransportCoordinator.sendTemporaryMessage(cleanRecipient, text, _currentAlias.value, messageUuid = msgId)
+            if (!accepted && !isSignaling) {
+                proximitySimulator.updateMessageDeliveryStatus(
+                    cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                )
+            }
+            updateUnifiedData()
+            return if (accepted) ContentModerationManager.ModerationResult(isAllowed = true)
+                   else ContentModerationManager.ModerationResult(isAllowed = false, reason = "Bluetooth indisponível ou pessoa fora de alcance.")
+        }
+
+        // MODO B: Conexão Mútua / Conexão Permanente
         if (!isSignaling && !isAudio && !isImage && !isDoc) {
             val mod = moderationManager.evaluateContent(deviceSessionManager.getDeviceId(), text)
             if (!mod.isAllowed) return mod
-            proximitySimulator.sendPrivateMessage(cleanRecipient, text, _currentAlias.value)
+            proximitySimulator.sendPrivateMessage(
+                recipientId = cleanRecipient,
+                text = text,
+                myAlias = _currentAlias.value,
+                messageId = msgId,
+                deliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
+            )
         } else if (isAudio) {
             val content = text.removePrefix("[AUDIO:").removeSuffix("]")
             val parts = content.split(":", limit = 2)
@@ -1932,9 +2594,23 @@ class PessoasAquiRepository(
             proximitySimulator.sendDocumentMessage(cleanRecipient, fileName, base64, size, _currentAlias.value, msgId)
         }
 
+        // MODO B: Conexão Mútua / Conexão Permanente
+        // Roteamento exclusivamente via Internet (WebSocket + REST HTTP) com E2EE permanente.
+        // Nunca utiliza Bluetooth BLE para conversas permanentes.
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         // Criptografia de Ponta a Ponta com AES-256-GCM e ECDH Zero-Knowledge
-        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, cryptoIdentityManager.getActivePrivateKey())
+        val (ciphertext, iv) = try {
+            E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, cryptoIdentityManager.getActivePrivateKey())
+        } catch (e: Exception) {
+            Log.e("PessoasAqui", "Falha na cifragem da mensagem permanente; envio cancelado", e)
+            if (!isSignaling && !isAudio && !isImage && !isDoc) {
+                proximitySimulator.updateMessageDeliveryStatus(
+                    cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                )
+            }
+            updateUnifiedData()
+            return ContentModerationManager.ModerationResult(isAllowed = false, reason = "Falha ao proteger mensagem criptograficamente.")
+        }
 
         // 1. Envio instantâneo prioritário via WebSocket (0ms latência)
         networkClient.sendE2eeEnvelope(
@@ -2018,7 +2694,8 @@ class PessoasAquiRepository(
         keys.forEach { curChats.remove(it) }
         _unifiedPrivateChats.value = curChats
 
-        // 2. Remove marcações e conexões mútuas em memória
+        // 2. Revoga privilégios; ação pendente será sincronizada mesmo se estiver offline.
+        revokeMutualLocally(cleanPeerId, removeMyMark = true, queueRemoteUnmark = true)
         keys.forEach {
             savedMutualPeople.remove(it)
             savedMarkedPeople.remove(it)
@@ -2038,15 +2715,17 @@ class PessoasAquiRepository(
 
         // 3. Notifica backend Supabase / Render para desmarcar conexão mútua
         val myId = cryptoIdentityManager.getTechnicalIdentity()
-        val myAlias = _currentAlias.value
-        scope.launch {
+        if (context != null) scope.launch {
             try {
-                networkClient.unmarkConnection(myId, cleanPeerId)
+                if (networkClient.unmarkConnection(myId, cleanPeerId).getOrNull() == true) {
+                    pendingUnmarkPeople.remove(cleanPeerId)
+                    saveConnectionsToPrefs()
+                }
             } catch (e: Exception) {
                 Log.w("PessoasAqui", "Erro ao desmarcar no backend: ${e.message}")
             }
         }
-        sendPrivateMessage(cleanPeerId, "[MARK_OFF:$myAlias]")
+        // Nunca usar o Modo A/Render como fallback implícito para controle do vínculo.
     }
 
     fun deleteMultipleConversations(peerIds: List<String>) {
@@ -2073,7 +2752,16 @@ class PessoasAquiRepository(
     }
 
     fun startCall(person: NearbyPerson, isVideo: Boolean) {
-        val cleanHash = person.technicalIdentityHash.removePrefix("peer-")
+        val cleanHash = cleanId(person.technicalIdentityHash.ifBlank { person.id })
+        // O Modo A é texto BLE: nunca abrir chamada sem conexão confirmada.
+        if (!isPeerPermanent(cleanHash) || _activeCallState.value != null || callCleanupInProgress) return
+        val generation = CallSignalingProtocol.newCallId()
+        synchronized(callStateLock) {
+            if (!callLifecycle.begin(generation, cleanHash, isVideo, incoming = false)) return
+            activeCallGeneration = generation
+            callConnectedAtMs = 0L
+            outgoingCallTimeoutJob?.cancel()
+        }
         _activeCallState.value = ActiveCallState(
             isIncoming = false,
             peerHash = cleanHash,
@@ -2083,52 +2771,62 @@ class PessoasAquiRepository(
             isSpeakerphoneOn = isVideo
         )
         callRingtoneWakeManager?.startOutgoingRingbackTone()
-        sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
+        val inviteSignal = CallSignalingProtocol.invite(isVideo, _currentAlias.value, generation)
+        sendPrivateMessage(cleanHash, inviteSignal)
+
+        // Chamadas não atendidas precisam terminar automaticamente no chamador.
+        outgoingCallTimeoutJob = scope.launch {
+            delay(45_000L)
+            if (activeCallGeneration == generation &&
+                _activeCallState.value?.let { !it.isIncoming && !it.isConnected } == true
+            ) {
+                finishActiveCall(timedOut = true)
+            }
+        }
 
         // Retransmissão preventiva de CALL_INIT após 800ms para garantir toque caso haja oscilação inicial
         scope.launch {
             delay(800)
             val cur = _activeCallState.value
-            if (cur != null && !cur.isConnected && !cur.isIncoming && cur.peerHash == cleanHash) {
-                sendPrivateMessage(cleanHash, "[CALL_INIT:$isVideo:${_currentAlias.value}]")
+            if (activeCallGeneration == generation && cur != null &&
+                !cur.isConnected && !cur.isIncoming && cur.peerHash == cleanHash) {
+                sendPrivateMessage(cleanHash, inviteSignal)
             }
         }
     }
 
     fun answerCall() {
-        val current = _activeCallState.value ?: return
+        val accepted = synchronized(callStateLock) {
+            val current = _activeCallState.value ?: return
+            val generation = activeCallGeneration ?: return
+            if (!current.isIncoming || current.isConnected ||
+                !callLifecycle.accept(generation, cleanId(current.peerHash), byLocalUser = true)) return
+            _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
+            markActiveCallConnected()
+            Pair(current, generation)
+        }
+        val (current, generation) = accepted
+        if (activeCallGeneration != generation) return
         callRingtoneWakeManager?.stopAllCallAlerts()
-        _activeCallState.value = current.copy(isConnected = true, isSpeakerphoneOn = current.isVideo)
         callMediaEngine?.startCallMedia(current.isVideo)
 
-        // Envio prioritário imediato
-        sendPrivateMessage(current.peerHash, "[CALL_ACCEPT]")
+        val acceptSignal = CallSignalingProtocol.encode(CallSignalingProtocol.Command.ACCEPT, generation)
+        sendPrivateMessage(current.peerHash, acceptSignal)
 
-        // Retransmissão redundante anti-perda de pacotes (3 envios a cada 300ms)
         val peer = current.peerHash
         scope.launch {
             repeat(3) {
                 delay(300)
-                if (_activeCallState.value?.isConnected == true) {
-                    sendPrivateMessage(peer, "[CALL_ACCEPT]")
+                if (activeCallGeneration == generation &&
+                    _activeCallState.value?.let { it.isConnected && it.isIncoming && it.peerHash == peer } == true) {
+                    sendPrivateMessage(peer, acceptSignal)
                 }
             }
         }
     }
 
     fun endCall() {
-        callRingtoneWakeManager?.stopAllCallAlerts()
-        val current = _activeCallState.value ?: return
-        val peer = current.peerHash
-        callMediaEngine?.stopCallMedia()
-        _activeCallState.value = null
-        sendPrivateMessage(peer, "[CALL_END]")
-
-        // Envio repetido de garantia para desligamento instantâneo em ambos os aparelhos
-        scope.launch {
-            delay(200)
-            sendPrivateMessage(peer, "[CALL_END]")
-        }
+        finishActiveCall()
     }
 
     fun toggleCallMute() {
@@ -2163,6 +2861,7 @@ class PessoasAquiRepository(
 
     fun requestFamilyRole(person: NearbyPerson, role: FamilyRole) {
         val cleanRecipient = person.technicalIdentityHash.removePrefix("peer-")
+        pendingOutgoingFamilyRequests[cleanRecipient.uppercase()] = role
         sendPrivateMessage(cleanRecipient, "[FAMILY_REQ:${role.name}:${_currentAlias.value}]")
         proximitySimulator.receivePrivateMessage(
             cleanRecipient,
@@ -2201,6 +2900,8 @@ class PessoasAquiRepository(
         }
         proximitySimulator.setFamilyRole(personId, role)
         updateUnifiedData()
+        recoveryEnrollmentApproved.add(cleanId.uppercase())
+        enrollFamilyRecoveryIfPossible(cleanId)
     }
 
     fun generateFamilyRecovery(targetIdentityHash: String, familyName: String): RecoveryAuthorization {
@@ -2208,38 +2909,117 @@ class PessoasAquiRepository(
     }
 
     suspend fun claimRecovery(recoveryKey: String, pin: String): Result<String> {
-        // Tenta validação e reivindicação no servidor de produção (Render / Supabase)
-        val remoteResult = networkClient.claimFamilyRecovery(
-            recoveryKey = recoveryKey.trim().uppercase(),
-            pin = pin.trim(),
-            newDeviceFingerprint = deviceSessionManager.getDeviceId()
-        )
-        if (remoteResult.isSuccess) {
-            val recoveredId = remoteResult.getOrThrow()
-            deviceSessionManager.resetSession()
-            return Result.success(recoveredId)
+        // Sem fallback via simulador: recuperação sem autorização persistente
+        // permitiria assumir identidades com dados fornecidos localmente.
+        val cleanKey = recoveryKey.trim().uppercase()
+        if (!Regex("^PA-REC-[A-F0-9]{64}$").matches(cleanKey)) {
+            return Result.failure(IllegalArgumentException("Chave familiar desatualizada ou inválida."))
         }
-
-        // Caso o servidor retorne erro ou chave seja do simulador local
-        val localAuth = proximitySimulator.findActiveRecoveryAuthorization(recoveryKey)
-        if (localAuth != null) {
-            val pinResult = pinSecurityManager.verifyPinForRecovery("session-device-new", pin)
-            if (pinResult.isSuccess) {
-                deviceSessionManager.resetSession()
-                return Result.success(localAuth.targetIdentityHash)
-            } else {
-                return Result.failure(pinResult.exceptionOrNull() ?: Exception("PIN incorreto"))
-            }
-        }
-
-        return Result.failure(remoteResult.exceptionOrNull() ?: Exception("Chave inválida ou expirada."))
+        return try {
+            val deviceId = cryptoIdentityManager.getTechnicalIdentity()
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_CLAIM",
+                identity = deviceId,
+                alias = "",
+                token = cleanKey,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            val claimed = networkClient.claimFamilyRecovery(
+                recoveryKey = cleanKey,
+                newDeviceIdentity = deviceId,
+                identityProof = proof
+            )
+            if (claimed.isSuccess) deviceSessionManager.resetSession()
+            claimed
+        } catch (e: Exception) { Result.failure(e) }
     }
 
-    suspend fun issueFamilyRecoveryRemote(targetIdentityHash: String): Result<String> {
-        return networkClient.issueFamilyRecovery(
-            targetIdentity = targetIdentityHash,
-            familyIdentity = cryptoIdentityManager.getTechnicalIdentity()
-        )
+    /**
+     * Consentimento explícito para um familiar previamente vinculado atuar
+     * como recuperador. A delegação é assinada pela chave do proprietário.
+     * Também serve para credenciar familiares de versões anteriores.
+     */
+    suspend fun authorizeFamilyForRecovery(
+        personId: String,
+        knownPublicKey: String? = null
+    ): Result<Boolean> {
+        val id = cleanId(personId).uppercase()
+        if (!_realDiscoveredPeople.value.any {
+                cleanId(it.technicalIdentityHash.ifBlank { it.id }).uppercase() == id && it.isFamily
+            }) return Result.failure(SecurityException("Contato não possui vínculo familiar confirmado."))
+        val familyPub = knownPublicKey ?: E2eeCryptoEngine.getPeerPublicKeyBase64(id)
+            ?: return Result.failure(IllegalStateException(
+                "A chave pública deste familiar não está disponível. Conectem ambos à internet."))
+        return try {
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_DELEGATE",
+                identity = getMyIdentity(), alias = id, token = familyPub,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            val result = networkClient.registerFamilyRecoveryDelegate(
+                targetIdentity = getMyIdentity(), familyIdentity = id,
+                familyPublicKey = familyPub, identityProof = proof
+            )
+            if (result.isSuccess) {
+                recoveryEnrollmentConfirmed.add(id)
+                recoveryEnrollmentApproved.add(id)
+            }
+            result
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
+    suspend fun revokeFamilyForRecovery(personId: String): Result<Boolean> {
+        val id = cleanId(personId).uppercase()
+        if (!Regex("^[A-F0-9]{16}$").matches(id)) {
+            return Result.failure(IllegalArgumentException("Identidade inválida."))
+        }
+        return try {
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_REVOKE",
+                identity = getMyIdentity(), alias = id,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            val result = networkClient.revokeFamilyRecoveryDelegate(
+                targetIdentity = getMyIdentity(), familyIdentity = id,
+                identityProof = proof
+            )
+            if (result.isSuccess) {
+                recoveryEnrollmentConfirmed.remove(id)
+                recoveryEnrollmentApproved.remove(id)
+            }
+            result
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
+    suspend fun issueFamilyRecoveryRemote(targetIdentityHash: String): Result<RecoveryAuthorization> {
+        val target = cleanId(targetIdentityHash).uppercase()
+        if (!Regex("^[A-F0-9]{16}$").matches(target)) {
+            return Result.failure(IllegalArgumentException("Identidade do familiar inválida."))
+        }
+        return try {
+            val familyId = cryptoIdentityManager.getTechnicalIdentity()
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_ISSUE",
+                identity = familyId, alias = target,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            networkClient.issueFamilyRecovery(
+                targetIdentity = target,
+                familyIdentity = familyId,
+                identityProof = proof
+            ).map { response ->
+                RecoveryAuthorization(
+                    targetIdentityHash = response.targetIdentity,
+                    authorizedByFamilyName = getMyAlias(),
+                    recoveryKey = response.recoveryKey,
+                    expiresAtEpochMs = response.expiresAtEpochMs
+                )
+            }
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     fun transferIdentityToThisDevice(recoveredIdentityHash: String) {
@@ -2275,13 +3055,10 @@ class PessoasAquiRepository(
                 handlePeerOffline(peerHash)
             },
             onMutualConnection = { partnerId, _ ->
-                val cleanPartner = cleanId(partnerId)
-                savedMutualPeople.add(cleanPartner)
-                savedMarkedPeople.add(cleanPartner)
-                savedMarkingMePeople.add(cleanPartner)
-                saveConnectionsToPrefs()
-                saveSavedContactsToPrefs()
-                updateUnifiedData()
+                confirmMutualConnectionFromServer(partnerId)
+            },
+            onMutualConnectionBroken = { partnerId, _ ->
+                revokeMutualLocally(partnerId)
             },
             onPeerMarkedYou = { markerId, _ ->
                 savedMarkingMePeople.add(cleanId(markerId))
@@ -2296,14 +3073,7 @@ class PessoasAquiRepository(
             try {
                 val statusResult = networkClient.fetchConnectionStatus(cleanHash)
                 statusResult.getOrNull()?.let { st ->
-                    var changed = false
-                    st.mutual.forEach { if (savedMutualPeople.add(cleanId(it))) changed = true }
-                    st.markedByMe.forEach { if (savedMarkedPeople.add(cleanId(it))) changed = true }
-                    st.markingMe.forEach { if (savedMarkingMePeople.add(cleanId(it))) changed = true }
-                    if (changed) {
-                        saveConnectionsToPrefs()
-                        updateUnifiedData()
-                    }
+                    reconcileConnectionStatus(st.markedByMe, st.markingMe, st.mutual)
                 }
             } catch (e: Exception) {
                 Log.w("PessoasAqui", "Aviso ao sincronizar conexões da identidade recuperada: ${e.message}")
@@ -2515,13 +3285,26 @@ class PessoasAquiRepository(
         val myIdentity = cryptoIdentityManager.getTechnicalIdentity().removePrefix("peer-").trim().lowercase()
         val allPeers = discoveredPeople.value
         val targets = allPeers.filter { it.isFamily || it.isMutualConnection }
+        // Aparelho formatado ainda não terá os contatos restaurados. Consultar
+        // os vínculos mútuos do servidor antes de declarar que não há familiares.
+        val ids = targets.map { cleanId(it.technicalIdentityHash) }.filter { it.isNotBlank() }
+            .ifEmpty {
+                val status = networkClient.fetchConnectionStatus(myIdentity).getOrNull()
+                if (status != null) {
+                    // Após formatar, reidratar vínculos persistentes antes de
+                    // tentar o canal permanente de cofre criptografado.
+                    reconcileConnectionStatus(status.markedByMe, status.markingMe, status.mutual)
+                }
+                status?.mutual?.map { cleanId(it) }?.filter { it.isNotBlank() }
+                    ?: emptyList()
+            }.distinct()
 
-        if (targets.isEmpty()) {
-            return Result.failure(Exception("Nenhum familiar ou conexão mútua conectada no momento. Utilize a restauração por arquivo de backup (.backup)."))
+        if (ids.isEmpty()) {
+            return Result.failure(Exception("Nenhuma conexão de confiança disponível para consultar o cofre. Use o arquivo .backup pessoal."))
         }
 
-        for (p in targets) {
-            sendPrivateMessage(p.technicalIdentityHash, "[VAULT_QUERY:$myIdentity]")
+        for (peerId in ids) {
+            sendPrivateMessage(peerId, "[VAULT_QUERY:$myIdentity]")
         }
 
         // Aguarda respostas silenciosas dos aparelhos por até 3.5 segundos
@@ -2642,9 +3425,8 @@ class PessoasAquiRepository(
             val fRole = c.familyRole?.let { roleName ->
                 try { FamilyRole.valueOf(roleName) } catch (_: Exception) { null }
             }
-            savedMutualPeople.add(cid)
-            savedMarkedPeople.add(cid)
-            savedMarkingMePeople.add(cid)
+            // Backup restaura os dados do contato, NÃO a aprovação mútua.
+            // O vínculo atual será revalidado com /connections/status do servidor.
             restoredPeople.add(
                 NearbyPerson(
                     id = cid,
@@ -2652,9 +3434,9 @@ class PessoasAquiRepository(
                     alias = c.alias,
                     estimatedDistanceMeters = 500.0,
                     proximityLabel = if (c.isFamily) "Família • Ilimitado" else "Conexão Mútua • Ilimitada",
-                    isMarkedByMe = true,
-                    isMarkingMe = true,
-                    isMutualConnection = c.isMutual,
+                    isMarkedByMe = cid in savedMarkedPeople && cid !in revokedMutualPeople,
+                    isMarkingMe = cid in savedMarkingMePeople && cid !in revokedMutualPeople,
+                    isMutualConnection = cid in savedMutualPeople && cid !in revokedMutualPeople,
                     isFamily = c.isFamily,
                     familyRole = fRole,
                     isPhotoVisible = true,
@@ -2672,12 +3454,8 @@ class PessoasAquiRepository(
         _realDiscoveredPeople.value = cur
         updateUnifiedData()
 
-        val myId = cryptoIdentityManager.getTechnicalIdentity()
-        scope.launch {
-            try {
-                networkClient.syncMutualConnections(myId, savedMutualPeople.toList())
-            } catch (_: Exception) {}
-        }
+        // NUNCA enviar contatos restaurados ao endpoint de sync que cria vínculos:
+        // o backup é dado histórico e não contém consentimento atual das duas partes.
     }
 
     /**

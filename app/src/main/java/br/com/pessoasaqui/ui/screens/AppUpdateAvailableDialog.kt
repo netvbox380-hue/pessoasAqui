@@ -46,6 +46,7 @@ fun AppUpdateAvailableDialog(
             color = DarkSurface,
             border = BorderStroke(1.5.dp, RadarCyan.copy(alpha = 0.5f)),
             modifier = Modifier
+                .widthIn(max = 620.dp)
                 .fillMaxWidth(0.95f)
                 .padding(4.dp)
         ) {

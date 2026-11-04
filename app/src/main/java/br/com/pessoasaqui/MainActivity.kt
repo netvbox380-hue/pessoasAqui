@@ -1,5 +1,7 @@
 package br.com.pessoasaqui
 
+import br.com.pessoasaqui.core.qrcode.InviteLinkParser
+
 import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
@@ -44,6 +46,7 @@ class MainActivity : ComponentActivity() {
     private val incomingInvite = mutableStateOf<IncomingInvite?>(null)
     private val targetPeerToOpen = mutableStateOf<NearbyPerson?>(null)
 
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -84,11 +87,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Transição real de visibilidade, sem timer, nem reinicializar GATT ativo.
+        (application as? PessoasAquiApp)?.repository?.setBleAppForeground(true)
+    }
+
+    override fun onStop() {
+        (application as? PessoasAquiApp)?.repository?.setBleAppForeground(false)
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         val repo = (application as? PessoasAquiApp)?.repository
         repo?.callRingtoneWakeManager?.isAppInForeground = true
         repo?.playBillingManager?.queryActivePurchases()
+        repo?.ensureBleHealthOnForeground()
     }
 
     override fun onPause() {
@@ -161,23 +176,17 @@ class MainActivity : ComponentActivity() {
 
     private fun parseDeepLink(intent: Intent?) {
         val uri = intent?.data ?: return
-        val id = uri.getQueryParameter("id") ?: uri.getQueryParameter("inviteId")
-        val token = uri.getQueryParameter("token")
-        val sender = uri.getQueryParameter("sender") ?: uri.getQueryParameter("senderIdentity")
-        val alias = uri.getQueryParameter("alias") ?: uri.getQueryParameter("senderAlias") ?: "Usuário"
-        val sig = uri.getQueryParameter("sig") ?: uri.getQueryParameter("signature")
-        val exp = uri.getQueryParameter("exp")?.toLongOrNull() ?: uri.getQueryParameter("expiresAt")?.toLongOrNull()
-
-        if (!id.isNullOrBlank() && !token.isNullOrBlank() && !sender.isNullOrBlank()) {
-            incomingInvite.value = IncomingInvite(
-                inviteId = id.trim(),
-                token = token.trim(),
-                senderIdentity = sender.trim(),
-                senderAlias = alias.trim(),
-                signature = sig?.trim(),
-                expiresAt = exp
-            )
-        }
+        // Deep links externos são entrada não confiável: aplicar a mesma
+        // política estrita de domínio, ID e token usada em QR/clipboard.
+        val invite = InviteLinkParser.parse(uri.toString()) ?: return
+        incomingInvite.value = IncomingInvite(
+            inviteId = invite.id,
+            token = invite.token,
+            senderIdentity = invite.sender,
+            senderAlias = invite.alias,
+            signature = invite.signature,
+            expiresAt = invite.expiresAt
+        )
     }
 }
 
@@ -212,12 +221,9 @@ fun PessoasAquiNavHost(
     val contactTags by repository.contactTags.collectAsState()
     val contactTagAssignments by repository.contactTagAssignments.collectAsState()
     val scope = rememberCoroutineScope()
-    val connectedPeople = remember(discoveredPeople, privateChats) {
-        val activeOrWithChats = discoveredPeople.filter { person ->
-            val cid = person.technicalIdentityHash.ifBlank { person.id }
-            person.isMutualConnection || person.isFamily || privateChats.containsKey(cid) || privateChats.containsKey(person.id)
-        }
-        activeOrWithChats
+    val connectedPeople = remember(discoveredPeople) {
+        discoveredPeople
+            .filter { it.isMutualConnection || it.isFamily }
             .distinctBy { it.technicalIdentityHash.ifBlank { it.id } }
     }
     val context = LocalContext.current
@@ -245,6 +251,7 @@ fun PessoasAquiNavHost(
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
     var currentMainTab by remember { mutableIntStateOf(0) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
+    var familyRecoveryError by remember { mutableStateOf<String?>(null) }
     var isCreatingInvite by remember { mutableStateOf(false) }
     var showVipDialog by remember { mutableStateOf(false) }
 
@@ -370,12 +377,43 @@ fun PessoasAquiNavHost(
                 onRequestFamilyRole = { targetPerson, role ->
                     repository.requestFamilyRole(targetPerson, role)
                 },
+                onRevokeFamilyRecovery = { targetPerson ->
+                    scope.launch {
+                        repository.revokeFamilyForRecovery(
+                            targetPerson.technicalIdentityHash.ifBlank { targetPerson.id }
+                        ).onSuccess {
+                            familyRecoveryError = "Autorização familiar revogada no servidor. Os códigos pendentes foram invalidados."
+                        }.onFailure { error ->
+                            familyRecoveryError = error.message
+                                ?: "Não foi possível confirmar a revogação."
+                        }
+                    }
+                },
+                onAuthorizeFamilyRecovery = { targetPerson ->
+                    scope.launch {
+                        repository.authorizeFamilyForRecovery(
+                            targetPerson.technicalIdentityHash.ifBlank { targetPerson.id }
+                        ).onSuccess {
+                            familyRecoveryError = "Autorização familiar registrada com assinatura digital no servidor."
+                        }.onFailure { error ->
+                            familyRecoveryError = error.message
+                                ?: "Não foi possível autorizar este familiar para recuperação."
+                        }
+                    }
+                },
                 onGenerateFamilyRecovery = { targetPerson ->
-                    val auth = repository.generateFamilyRecovery(
-                        targetIdentityHash = targetPerson.technicalIdentityHash,
-                        familyName = targetPerson.alias
-                    )
-                    activeFamilyRecoveryAuth = Pair(targetPerson, auth)
+                    // Autorizações locais simuladas não transferem identidades.
+                    scope.launch {
+                        val result = repository.issueFamilyRecoveryRemote(
+                            targetIdentityHash = targetPerson.technicalIdentityHash
+                        )
+                        result.onSuccess { auth ->
+                            activeFamilyRecoveryAuth = Pair(targetPerson, auth)
+                        }.onFailure { error ->
+                            familyRecoveryError = error.message
+                                ?: "Não foi possível autenticar a autorização familiar."
+                        }
+                    }
                 },
                 onBlockUser = { userId ->
                     repository.moderationManager.blockUser(userId)
@@ -509,6 +547,18 @@ fun PessoasAquiNavHost(
                 onDeleteMessageForEveryone = { peerId, msgId -> repository.deleteMessageForEveryone(peerId, msgId) }
             )
 
+            familyRecoveryError?.let { error ->
+                AlertDialog(
+                    onDismissRequest = { familyRecoveryError = null },
+                    title = { Text("Recuperação familiar segura") },
+                    text = { Text(error + "\nVerifique se o titular autorizou este familiar enquanto a conta estava ativa.") },
+                    confirmButton = {
+                        TextButton(onClick = { familyRecoveryError = null }) {
+                            Text("Entendi")
+                        }
+                    }
+                )
+            }
             activeFamilyRecoveryAuth?.let { (person, auth) ->
                 FamilyRecoveryDialog(
                     person = person,
@@ -523,9 +573,9 @@ fun PessoasAquiNavHost(
 
             EntreNaSuaRecoveryScreen(
                 pinSecurityManager = repository.pinSecurityManager,
-                onFindAuthorization = { key ->
-                    repository.proximitySimulator.findActiveRecoveryAuthorization(key)
-                },
+                // Somente o servidor valida o código v2. Nunca aceitar
+                // autorização local do simulador como prova de titularidade.
+                onFindAuthorization = { _ -> null },
                 onClaimRecovery = { key, pin ->
                     repository.claimRecovery(key, pin)
                 },
@@ -595,8 +645,12 @@ fun PessoasAquiNavHost(
                         )
                     )
                     Text(
-                        text = "Este convite é de uso único. Ao aceitar, vocês poderão conversar livremente a qualquer distância com mensagens, chamadas e fotos criptografadas.",
-                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        text = "Identidade informada: ${invite.senderIdentity}",
+                        style = MaterialTheme.typography.labelSmall.copy(color = RadarCyan)
+                    )
+                    Text(
+                        text = "Confirme com a pessoa por outro canal antes de aceitar. O nome exibido no link não comprova a identidade do emissor. Este convite é de uso único e requer conexão com o servidor.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = WarningAmber)
                     )
                     if (errorMessage != null) {
                         Text(

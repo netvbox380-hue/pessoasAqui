@@ -34,6 +34,7 @@ fun ImportantMessagesDialog(
     peerAlias: String,
     importantMessages: List<ChatMessage>,
     onUnmarkImportant: (messageId: String) -> Unit,
+    onScheduleReminder: (ChatMessage) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -46,8 +47,10 @@ fun ImportantMessagesDialog(
     ) {
         Surface(
             modifier = Modifier
+                .widthIn(max = 700.dp)
                 .fillMaxWidth(0.92f)
-                .fillMaxHeight(0.82f)
+                .heightIn(max = 760.dp)
+                .fillMaxHeight(0.85f)
                 .clip(RoundedCornerShape(24.dp)),
             color = DarkCard,
             border = BorderStroke(1.5.dp, WarningAmber.copy(alpha = 0.5f))
@@ -215,7 +218,7 @@ fun ImportantMessagesDialog(
                                         }
                                         else -> {
                                             Text(
-                                                text = msg.text,
+                                                text = msg.safeDisplayText,
                                                 style = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary)
                                             )
                                         }
@@ -232,7 +235,7 @@ fun ImportantMessagesDialog(
                                         if (msg.messageType == MessageType.TEXT) {
                                             IconButton(
                                                 onClick = {
-                                                    clipboardManager.setText(AnnotatedString(msg.text))
+                                                    clipboardManager.setText(AnnotatedString(msg.safeDisplayText))
                                                     Toast.makeText(context, "Texto copiado!", Toast.LENGTH_SHORT).show()
                                                 },
                                                 modifier = Modifier.size(30.dp)
@@ -240,6 +243,15 @@ fun ImportantMessagesDialog(
                                                 Icon(Icons.Default.ContentCopy, contentDescription = "Copiar", tint = TextSecondary, modifier = Modifier.size(15.dp))
                                             }
                                             Spacer(modifier = Modifier.width(4.dp))
+                                        }
+
+                                        IconButton(
+                                            onClick = { onScheduleReminder(msg) },
+                                            modifier = Modifier.size(44.dp)
+                                        ) {
+                                            Icon(Icons.Default.Schedule,
+                                                contentDescription = "Agendar alerta para esta mensagem",
+                                                tint = RadarCyan, modifier = Modifier.size(20.dp))
                                         }
 
                                         // Desmarcar estrela

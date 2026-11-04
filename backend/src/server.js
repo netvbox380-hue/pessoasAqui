@@ -11,8 +11,14 @@ const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 const crypto = require('crypto');
-const { initDatabase, localStore, isPostgres, query } = require('./db');
+const { initDatabase, localStore, isPostgres, query, withTransaction } = require('./db');
 const { hashPin, verifyPinHash, generateNonce, calculateLockoutDurationSeconds } = require('./crypto');
+const {
+  INVITE_LIFETIME_MS, tokenDigest, verifyStoredToken, validateInviteId, validateInviteToken
+} = require('./inviteSecurity');
+const { verifyInviteIdentityProof, deriveInviteId } = require('./inviteAuth');
+const { registerFamilyRecoveryRoutes } = require('./familyRecoveryRoutes');
+const { registerOfferRoutesV2 } = require('./offerRoutesV2');
 
 function verifyClientEcdsaSignature(publicKeyBase64, dataString, signatureBase64) {
   if (!publicKeyBase64 || !signatureBase64) return false;
@@ -33,13 +39,16 @@ function verifyClientEcdsaSignature(publicKeyBase64, dataString, signatureBase64
 
 const registeredDevicePublicKeys = new Map(); // identityKey -> publicKeyBase64
 
-const INVITE_SECRET = process.env.INVITE_SECRET || process.env.SESSION_SECRET || 'pessoasaqui_invite_crypto_secret_key_2026';
+// Sem chave secreta provisionada, não emitir assinatura HMAC. O token é
+// autorizado pelo registro persistente do banco, nunca por um fallback stateless.
+const INVITE_SECRET = process.env.INVITE_SECRET || process.env.SESSION_SECRET || null;
 
 function signInvitePayload(inviteId, token, senderIdentity, expiresAt) {
   const cleanInvId = (inviteId || '').replace(/^peer-/, '').trim().toLowerCase();
   const cleanTok = (token || '').trim();
   const cleanSender = (senderIdentity || '').replace(/^peer-/, '').trim().toLowerCase();
   const exp = String(expiresAt || '');
+  if (!INVITE_SECRET) return '';
   return crypto.createHmac('sha256', INVITE_SECRET)
     .update(`${cleanInvId}:${cleanTok}:${cleanSender}:${exp}`)
     .digest('hex');
@@ -88,6 +97,59 @@ app.use('/legal', express.static(path.join(__dirname, '../public/legal')));
 setTimeout(async () => {
   if (isPostgres()) {
     try {
+      // Esquema aditivo v2: não altera registros antigos, exige persistência.
+      await query(`CREATE TABLE IF NOT EXISTS identity_key_bindings (
+        identity_id VARCHAR(64) PRIMARY KEY REFERENCES identities(id) ON DELETE CASCADE,
+        public_key_spki TEXT NOT NULL,
+        generation BIGINT NOT NULL DEFAULT 1,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await query(`CREATE TABLE IF NOT EXISTS recovery_delegations (
+        target_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        family_public_key TEXT NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY(target_identity,family_identity)
+      )`);
+      await query(`CREATE TABLE IF NOT EXISTS recovery_proof_nonces (
+        identity_id VARCHAR(64) NOT NULL,
+        operation VARCHAR(32) NOT NULL,
+        nonce VARCHAR(64) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY(identity_id,operation,nonce)
+      )`);
+      await query(`CREATE TABLE IF NOT EXISTS recovery_grants (
+        id VARCHAR(64) PRIMARY KEY,
+        token_hash CHAR(64) NOT NULL UNIQUE,
+        target_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        family_public_key TEXT NOT NULL,
+        expected_generation BIGINT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        used_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_recovery_grants_target
+        ON recovery_grants(target_identity,expires_at)`);
+      await query(`CREATE TABLE IF NOT EXISTS offers_secure (
+        id VARCHAR(64) PRIMARY KEY,
+        author_id VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        author_alias VARCHAR(64) NOT NULL,
+        profession VARCHAR(64) NOT NULL,
+        description VARCHAR(500) NOT NULL,
+        image_base64 TEXT,
+        external_link TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_offers_secure_owner ON offers_secure(author_id,created_at)`);
+      await query(`CREATE TABLE IF NOT EXISTS offer_action_nonces (
+        author_id VARCHAR(64) NOT NULL,
+        nonce VARCHAR(64) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY(author_id,nonce)
+      )`);
       await query(`CREATE TABLE IF NOT EXISTS invites (
         id VARCHAR(64) PRIMARY KEY,
         token VARCHAR(64) NOT NULL,
@@ -366,6 +428,33 @@ wss.on('connection', (ws, req) => {
           }));
           setTimeout(() => { try { ws.close(4003, 'Banned'); } catch (_) {} }, 200);
           return;
+        }
+
+        // Após recuperação, a chave antiga NÃO pode recuperar a sessão WS.
+        // Demais contas permanecem sob protocolo legado, preservado nesta etapa.
+        if (process.env.DATABASE_URL) {
+          try {
+            if (!isPostgres()) throw new Error('Banco indisponível');
+            const active = await query(
+              'SELECT public_key_spki FROM identity_key_bindings WHERE identity_id=$1',
+              [authenticatedIdentity]);
+            if (!isPostgres()) throw new Error('Banco indisponível');
+            const boundKey = active.rows[0]?.public_key_spki;
+            if (boundKey) {
+              if (!msg.publicKey || msg.publicKey !== boundKey || !msg.signature ||
+                  !msg.authNonce || !verifyClientEcdsaSignature(
+                    boundKey, authenticatedIdentity + ':' + msg.authNonce, msg.signature)) {
+                ws.send(JSON.stringify({type:'AUTH_FAILED',message:'Chave da identidade revogada.'}));
+                try { ws.close(4001,'Expired identity key'); } catch (_) {}
+                return;
+              }
+              registeredDevicePublicKeys.set(kAuth,boundKey);
+            }
+          } catch (_) {
+            ws.send(JSON.stringify({type:'AUTH_FAILED',message:'Autenticação indisponível.'}));
+            try { ws.close(4001,'Identity verification unavailable'); } catch (_) {}
+            return;
+          }
         }
 
         // Blindagem criptográfica contra sequestro de identidade WebSocket (Zero-Knowledge Auth)
@@ -670,66 +759,10 @@ app.get('/api/presence/nearby', async (req, res) => {
 });
 
 /**
- * Serviços e Divulgações Locais
+ * Ofertas autenticadas v2: o servidor não presume 10m de proximidade.
+ * BLE/GATT envia anúncios diretamente a pares fisicamente encontrados.
  */
-app.post('/api/offers/publish', (req, res) => {
-  const { id, authorId, authorAlias, profession, description, imageBase64, externalLink } = req.body;
-  if (!authorId || !profession || !description) {
-    return res.status(400).json({ error: 'authorId, profession e description são obrigatórios.' });
-  }
-
-  const offerId = id || `offer_${Date.now()}`;
-  const offer = {
-    id: offerId,
-    authorId: cleanId(authorId),
-    authorAlias: authorAlias || 'Profissional',
-    profession: profession.trim(),
-    description: description.trim(),
-    imageBase64: imageBase64 || null,
-    externalLink: externalLink || null,
-    createdAt: Date.now()
-  };
-
-  activeOffers.set(offerId, offer);
-
-  // Broadcast em tempo real para os dispositivos conectados
-  const payload = JSON.stringify({
-    type: 'OFFER_PUBLISHED',
-    offer
-  });
-  for (const client of activeSockets.values()) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
-    }
-  }
-
-  res.json({ success: true, offer });
-});
-
-app.get('/api/offers/nearby', (req, res) => {
-  const now = Date.now();
-  // Retorna ofertas ativas (últimas 48 horas)
-  const offers = Array.from(activeOffers.values())
-    .filter(o => (now - o.createdAt) < 172800000);
-  res.json({ success: true, count: offers.length, offers });
-});
-
-app.delete('/api/offers/:id', (req, res) => {
-  const { id } = req.params;
-  activeOffers.delete(id);
-
-  const payload = JSON.stringify({
-    type: 'OFFER_DELETED',
-    offerId: id
-  });
-  for (const client of activeSockets.values()) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
-    }
-  }
-
-  res.json({ success: true, deleted: id });
-});
+registerOfferRoutesV2(app,{query,withTransaction,isPostgres,activeOffers});
 
 /**
  * Envio de Mensagem Cifrada via HTTP (Fallback redundante para WebSockets)
@@ -858,6 +891,7 @@ app.get('/api/connections/status', async (req, res) => {
       }
     } catch (e) {
       console.error('[DB] Erro ao buscar connections:', e.message);
+      return res.status(503).json({ success: false, error: 'Estado de conexões indisponível.' });
     }
   }
 
@@ -867,28 +901,10 @@ app.get('/api/connections/status', async (req, res) => {
 /**
  * Sincronização em Massa de Conexões Mútuas pelo Cliente (Blindagem de Conexões)
  */
-app.post('/api/connections/sync', async (req, res) => {
-  const { myIdentity, mutualPeers } = req.body;
-  if (!myIdentity || !Array.isArray(mutualPeers)) {
-    return res.status(400).json({ error: 'myIdentity e array mutualPeers são obrigatórios.' });
-  }
-  const kMy = keyId(myIdentity);
-  for (const peerId of mutualPeers) {
-    const kPeer = keyId(peerId);
-    if (kPeer && kPeer !== kMy) {
-      localStore.connections.set(`${kMy}->${kPeer}`, { fromIdentity: myIdentity, toIdentity: peerId, isMutual: true });
-      localStore.connections.set(`${kPeer}->${kMy}`, { fromIdentity: peerId, toIdentity: myIdentity, isMutual: true });
-      if (isPostgres()) {
-        query(
-          `INSERT INTO connections (from_identity, to_identity, is_mutual)
-           VALUES ($1, $2, TRUE), ($2, $1, TRUE)
-           ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = TRUE`,
-          [myIdentity, peerId]
-        ).catch((err) => console.warn('[DB] Erro ao sincronizar conexão:', err.message));
-      }
-    }
-  }
-  res.json({ success: true, count: mutualPeers.length });
+app.post('/api/connections/sync', async (_req, res) => {
+  // Endpoint legado inseguro: aceitava declarar conexões mútuas unilateralmente
+  // e ressuscitava vínculos revogados. Só /mark com reciprocidade pode criar vínculo.
+  return res.status(410).json({ success: false, error: 'Sincronização unilateral desativada. Use /connections/mark.' });
 });
 
 /**
@@ -942,6 +958,7 @@ app.post('/api/connections/mark', async (req, res) => {
       }
     } catch (e) {
       console.error('[DB] Erro ao gravar marcação no PostgreSQL:', e.message);
+      return res.status(503).json({ success: false, error: 'Marcação não confirmada no banco.' });
     }
   }
 
@@ -1034,29 +1051,23 @@ app.post('/api/connections/unmark', async (req, res) => {
   const kFrom = keyId(from);
   const kTo = keyId(to);
 
-  // Remove a marcação da origem
-  localStore.connections.delete(`${kFrom}->${kTo}`);
-  // Se havia conexão reversa, quebra a reciprocidade mútua
-  const reverseKey = `${kTo}->${kFrom}`;
-  if (localStore.connections.has(reverseKey)) {
-    localStore.connections.get(reverseKey).isMutual = false;
-  }
-
+  // Revogação de QUALQUER participante desfaz as duas marcações.
+  // Sem isto, uma nova marcação poderia reativar o vínculo unilateralmente.
   if (isPostgres()) {
     try {
       await query(
-        `DELETE FROM connections WHERE LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2)`,
+        `DELETE FROM connections
+         WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
+            OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
         [from, to]
       );
-      await query(
-        `UPDATE connections SET is_mutual = FALSE
-         WHERE LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2)`,
-        [to, from]
-      );
     } catch (e) {
-      console.error('[DB] Erro ao remover marcação no PostgreSQL:', e.message);
+      console.error('[DB] Erro ao revogar conexão no PostgreSQL:', e.message);
+      return res.status(503).json({ success: false, error: 'Revogação não confirmada no banco. Tente novamente.' });
     }
   }
+  localStore.connections.delete(`${kFrom}->${kTo}`);
+  localStore.connections.delete(`${kTo}->${kFrom}`);
 
   const myAlias = senderAlias || activePresence.get(kFrom)?.alias || 'Alguém';
   const targetWs = activeSockets.get(kTo);
@@ -1089,187 +1100,204 @@ app.post('/api/connections/unmark', async (req, res) => {
 /**
  * Geração de Convite Criptografado de Uso Único para Conexão Mútua à Distância
  */
+// Um convite é uma credencial bearer. Ele é ASSINADO quando existe segredo
+// de implantação, mas NÃO é texto criptografado: evite logs, previews e
+// armazenamento em terceiros. Somente o banco decide quem o resgatou.
+const inviteDbRequired = Boolean(process.env.DATABASE_URL);
+const inviteMutex = new Set();
+// Caso uma identidade tenha sido recuperada, APENAS a chave registrada
+// atomicamente como ativa no PostgreSQL pode assinar convites.
+async function verifyActiveInviteProof(operation, identity, alias, inviteId, tokenHash, proof) {
+  let binding = null;
+  if (inviteDbRequired) {
+    if (!isPostgres()) throw new Error('Banco de autenticação indisponível');
+    const found = await query(
+      'SELECT public_key_spki FROM identity_key_bindings WHERE identity_id=$1',
+      [identity]);
+    if (!isPostgres()) throw new Error('Banco de autenticação indisponível');
+    binding = found.rows[0]?.public_key_spki || null;
+  }
+  return verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHash, proof,
+    Date.now(), binding);
+}
+
 app.post('/api/invites/create', async (req, res) => {
-  const { senderIdentity, senderAlias } = req.body;
-  const sender = cleanId(senderIdentity);
-  if (!sender) {
-    return res.status(400).json({ error: 'Identidade do remetente obrigatória.' });
+  const sender = cleanId(req.body?.senderIdentity);
+  const alias = String(req.body?.senderAlias || 'Usuário').trim().slice(0, 64);
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(sender)) {
+    return res.status(400).json({ error: 'Identidade inválida.' });
+  }
+  if (inviteDbRequired && !isPostgres()) {
+    return res.status(503).json({ error: 'Serviço de convites temporariamente indisponível.' });
   }
 
-  const inviteId = `inv_${generateNonce().slice(0, 12).toLowerCase()}`;
-  const token = generateNonce().slice(0, 32);
-  const alias = (senderAlias || 'Usuário').trim();
-  const createdAt = Date.now();
-  const expiresAt = createdAt + (7 * 24 * 60 * 60 * 1000); // 7 dias de validade
+  // Autenticação vinculada à chave que gerou a identidade técnica (SHA-256/SPKI).
+  // NÃO aceitar somente senderIdentity, nem uma chave pública não vinculada ao ID.
+  let creatorVerified = false;
+  try {
+    creatorVerified = await verifyActiveInviteProof('CREATE', sender, alias, '', '', req.body?.identityProof);
+  } catch (_) { return res.status(503).json({error:'Autenticação indisponível.'}); }
+  if (!creatorVerified) {
+    return res.status(401).json({ error: 'Identidade não autenticada. Atualize o aplicativo ou valide a recuperação da identidade.' });
+  }
+  // ID determinístico do nonce assinado: replay não gera segundo convite,
+  // inclusive em instâncias distintas que compartilham a chave primária do PostgreSQL.
+  const inviteId = deriveInviteId(sender, req.body.identityProof.nonce);
+  const token = generateNonce(); // 256 bits; só seu SHA-256 vai para o banco
+  const expiresAt = Date.now() + INVITE_LIFETIME_MS;
   const signature = signInvitePayload(inviteId, token, sender, expiresAt);
-
   const inviteData = {
-    inviteId,
-    token,
-    senderIdentity: sender,
-    senderAlias: alias,
-    signature,
-    isUsed: false,
-    usedBy: null,
-    usedAt: null,
-    createdAt,
-    expiresAt
+    inviteId, tokenHash: tokenDigest(token),
+    senderIdentity: sender, senderAlias: alias, signature,
+    isUsed: false, usedBy: null, expiresAt
   };
 
-  activeInvites.set(inviteId, inviteData);
-  if (localStore.invites) localStore.invites.set(inviteId, inviteData);
-
-  if (isPostgres()) {
+  if (inviteDbRequired) {
     try {
-      await query(
+      const result = await query(
         `INSERT INTO invites (id, token, sender_identity, sender_alias, signature, expires_at)
          VALUES ($1, $2, $3, $4, $5, TO_TIMESTAMP($6 / 1000.0))
-         ON CONFLICT (id) DO UPDATE SET token = EXCLUDED.token, signature = EXCLUDED.signature, expires_at = EXCLUDED.expires_at`,
-        [inviteId, token, sender, alias, signature, expiresAt]
+         ON CONFLICT DO NOTHING RETURNING id`,
+        [inviteId, inviteData.tokenHash, sender, alias, signature, expiresAt]
       );
-    } catch (e) {
-      console.error('[DB] Erro ao gravar convite no PostgreSQL:', e.message);
+      if (result.rowCount !== 1) {
+        return res.status(409).json({ error: 'Solicitação de convite já utilizada. Gere outra.' });
+      }
+    } catch (err) {
+      console.error('[Convite] Falha ao persistir convite:', err.message);
+      return res.status(503).json({ error: 'Não foi possível registrar o convite.' });
     }
+  } else {
+    // Modo dev SEM DATABASE_URL: memória somente; não há fallback stateless.
+    if (activeInvites.has(inviteId)) {
+      return res.status(409).json({ error: 'Solicitação de convite já utilizada. Gere outra.' });
+    }
+    activeInvites.set(inviteId, inviteData);
+    if (localStore.invites) localStore.invites.set(inviteId, inviteData);
   }
 
-  const baseUrl = process.env.BASE_URL || (req.get('host') ? `${req.protocol}://${req.get('host')}` : 'https://pessoasaqui3.onrender.com');
-  const queryParams = `id=${encodeURIComponent(inviteId)}&token=${encodeURIComponent(token)}&sender=${encodeURIComponent(sender)}&alias=${encodeURIComponent(alias)}&sig=${encodeURIComponent(signature)}&exp=${expiresAt}`;
+  const baseUrl = 'https://pessoasaqui3.onrender.com';
+  const queryParams = new URLSearchParams({
+    id: inviteId, token, sender, alias,
+    ...(signature ? { sig: signature } : {}), exp: String(expiresAt)
+  });
   const inviteUrl = `${baseUrl}/invite?${queryParams}`;
-
-  console.log(`[Convite] Novo convite único gerado: ${inviteId} por ${alias} (${sender}) com assinatura segura`);
-
-  res.json({
-    success: true,
-    inviteId,
-    token,
-    signature,
-    inviteUrl,
-    senderIdentity: sender,
-    senderAlias: alias,
-    expiresAt
+  console.log(`[Convite] Registrado com expiração (ID): ${inviteId}`);
+  return res.json({
+    success: true, inviteId, token, signature, inviteUrl,
+    senderIdentity: sender, senderAlias: alias, expiresAt
   });
 });
 
 /**
- * Resgate de Convite de Uso Único (Efetiva Conexão Mútua Instantânea à Distância)
+ * Resgate atômico: um token pode ser reivindicado uma única vez, inclusive
+ * quando duas instâncias Render tentarem processá-lo simultaneamente.
+ * O vínculo só é confirmado se a transação persistir no PostgreSQL.
  */
 app.post('/api/invites/redeem', async (req, res) => {
-  const { inviteId, token, receiverIdentity, receiverAlias, senderIdentity, senderAlias, signature, expiresAt } = req.body;
+  const { inviteId, token, receiverIdentity, receiverAlias } = req.body || {};
   const receiver = cleanId(receiverIdentity);
-  const recAlias = (receiverAlias || 'Usuário Convidado').trim();
-
-  if (!inviteId || !token || !receiver) {
-    return res.status(400).json({ error: 'Parâmetros de convite ou destinatário inválidos.' });
+  const recAlias = String(receiverAlias || 'Usuário Convidado').trim().slice(0, 64);
+  if (!validateInviteId(inviteId) || !validateInviteToken(token) ||
+      !/^[A-Za-z0-9_-]{8,64}$/.test(receiver)) {
+    return res.status(400).json({ error: 'Convite ou destinatário inválido.' });
+  }
+  if (inviteDbRequired && !isPostgres()) {
+    return res.status(503).json({ error: 'Banco de convites indisponível. Tente novamente.' });
+  }
+  // O token bearer sozinho não autoriza assumir receiverIdentity.
+  // A assinatura vincula a aceitação ao titular da identidade destinatária.
+  let receiverVerified = false;
+  try {
+    receiverVerified = await verifyActiveInviteProof('REDEEM', receiver, recAlias,
+      inviteId, tokenDigest(token), req.body?.identityProof);
+  } catch (_) { return res.status(503).json({error:'Autenticação indisponível.'}); }
+  if (!receiverVerified) {
+    return res.status(401).json({ error: 'Identidade de quem aceita não autenticada. Atualize o aplicativo.' });
   }
 
-  let invite = activeInvites.get(inviteId) || (localStore.invites && localStore.invites.get(inviteId));
-
-  // Se não estiver na memória, busca no PostgreSQL persistente
-  if (!invite && isPostgres()) {
+  let sender, originalAlias;
+  if (inviteDbRequired) {
     try {
-      const dbRes = await query(`SELECT * FROM invites WHERE id = $1`, [inviteId]);
-      if (dbRes.rows.length > 0) {
-        const row = dbRes.rows[0];
-        invite = {
-          inviteId: row.id,
-          token: row.token,
-          senderIdentity: row.sender_identity,
-          senderAlias: row.sender_alias,
-          signature: row.signature,
-          isUsed: row.is_used,
-          usedBy: row.used_by,
-          usedAt: row.used_at ? new Date(row.used_at).getTime() : null,
-          expiresAt: new Date(row.expires_at).getTime()
-        };
-        activeInvites.set(inviteId, invite);
+      // A CTE é UMA instrução transacional. Se a atualização do vínculo falhar,
+      // o consumo do token também é revertido. OLD token plaintext e NEW hash
+      // continuam válidos; nenhum token novo é armazenado em texto puro.
+      const claim = await query(
+        `WITH claimed AS (
+           UPDATE invites
+              SET is_used = TRUE, used_by = $3, used_at = NOW()
+            WHERE id = $1
+              AND (token = $2 OR token = $4)
+              AND is_used = FALSE AND expires_at > NOW()
+              AND LOWER(sender_identity) <> LOWER($3)
+            RETURNING sender_identity, sender_alias
+         ), linked AS (
+           INSERT INTO connections (from_identity, to_identity, is_mutual)
+           SELECT pairs.from_identity, pairs.to_identity, TRUE
+             FROM claimed
+             CROSS JOIN LATERAL (
+               VALUES (claimed.sender_identity, $3::varchar),
+                      ($3::varchar, claimed.sender_identity)
+             ) AS pairs(from_identity, to_identity)
+           ON CONFLICT (from_identity, to_identity)
+             DO UPDATE SET is_mutual = TRUE
+           RETURNING 1
+         )
+         SELECT sender_identity, sender_alias,
+                (SELECT COUNT(*) FROM linked) AS linked_count FROM claimed`,
+        [inviteId, token, receiver, tokenDigest(token)]
+      );
+      if (claim.rowCount !== 1 || Number(claim.rows[0]?.linked_count) !== 2) {
+        return res.status(410).json({
+          error: 'Convite inválido, já usado, expirado ou indisponível.'
+        });
       }
-    } catch (e) {
-      console.error('[DB] Erro ao consultar convite no banco:', e.message);
-    }
-  }
-
-  // Fallback Criptográfico Seguro: Se o servidor foi reciclado ou o convite foi criado com assinatura válida
-  const candidateSender = cleanId(invite?.senderIdentity || senderIdentity);
-  const candidateExp = invite ? invite.expiresAt : Number(expiresAt || (Date.now() + 86400000));
-  const candidateSig = invite?.signature || signature;
-
-  const isCryptographicallyValid = verifyInvitePayloadSignature(inviteId, token, candidateSender, candidateExp, candidateSig);
-
-  if (!invite && !isCryptographicallyValid) {
-    return res.status(404).json({ error: 'Convite não encontrado ou inexistente.' });
-  }
-
-  if (invite) {
-    if (invite.token !== token) {
-      return res.status(403).json({ error: 'Token de convite inválido ou adulterado.' });
-    }
-    if (invite.isUsed) {
-      return res.status(410).json({ error: 'Este convite já foi utilizado e não pode ser reutilizado.' });
-    }
-    if (Date.now() > invite.expiresAt) {
-      return res.status(410).json({ error: 'Este convite expirou.' });
+      sender = cleanId(claim.rows[0].sender_identity);
+      originalAlias = claim.rows[0].sender_alias || 'Contato';
+    } catch (err) {
+      console.error('[Convite] Falha no resgate transacional:', err.message);
+      return res.status(503).json({ error: 'Não foi possível confirmar o vínculo agora.' });
     }
   } else {
-    // Verificado via assinatura criptográfica sem registro prévio na RAM
-    if (Date.now() > candidateExp) {
-      return res.status(410).json({ error: 'Este convite expirou.' });
-    }
-    invite = {
-      inviteId,
-      token,
-      senderIdentity: candidateSender,
-      senderAlias: senderAlias || 'Usuário Remetente',
-      signature: candidateSig,
-      isUsed: false,
-      expiresAt: candidateExp
-    };
-    activeInvites.set(inviteId, invite);
-  }
-
-  const sender = cleanId(invite.senderIdentity);
-  if (keyId(sender) === keyId(receiver)) {
-    return res.status(400).json({ error: 'Você não pode resgatar seu próprio convite.' });
-  }
-
-  // Marca convite como utilizado (USO ÚNICO GARANTIDO)
-  invite.isUsed = true;
-  invite.usedBy = receiver;
-  invite.usedAt = Date.now();
-
-  const kSender = keyId(sender);
-  const kReceiver = keyId(receiver);
-
-  // Estabelece Conexão Mútua Bidirecional Permanente (sempre em memória local + PostgreSQL se ativo)
-  localStore.connections.set(`${kSender}->${kReceiver}`, { fromIdentity: sender, toIdentity: receiver, isMutual: true });
-  localStore.connections.set(`${kReceiver}->${kSender}`, { fromIdentity: receiver, toIdentity: sender, isMutual: true });
-
-  if (isPostgres()) {
+    // Sem awaits entre a verificação e a marcação; bloqueio adicional contra
+    // invocação reentrante durante testes ou futuras mudanças de rota.
+    if (inviteMutex.has(inviteId)) return res.status(409).json({ error: 'Convite em uso.' });
+    inviteMutex.add(inviteId);
     try {
-      await query(
-        `UPDATE invites SET is_used = TRUE, used_by = $1, used_at = NOW() WHERE id = $2`,
-        [receiver, inviteId]
-      );
-      await query(
-        `INSERT INTO connections (from_identity, to_identity, is_mutual)
-         VALUES ($1, $2, TRUE), ($2, $1, TRUE)
-         ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = TRUE`,
-        [sender, receiver]
-      );
-    } catch (e) {
-      console.error('[DB] Erro ao gravar conexão mútua por convite:', e.message);
-    }
+      const invite = activeInvites.get(inviteId);
+      if (!invite || invite.isUsed || Date.now() > invite.expiresAt ||
+          !verifyStoredToken(invite.tokenHash || invite.token, token)) {
+        return res.status(410).json({ error: 'Convite inválido, expirado ou já utilizado.' });
+      }
+      sender = cleanId(invite.senderIdentity);
+      originalAlias = invite.senderAlias;
+      if (keyId(sender) === keyId(receiver)) {
+        return res.status(400).json({ error: 'Você não pode usar seu próprio convite.' });
+      }
+      invite.isUsed = true;
+      invite.usedBy = receiver;
+      invite.usedAt = Date.now();
+      const kSender = keyId(sender), kReceiver = keyId(receiver);
+      localStore.connections.set(`${kSender}->${kReceiver}`,
+        { fromIdentity: sender, toIdentity: receiver, isMutual: true });
+      localStore.connections.set(`${kReceiver}->${kSender}`,
+        { fromIdentity: receiver, toIdentity: sender, isMutual: true });
+    } finally { inviteMutex.delete(inviteId); }
   }
 
-  console.log(`[Convite] Convite ${inviteId} resgatado com sucesso por ${recAlias} (${receiver}) com ${invite.senderAlias} (${sender})!`);
+  const kSender = keyId(sender), kReceiver = keyId(receiver);
+  // Cache local é atualizado SOMENTE após o commit PostgreSQL.
+  localStore.connections.set(`${kSender}->${kReceiver}`,
+    { fromIdentity: sender, toIdentity: receiver, isMutual: true });
+  localStore.connections.set(`${kReceiver}->${kSender}`,
+    { fromIdentity: receiver, toIdentity: sender, isMutual: true });
 
-  // Notifica ambos via WebSocket
   const senderWs = activeSockets.get(kSender);
   const senderMsg = {
     type: 'MUTUAL_CONNECTION_ESTABLISHED',
     partnerIdentity: receiver,
     partnerAlias: recAlias,
-    timestamp: Date.now(),
-    viaInvite: true
+    timestamp: Date.now(), viaInvite: true
   };
   if (senderWs && senderWs.readyState === WebSocket.OPEN) {
     senderWs.send(JSON.stringify(senderMsg));
@@ -1290,19 +1318,17 @@ app.post('/api/invites/redeem', async (req, res) => {
     receiverWs.send(JSON.stringify({
       type: 'MUTUAL_CONNECTION_ESTABLISHED',
       partnerIdentity: sender,
-      partnerAlias: invite.senderAlias,
-      timestamp: Date.now(),
-      viaInvite: true
+      partnerAlias: originalAlias,
+      timestamp: Date.now(), viaInvite: true
     }));
   }
 
-  res.json({
+  console.log(`[Convite] Resgate concluído atomicamente: ${inviteId}`);
+  return res.json({
     success: true,
-    senderIdentity: sender,
-    senderAlias: invite.senderAlias,
-    receiverIdentity: receiver,
-    receiverAlias: recAlias,
-    message: `✨ Conexão Mútua Estabelecida com ${invite.senderAlias}! Vínculo à distância liberado com sucesso.`
+    senderIdentity: sender, senderAlias: originalAlias,
+    receiverIdentity: receiver, receiverAlias: recAlias,
+    message: `✨ Conexão Mútua Estabelecida com ${originalAlias}!`
   });
 });
 
@@ -1310,12 +1336,18 @@ app.post('/api/invites/redeem', async (req, res) => {
  * Landing Page Web do Convite (com suporte a Deep Link automático para o app PessoasAqui)
  */
 app.get('/invite', (req, res) => {
+  // Link contém segredo bearer: jamais permitir cache, indexação ou envio
+  // de URL como Referer ao navegar para sites externos.
+  res.set('Cache-Control', 'no-store, max-age=0');
+  res.set('Referrer-Policy', 'no-referrer');
+  res.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
   const { id, token, sender, alias, fallback, sig, exp } = req.query;
-  const safeAlias = (alias || 'Alguém').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeAlias = String(alias || 'Alguém').slice(0, 64)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const queryParams = `id=${encodeURIComponent(id || '')}&token=${encodeURIComponent(token || '')}&sender=${encodeURIComponent(sender || '')}&alias=${encodeURIComponent(alias || '')}&sig=${encodeURIComponent(sig || '')}&exp=${encodeURIComponent(exp || '')}`;
   const appDeepLink = `pessoasaqui://invite?${queryParams}`;
-  const currentHost = req.get('host') || 'pessoasaqui3.onrender.com';
-  const fallbackUrl = `${req.protocol}://${currentHost}/invite?${queryParams}&fallback=true`;
+  const fallbackUrl = `https://pessoasaqui3.onrender.com/invite?${queryParams}&fallback=true`;
   const chromeIntentLink = `intent://invite?${queryParams}#Intent;scheme=pessoasaqui;package=br.com.pessoasaqui;S.browser_fallback_url=${encodeURIComponent(fallbackUrl)};end`;
 
   res.send(`<!DOCTYPE html>
@@ -1444,7 +1476,7 @@ app.get('/invite', (req, res) => {
 </head>
 <body>
   <div class="card">
-    <div class="badge">🔒 Convite Criptografado de Uso Único</div>
+    <div class="badge">🔒 Convite pessoal de uso único</div>
     <h1>Conectar no PessoasAqui</h1>
     <p><span class="sender-name">${safeAlias}</span> convidou você para uma conexão mútua segura à distância com mensagens, chamadas e fotos criptografadas de ponta a ponta.</p>
     
@@ -1454,7 +1486,7 @@ app.get('/invite', (req, res) => {
 
     <div class="instructions">
       <strong style="color:#F0F6FC;">Dica de Conexão:</strong><br>
-      Se o app não abrir automaticamente, você pode tocar em <strong>"Copiar Link do Convite"</strong>, abrir o aplicativo <strong>PessoasAqui</strong>, ir na aba <strong>Privado</strong> e tocar em <strong>"Colar Convite"</strong>.
+      Se o app não abrir automaticamente, você pode tocar em <strong>"Copiar Link do Convite"</strong>, abrir o aplicativo <strong>PessoasAqui</strong>, ir na aba <strong>Conversas</strong> e tocar em <strong>"Colar Convite"</strong>.
     </div>
     <div class="security-note">Este link é exclusivo e expira após o primeiro uso.</div>
   </div>
@@ -1480,164 +1512,11 @@ app.get('/.well-known/assetlinks.json', (req, res) => {
 });
 
 /**
- * Emissão de Autorização de Recuperação por Familiar Autorizado (Seções 19 e 20)
+ * Fluxo de recuperação familiar v2. O antigo protocolo sem autorização
+ * criptográfica foi removido para impedir tomada de conta.
  */
-app.post('/api/family/recovery/issue', async (req, res) => {
-  const { targetIdentity, familyIdentity } = req.body;
-
-  if (!targetIdentity || !familyIdentity) {
-    return res.status(400).json({ error: 'Identidade alvo e familiar obrigatórios.' });
-  }
-
-  const recoveryKey = `PA-REC-${generateNonce().slice(0, 8).toUpperCase()}`;
-  const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutos
-
-  if (isPostgres()) {
-    await query(
-      `INSERT INTO recovery_authorizations (id, target_identity, issued_by_family, recovery_key, expires_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [generateNonce().slice(0, 16), targetIdentity, familyIdentity, recoveryKey, expiresAt]
-    );
-  } else {
-    localStore.recoveryAuthorizations.set(recoveryKey, {
-      targetIdentity,
-      familyIdentity,
-      recoveryKey,
-      expiresAt: expiresAt.getTime(),
-      failedAttempts: 0,
-      lockedUntil: 0,
-      isUsed: false
-    });
-  }
-
-  res.json({
-    success: true,
-    recoveryKey,
-    expiresAt,
-    notice: 'Válido por 15 minutos • Uso único • O familiar NÃO deve saber o PIN do usuário.'
-  });
-});
-
-/**
- * Validação de PIN e Transferência de Identidade no Novo Aparelho (“🔐 Entre na sua”)
- * Aplica estritamente a escada de bloqueios (Seção 23) e o isolamento de dispositivo (Seção 24).
- */
-app.post('/api/family/recovery/claim', async (req, res) => {
-  const { recoveryKey, pin, newDeviceFingerprint } = req.body;
-
-  if (!recoveryKey || !pin) {
-    return res.status(400).json({ error: 'Chave de recuperação e PIN obrigatórios.' });
-  }
-
-  let authRecord = null;
-
-  if (isPostgres()) {
-    const result = await query(
-      `SELECT * FROM recovery_authorizations WHERE recovery_key = $1 AND is_used = FALSE`,
-      [recoveryKey]
-    );
-    authRecord = result.rows[0];
-  } else {
-    authRecord = localStore.recoveryAuthorizations.get(recoveryKey);
-  }
-
-  if (!authRecord) {
-    return res.status(404).json({ error: 'Chave de recuperação inválida, já utilizada ou inexistente.' });
-  }
-
-  const now = Date.now();
-  const expiresAtMs = new Date(authRecord.expires_at || authRecord.expiresAt).getTime();
-
-  if (now > expiresAtMs) {
-    return res.status(410).json({ error: 'Esta autorização de recuperação expirou (limite de 15 minutos).' });
-  }
-
-  const lockedUntilMs = authRecord.locked_until ? new Date(authRecord.locked_until).getTime() : (authRecord.lockedUntil || 0);
-  if (now < lockedUntilMs) {
-    const remainingSec = Math.ceil((lockedUntilMs - now) / 1000);
-    return res.status(429).json({
-      error: `Aguarde o término do bloqueio de segurança: ${remainingSec}s restantes.`,
-      remainingSeconds: remainingSec
-    });
-  }
-
-  // Busca o hash do PIN da identidade alvo
-  let expectedPinHash = '';
-  if (isPostgres()) {
-    const identRes = await query(`SELECT pin_salted_hash FROM identities WHERE id = $1`, [authRecord.target_identity]);
-    expectedPinHash = identRes.rows[0]?.pin_salted_hash;
-  } else {
-    expectedPinHash = localStore.identities.get(authRecord.targetIdentity)?.pinHash;
-  }
-
-  const isPinValid = verifyPinHash(pin, expectedPinHash);
-
-  if (!isPinValid) {
-    // Incrementa erros de tentativa
-    const currentAttempts = (authRecord.failed_pin_attempts || authRecord.failedAttempts || 0) + 1;
-    const lockoutSec = calculateLockoutDurationSeconds(currentAttempts);
-
-    if (currentAttempts >= 10 || lockoutSec === -1) {
-      if (isPostgres()) {
-        await query(`UPDATE recovery_authorizations SET is_used = TRUE WHERE recovery_key = $1`, [recoveryKey]);
-      } else {
-        authRecord.isUsed = true;
-      }
-      return res.status(403).json({ error: '10ª tentativa incorreta: processo de recuperação encerrado definitivamente.' });
-    }
-
-    const newLockedUntil = lockoutSec > 0 ? new Date(now + lockoutSec * 1000) : null;
-
-    if (isPostgres()) {
-      await query(
-        `UPDATE recovery_authorizations SET failed_pin_attempts = $1, locked_until = $2 WHERE recovery_key = $3`,
-        [currentAttempts, newLockedUntil, recoveryKey]
-      );
-    } else {
-      authRecord.failedAttempts = currentAttempts;
-      authRecord.lockedUntil = newLockedUntil ? newLockedUntil.getTime() : 0;
-    }
-
-    return res.status(401).json({
-      error: `PIN incorreto. Tentativa ${currentAttempts} de 10.`,
-      lockoutSeconds: lockoutSec
-    });
-  }
-
-  // ========================================================
-  // SUCESSO! A IDENTIDADE É TRANSFERIDA PARA O NOVO APARELHO
-  // REGRA 18: 1 IDENTIDADE = 1 DISPOSITIVO ATIVO
-  // ========================================================
-  const targetId = authRecord.target_identity || authRecord.targetIdentity;
-
-  if (isPostgres()) {
-    await query(`UPDATE recovery_authorizations SET is_used = TRUE WHERE recovery_key = $1`, [recoveryKey]);
-    await query(`UPDATE devices SET is_active = FALSE, revoked_at = NOW() WHERE identity_id = $1`, [targetId]);
-    await query(
-      `INSERT INTO devices (id, identity_id, device_fingerprint, is_active)
-       VALUES ($1, $2, $3, TRUE)`,
-      [generateNonce().slice(0, 16), targetId, newDeviceFingerprint || 'device-fingerprint']
-    );
-  } else {
-    authRecord.isUsed = true;
-  }
-
-  // Emite sinal imediato via WebSocket para revogar a sessão do aparelho antigo
-  const oldWs = activeSockets.get(cleanId(targetId));
-  if (oldWs && oldWs.readyState === WebSocket.OPEN) {
-    try {
-      oldWs.send(JSON.stringify({
-        type: 'SESSION_REVOKED',
-        message: '🔐 Sua identidade PessoasAqui foi transferida para um novo aparelho.'
-      }));
-    } catch (_) {}
-  }
-
-  res.json({
-    success: true,
-    targetIdentity: targetId,
-    message: 'Identidade recuperada e transferida com sucesso. O dispositivo antigo foi revogado.'
-  });
+registerFamilyRecoveryRoutes(app, {
+  query, withTransaction, isPostgres, activeSockets, WebSocket
 });
 
 // =========================================================================
@@ -2020,34 +1899,35 @@ app.post('/admin/api/reports/:id/action', requireAdminAuth, async (req, res) => 
 /**
  * Listagem de Ofertas Ativas no Mural para Auditoria
  */
-app.get('/admin/api/offers', requireAdminAuth, (req, res) => {
-  const offersList = Array.from(activeOffers.values());
-  res.json({ success: true, offers: offersList });
+app.get('/admin/api/offers', requireAdminAuth, async (req, res) => {
+  if(!process.env.DATABASE_URL||!isPostgres())
+    return res.status(503).json({error:'Ofertas seguras indisponíveis sem banco.'});
+  try {
+    const results=await query(
+      'SELECT id,author_id,author_alias,profession,description,image_base64,external_link,created_at FROM offers_secure ORDER BY created_at DESC LIMIT 200');
+    return res.json({success:true,offers:results.rows.map(row=>({
+      id:row.id,authorId:row.author_id,authorAlias:row.author_alias,
+      profession:row.profession,description:row.description,
+      imageBase64:row.image_base64,externalLink:row.external_link,
+      createdAt:Number(new Date(row.created_at))
+    }))});
+  } catch(_) {return res.status(503).json({error:'Falha ao consultar ofertas.'});}
 });
 
 /**
  * Exclusão / Derrubada de Oferta Imprópria pelo Moderador
  */
-app.delete('/admin/api/offers/:id', requireAdminAuth, (req, res) => {
-  const { id } = req.params;
-  if (!activeOffers.has(id)) {
-    return res.status(404).json({ error: 'Oferta não encontrada ou já expirou.' });
-  }
-
-  activeOffers.delete(id);
-
-  // Notifica todos os clientes conectados sobre a remoção da oferta (compatível com ambas versões do app)
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      try {
-        client.send(JSON.stringify({ type: 'OFFER_DELETED', offerId: id }));
-        client.send(JSON.stringify({ type: 'OFFER_REMOVED', offerId: id }));
-      } catch (_) {}
-    }
-  });
-
-  console.log(`[MODERAÇÃO] Oferta ${id} removida pelo moderador.`);
-  res.json({ success: true, message: `Oferta ${id} removida do ar com sucesso.` });
+app.delete('/admin/api/offers/:id', requireAdminAuth, async (req, res) => {
+  if (!process.env.DATABASE_URL || !isPostgres())
+    return res.status(503).json({error:'Moderação de ofertas exige banco persistente.'});
+  const {id}=req.params;
+  try{
+    const result=await withTransaction(run=>
+      run('DELETE FROM offers_secure WHERE id=$1 RETURNING id',[id]));
+    if(result.rowCount!==1) return res.status(404).json({error:'Oferta não encontrada.'});
+    activeOffers.delete(id);
+    return res.json({success:true,deleted:id});
+  }catch(_){return res.status(503).json({error:'Banco indisponível.'});}
 });
 
 /**
