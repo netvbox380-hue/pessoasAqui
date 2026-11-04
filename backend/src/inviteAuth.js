@@ -19,9 +19,9 @@ function deriveInviteId(identity, nonce) {
     .update('PA-INVITE-ID-V1:' + String(identity).toUpperCase() + ':' + nonce.toLowerCase(), 'utf8')
     .digest('hex').slice(0, 24);
 }
-function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHash, proof, now = Date.now()) {
+function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHash, proof, now = Date.now(), activePublicKey = null) {
   try {
-    if (!['CREATE', 'REDEEM'].includes(operation) ||
+    if (!['CREATE', 'REDEEM', 'RECOVERY_DELEGATE', 'RECOVERY_ISSUE', 'RECOVERY_CLAIM'].includes(operation) ||
         typeof identity !== 'string' || typeof alias !== 'string' ||
         typeof inviteId !== 'string' || typeof tokenHash !== 'string' ||
         !proof || proof.v !== 1) return false;
@@ -34,7 +34,9 @@ function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHa
         !/^[A-F0-9]{16}$/i.test(identity) ||
         (operation === 'REDEEM' && (!/^inv_[a-f0-9]{12,24}$/i.test(inviteId) ||
           !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
-        (operation === 'CREATE' && (inviteId !== '' || tokenHash !== ''))) return false;
+        (operation === 'CREATE' && (inviteId !== '' || tokenHash !== '')) ||
+        (operation.startsWith('RECOVERY_') && (inviteId !== '' ||
+          (operation === 'RECOVERY_ISSUE' ? tokenHash !== '' : !/^[a-f0-9]{64}$/i.test(tokenHash))))) return false;
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(publicKey) ||
         !/^[A-Za-z0-9+/]+={0,2}$/.test(signature)) return false;
     const der = Buffer.from(publicKey, 'base64');
@@ -43,8 +45,12 @@ function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHa
         key.asymmetricKeyDetails?.namedCurve !== 'prime256v1') return false;
     const calculatedIdentity = crypto.createHash('sha256').update(der)
       .digest('hex').slice(0, 16).toUpperCase();
-    if (identity.toUpperCase() !== calculatedIdentity) return false;
-    const message = canonicalInviteProof(operation, calculatedIdentity,
+    // A mesma identidade pode ter nova chave APENAS após transferência
+    // autenticada persistente. Sem vínculo autoritativo, exigir ID autocertificado.
+    if (activePublicKey !== null) {
+      if (publicKey !== activePublicKey) return false;
+    } else if (identity.toUpperCase() !== calculatedIdentity) return false;
+    const message = canonicalInviteProof(operation, identity.toUpperCase(),
       alias, inviteId, tokenHash, timestamp, nonce);
     const verify = crypto.createVerify('SHA256');
     verify.update(message, 'utf8');
