@@ -41,8 +41,12 @@ class ProfilePhotoStore(private val context: Context) {
         if(base64.length>160000 || !Regex("^[A-Za-z0-9+/]+={0,2}$").matches(base64))return false
         val bytes=try{Base64.decode(base64,Base64.DEFAULT)}catch(_:Exception){return false}
         if(bytes.size>120000 || bytes.isEmpty())return false
-        val bitmap=BitmapFactory.decodeByteArray(bytes,0,bytes.size)?:return false
-        if(bitmap.width<=0||bitmap.height<=0||bitmap.width>4096||bitmap.height>4096)return false
+        // Pré-inspeção de dimensões ANTES de alocar um Bitmap:
+        // evita imagem-bomba de um remetente mal-intencionado.
+        val header = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, header)
+        if (header.outWidth<=0||header.outHeight<=0||
+            header.outWidth>2048||header.outHeight>2048)return false
         return try{
             val cipher=Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE,secretKey())
