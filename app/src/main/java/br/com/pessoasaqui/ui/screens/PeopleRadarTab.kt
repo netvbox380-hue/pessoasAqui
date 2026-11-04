@@ -906,22 +906,9 @@ fun PersonCard(
                         .border(1.5.dp, Color(person.avatarColorHex), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (person.isPhotoVisible) {
-                        Text(
-                            text = person.alias.take(1).uppercase(),
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = Color(person.avatarColorHex)
-                            )
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = null,
-                            tint = Color(person.avatarColorHex),
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
+                    br.com.pessoasaqui.ui.components.PeerPrivacyAvatar(
+                        person = person, modifier = Modifier.fillMaxSize()
+                    )
                 }
 
                 Spacer(modifier = Modifier.width(12.dp))
