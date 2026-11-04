@@ -69,6 +69,7 @@ function fixture({postgres=false,failDb=false,shared=null}={}) {
     tokenDigest:guard.tokenDigest,verifyStoredToken:guard.verifyStoredToken,
     validateInviteId:guard.validateInviteId,validateInviteToken:guard.validateInviteToken,
     verifyInviteIdentityProof:auth.verifyInviteIdentityProof,
+    verifyActiveInviteProof:async (...args)=>auth.verifyInviteIdentityProof(...args),
     deriveInviteId:auth.deriveInviteId,
     isPostgres:()=>postgres,query,activeInvites,
     localStore:{invites:new Map(),connections:new Map()},
