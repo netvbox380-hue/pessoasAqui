@@ -103,8 +103,9 @@ class PessoasAquiRepository(
     }
 
     fun setMyRealPhotoFromUri(uri: android.net.Uri): Boolean {
-        val base64 = profilePhotoStore?.createCompressedPhoto(uri) ?: return false
-        if (profilePhotoStore.savePhoto(getMyIdentity(), base64).not()) return false
+        val store = profilePhotoStore ?: return false
+        val base64 = store.createCompressedPhoto(uri) ?: return false
+        if (!store.savePhoto(getMyIdentity(), base64)) return false
         _myRealPhoto.value = base64
         broadcastRealPhotoToMutual()
         return true
@@ -378,6 +379,8 @@ class PessoasAquiRepository(
         }
         updateUnifiedData()
         promoteTemporarySessionToMutual(cid) // Opção A, somente depois da confirmação
+        // Compartilhamento exclusivamente E2EE e após reciprocidade confirmada.
+        scope.launch { sendRealPhotoToMutual(cid) }
     }
 
     /** Derruba o privilégio permanente imediatamente, inclusive com UI e cache antigos. */
@@ -387,6 +390,9 @@ class PessoasAquiRepository(
         revokedMutualPeople.add(cid)
         savedMutualPeople.remove(cid)
         savedMarkingMePeople.remove(cid)
+        avatarPhotoSentByPeer.remove(cid)
+        profilePhotoStore?.savePhoto(cid, null)
+        // Em nenhum caso preservar imagem real visível após revogação.
         if (removeMyMark) savedMarkedPeople.remove(cid)
         if (queueRemoteUnmark) pendingUnmarkPeople.add(cid)
         if (_activeCallState.value?.peerHash?.let(::cleanId) == cid) {
@@ -397,8 +403,9 @@ class PessoasAquiRepository(
                 peer.copy(
                     isMarkedByMe = if (removeMyMark) false else cid in savedMarkedPeople,
                     isMarkingMe = false,
-                    isMutualConnection = peer.isFamily,
-                    isPhotoVisible = peer.isFamily
+                    isMutualConnection = false,
+                    isPhotoVisible = false,
+                    mutualProfilePhotoBase64 = null
                 )
             } else peer
         }
@@ -1151,6 +1158,22 @@ class PessoasAquiRepository(
         }
 
         when {
+            payload.startsWith("[PA_REAL_PHOTO_V1:") -> {
+                // Envelope já foi autenticado/decifrado por E2EE.
+                // Nunca aceitar foto privada de desconhecidos no Modo A.
+                if (!isPeerMutualById(cleanSender) || !payload.endsWith("]") ||
+                    payload.length > 160030) return
+                val data = payload.removePrefix("[PA_REAL_PHOTO_V1:").dropLast(1)
+                val saved = if (data == "NONE") profilePhotoStore?.savePhoto(cleanSender,null)
+                    else profilePhotoStore?.savePhoto(cleanSender,data)
+                if (saved == true) {
+                    _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
+                        if (cleanId(peer.technicalIdentityHash.ifBlank { peer.id }) == cleanSender)
+                            applyConnectionState(peer) else peer
+                    }
+                    updateUnifiedData()
+                }
+            }
             payload.startsWith("[CALL_AUDIO_FRAME:") -> {
                 // Mídia não constitui aceitação: o usuário precisa atender.
                 val active = _activeCallState.value
@@ -2455,7 +2478,8 @@ class PessoasAquiRepository(
         }
         val cleanRecipient = matchedPeer?.technicalIdentityHash?.let { cleanId(it) }?.takeIf { it.isNotBlank() } ?: rawClean
 
-        val isSignaling = text.startsWith("[CALL_") || text.startsWith("[FAMILY_") || text.startsWith("[MARK_") ||
+        val isSignaling = text.startsWith("[PA_REAL_PHOTO_V1:") ||
+                          text.startsWith("[CALL_") || text.startsWith("[FAMILY_") || text.startsWith("[MARK_") ||
                           text == "[READ_ACK]" || text.startsWith("[MSG_EDIT:") || text.startsWith("[MSG_DELETE:")
         val isAudio = text.startsWith("[AUDIO:")
         val isImage = text.startsWith("[IMAGE:")
