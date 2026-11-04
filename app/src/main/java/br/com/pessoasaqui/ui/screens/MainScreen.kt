@@ -30,6 +30,13 @@ import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import br.com.pessoasaqui.ui.components.AnimalGallery
+import br.com.pessoasaqui.ui.components.AnimalPortrait
+import br.com.pessoasaqui.ui.components.AvatarVisual
 import kotlinx.coroutines.flow.MutableStateFlow
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -47,6 +54,8 @@ fun MainScreen(
     var showIntentSelector by remember { mutableStateOf(false) }
     var showPlayground by remember { mutableStateOf(false) }
     var showTopMenu by remember { mutableStateOf(false) }
+    var showAvatarGallery by remember { mutableStateOf(false) }
+    var avatarError by remember { mutableStateOf<String?>(null) }
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var tempAliasInput by remember { mutableStateOf("") }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
@@ -58,6 +67,21 @@ fun MainScreen(
 
     val people by repository.discoveredPeople.collectAsState()
     val offers by repository.localOffers.collectAsState()
+    val animalAvatar by repository.myAnimalAvatar.collectAsState()
+    val realProfilePhoto by repository.myRealPhoto.collectAsState()
+    val offerSyncError by repository.offerSyncError.collectAsState()
+    val profilePhotoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    repository.setMyRealPhotoFromUri(uri)
+                }
+                if (!ok) avatarError = "Não foi possível importar a foto. Escolha JPEG ou PNG menor."
+            }
+        }
+    }
     val localMessages by repository.localChatMessages.collectAsState()
     val privateChats by repository.privateChats.collectAsState()
     val currentIntent by repository.currentIntent.collectAsState()
@@ -205,6 +229,11 @@ fun MainScreen(
                             onDismissRequest = { showTopMenu = false },
                             modifier = Modifier.background(DarkSurface)
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Minha foto de perfil • Animais / Foto real") },
+                                leadingIcon = { Icon(Icons.Default.AccountCircle, contentDescription = null) },
+                                onClick = { showTopMenu = false; showAvatarGallery = true }
+                            )
                             if (selectedTabIndex == 1) {
                                 // Recursos continuam acessíveis quando os chips
                                 // não cabem na barra superior de um aparelho pequeno.
@@ -553,6 +582,7 @@ fun MainScreen(
 
                     2 -> OffersTab(
                         offers = offers,
+                        backendWarning = offerSyncError,
                         myId = repository.getMyIdentity(),
                         myAlias = currentAlias,
                         onToggleMarkAuthor = { authorId ->
@@ -601,6 +631,87 @@ fun MainScreen(
                         }
                     )
                 }
+            }
+
+            if (showAvatarGallery) {
+                AlertDialog(
+                    onDismissRequest = { showAvatarGallery = false },
+                    title = { Text("Privacidade da foto de perfil") },
+                    text = {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 490.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                "Pessoas a ~10 m verão apenas o animal escolhido ou nenhuma foto. " +
+                                "Sua foto real será transmitida somente por conversa criptografada a conexões mútuas confirmadas.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                AvatarVisual(animalAvatar, realProfilePhoto, Modifier.size(62.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text("Meu perfil", fontWeight = FontWeight.Bold)
+                                    Text(if (animalAvatar == null) "Animal: nenhum"
+                                         else "Animal: ${AnimalGallery.animals.firstOrNull { it.first == animalAvatar }?.second}",
+                                         style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                            TextButton(onClick = { repository.setMyAnimalAvatar(null) }) {
+                                Text("Nenhum animal • ícone neutro no Radar")
+                            }
+                            AnimalGallery.animals.chunked(2).forEach { row ->
+                                Row(modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    row.forEach { (id,label) ->
+                                        Column(
+                                            modifier = Modifier.weight(1f)
+                                                .clickable { repository.setMyAnimalAvatar(id) }
+                                                .background(
+                                                    if (animalAvatar == id) RadarCyan.copy(alpha=.18f)
+                                                    else DarkSurface,
+                                                    RoundedCornerShape(14.dp)
+                                                ).padding(8.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            AnimalPortrait(id, Modifier.size(74.dp))
+                                            Text(label, style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
+                            }
+                            Button(onClick = {
+                                profilePhotoPicker.launch("image/*")
+                            }, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Default.PhotoCamera, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Escolher foto real (somente mútuos)")
+                            }
+                            OutlinedButton(onClick = {
+                                if (!repository.removeMyRealPhoto())
+                                    avatarError = "Não foi possível remover a foto privada."
+                            }, modifier = Modifier.fillMaxWidth()) {
+                                Text("Remover minha foto real")
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showAvatarGallery = false }) {
+                            Text("Concluir")
+                        }
+                    }
+                )
+            }
+            avatarError?.let { error ->
+                AlertDialog(
+                    onDismissRequest = { avatarError = null },
+                    title = { Text("Foto de perfil") },
+                    text = { Text(error) },
+                    confirmButton = {
+                        TextButton(onClick = { avatarError = null }) { Text("OK") }
+                    }
+                )
             }
 
             // O QR contém exatamente o mesmo link de uso único.
