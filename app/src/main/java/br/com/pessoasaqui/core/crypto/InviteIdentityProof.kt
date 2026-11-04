@@ -45,10 +45,12 @@ data class InviteIdentityProof(
             publicKeyBase64: String, signChallenge: (ByteArray) -> String,
             inviteId: String = "", token: String = ""
         ): InviteIdentityProof {
-            require(operation == "CREATE" || operation == "REDEEM")
+            require(operation in setOf("CREATE", "REDEEM",
+                "RECOVERY_DELEGATE", "RECOVERY_ISSUE", "RECOVERY_CLAIM"))
             val timestamp = System.currentTimeMillis()
             val nonce = UUID.randomUUID().toString()
-            val hash = if (operation == "REDEEM") tokenDigest(token) else ""
+            val hash = if (operation in setOf("REDEEM",
+                    "RECOVERY_DELEGATE", "RECOVERY_CLAIM")) tokenDigest(token) else ""
             val payload = canonical(
                 operation, identity.removePrefix("peer-").trim(), alias,
                 inviteId, hash, timestamp, nonce
