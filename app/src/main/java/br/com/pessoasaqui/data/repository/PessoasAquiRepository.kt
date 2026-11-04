@@ -77,6 +77,108 @@ class PessoasAquiRepository(
     val diskCrypto = LocalDiskCryptoManager(context)
     private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.IO)
+    private val profilePhotoStore = context?.let {
+        br.com.pessoasaqui.core.profile.ProfilePhotoStore(it)
+    }
+    private val _myAnimalAvatar = MutableStateFlow(
+        prefs?.getString("public_animal_avatar_v1", null)
+            ?.takeIf(br.com.pessoasaqui.ui.components.AnimalGallery::isValid)
+    )
+    val myAnimalAvatar: StateFlow<String?> = _myAnimalAvatar.asStateFlow()
+    private val _myRealPhoto = MutableStateFlow(
+        profilePhotoStore?.readPhoto(cryptoIdentityManager.getTechnicalIdentity())
+    )
+    val myRealPhoto: StateFlow<String?> = _myRealPhoto.asStateFlow()
+    private val peerAnimalAvatars = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val bleAvatarSentAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val avatarPhotoSentByPeer = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val receivedAvatarVersion = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun setMyAnimalAvatar(id: String?): Boolean {
+        if (id != null && !br.com.pessoasaqui.ui.components.AnimalGallery.isValid(id))return false
+        prefs?.edit()?.putString("public_animal_avatar_v1", id)?.apply()
+        _myAnimalAvatar.value = id
+        broadcastBleAvatar(force = true)
+        return true
+    }
+
+    fun setMyRealPhotoFromUri(uri: android.net.Uri): Boolean {
+        val base64 = profilePhotoStore?.createCompressedPhoto(uri) ?: return false
+        if (profilePhotoStore.savePhoto(getMyIdentity(), base64).not()) return false
+        _myRealPhoto.value = base64
+        broadcastRealPhotoToMutual()
+        return true
+    }
+
+    fun removeMyRealPhoto(): Boolean {
+        if (profilePhotoStore?.savePhoto(getMyIdentity(), null) == false) return false
+        _myRealPhoto.value = null
+        broadcastRealPhotoToMutual()
+        return true
+    }
+
+    private fun sendRealPhotoToMutual(peerId: String) {
+        val peer = cleanId(peerId)
+        if (!isPeerMutualById(peer)) return
+        val photo = _myRealPhoto.value
+        val version = photo?.let {
+            java.security.MessageDigest.getInstance("SHA-256")
+                .digest(it.toByteArray()).take(8)
+                .joinToString("") { x -> "%02x".format(x.toInt() and 0xff) }
+        } ?: "none"
+        if (avatarPhotoSentByPeer[peer] == version) return
+        avatarPhotoSentByPeer[peer] = version
+        // MODO B E2EE. Nunca enviar foto real em BLE advertising/Ofertas.
+        val sent = sendPrivateMessage(peer, "[PA_REAL_PHOTO_V1:${photo ?: "NONE"}]")
+        if (!sent.isAllowed) avatarPhotoSentByPeer.remove(peer,version)
+    }
+
+    private fun broadcastRealPhotoToMutual() {
+        avatarPhotoSentByPeer.clear()
+        savedMutualPeople.toList().forEach { sendRealPhotoToMutual(it) }
+    }
+
+    private fun isPeerMutualById(peerId: String): Boolean =
+        cleanId(peerId) in savedMutualPeople &&
+        cleanId(peerId) !in revokedMutualPeople
+
+    private fun broadcastBleAvatar(force: Boolean = false) {
+        _realDiscoveredPeople.value.forEach {
+            val id = cleanId(it.technicalIdentityHash.ifBlank { it.id })
+            if (hasFreshNativeBlePresence(id)) sendBleAvatarToPeer(id,force)
+        }
+    }
+
+    private fun sendBleAvatarToPeer(peerId: String,force:Boolean=false) {
+        val id = cleanId(peerId)
+        if (!hasFreshNativeBlePresence(id)) return
+        val now=System.currentTimeMillis()
+        val prior=bleAvatarSentAt[id]?:0L
+        if(!force&&now-prior<90_000L)return
+        bleAvatarSentAt[id]=now
+        val animal=_myAnimalAvatar.value ?: "none"
+        val accepted=bleTransportCoordinator.sendTemporaryMessage(
+            id,"[PA_AVATAR_V1:$animal]",_currentAlias.value
+        )
+        if(!accepted)bleAvatarSentAt.remove(id,now)
+    }
+
+    private fun receiveBleAvatar(peerId: String,payload: String) {
+        val id=cleanId(peerId)
+        if(!hasFreshNativeBlePresence(id) || !payload.endsWith("]") || payload.length>40)return
+        val animal=payload.removePrefix("[PA_AVATAR_V1:").dropLast(1)
+        if(animal=="none")peerAnimalAvatars.remove(id)
+        else if(br.com.pessoasaqui.ui.components.AnimalGallery.isValid(animal))
+            peerAnimalAvatars[id]=animal
+        else return
+        _realDiscoveredPeople.value=_realDiscoveredPeople.value.map {
+            if(cleanId(it.technicalIdentityHash.ifBlank { it.id })==id)
+                applyConnectionState(it.copy(animalAvatarId=peerAnimalAvatars[id]))
+            else it
+        }
+        updateUnifiedData()
+    }
+
     // Um vínculo familiar local não é suficiente para recuperar uma identidade.
     // O credenciamento exige assinatura do proprietário e persistência confirmada.
     private val recoveryEnrollmentInFlight =
@@ -390,6 +492,8 @@ class PessoasAquiRepository(
             lastNativeBleSeenMs.remove(cid)
             bleOfferSnapshots.remove(cid)
             bleOfferSentAt.remove(cid)
+            bleAvatarSentAt.remove(cid)
+            peerAnimalAvatars.remove(cid)
             proximitySimulator.clearPrivateChat(cid)
             // Preservação estrita: sessões temporárias existem apenas na memória RAM.
             // Históricos legados em disco NUNCA são apagados por timeout de afastamento BLE.
@@ -447,7 +551,9 @@ class PessoasAquiRepository(
             isMarkedByMe = marked || mutual,
             isMarkingMe = marking || mutual,
             isMutualConnection = mutual,
-            isPhotoVisible = mutual || person.isFamily
+            isPhotoVisible = mutual,
+            animalAvatarId = peerAnimalAvatars[cid] ?: person.animalAvatarId,
+            mutualProfilePhotoBase64 = if (mutual) profilePhotoStore?.readPhoto(cid) else null
         )
     }
 
@@ -937,6 +1043,8 @@ class PessoasAquiRepository(
             val cleanSender = cleanId(peerId)
             if (br.com.pessoasaqui.core.proximity.BleOfferProtocol.isOfferPayload(text)) {
                 receiveBleOffers(cleanSender, text)
+            } else if (text.startsWith("[PA_AVATAR_V1:")) {
+                receiveBleAvatar(cleanSender, text)
             } else if (!isPeerPermanent(cleanSender)) {
                 // Protocolo interno não vira mensagem de conversa.
                 val peerAlias = _realDiscoveredPeople.value.firstOrNull {
@@ -1822,6 +1930,7 @@ class PessoasAquiRepository(
                         if (realPeer.estimatedDistanceMeters <=
                             br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS) {
                             sendBleOfferSnapshot(peerCleanId)
+                            sendBleAvatarToPeer(peerCleanId)
                         }
 
                         val currentList = _realDiscoveredPeople.value.toMutableList()
