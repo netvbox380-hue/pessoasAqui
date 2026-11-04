@@ -40,7 +40,9 @@ object AnimalGallery {
 /** Foto real jamais aparece se não houver vínculo MÚTUO confirmado. */
 @Composable
 fun PeerPrivacyAvatar(person: NearbyPerson, modifier: Modifier = Modifier) {
-    val real = if (person.isMutualConnection) person.mutualProfilePhotoBase64 else null
+    val real = br.com.pessoasaqui.core.profile.AvatarVisibilityPolicy.permittedRealPhoto(
+        person.isMutualConnection, person.mutualProfilePhotoBase64
+    )
     AvatarVisual(person.animalAvatarId, real, modifier)
 }
 
