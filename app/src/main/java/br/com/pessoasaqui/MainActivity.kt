@@ -377,6 +377,18 @@ fun PessoasAquiNavHost(
                 onRequestFamilyRole = { targetPerson, role ->
                     repository.requestFamilyRole(targetPerson, role)
                 },
+                onAuthorizeFamilyRecovery = { targetPerson ->
+                    scope.launch {
+                        repository.authorizeFamilyForRecovery(
+                            targetPerson.technicalIdentityHash.ifBlank { targetPerson.id }
+                        ).onSuccess {
+                            familyRecoveryError = "Autorização familiar registrada com assinatura digital no servidor."
+                        }.onFailure { error ->
+                            familyRecoveryError = error.message
+                                ?: "Não foi possível autorizar este familiar para recuperação."
+                        }
+                    }
+                },
                 onGenerateFamilyRecovery = { targetPerson ->
                     // Autorizações locais simuladas não transferem identidades.
                     scope.launch {
