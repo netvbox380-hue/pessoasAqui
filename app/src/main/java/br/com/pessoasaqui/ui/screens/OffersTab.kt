@@ -561,17 +561,23 @@ fun OffersTab(
                     Button(
                         onClick = {
                             if (professionInput.isNotBlank() && descriptionInput.isNotBlank()) {
-                                onPostOffer(
-                                    professionInput.trim(),
-                                    descriptionInput.trim(),
-                                    selectedImageBase64,
-                                    linkInput.trim().takeIf { it.isNotBlank() }
-                                )
-                                professionInput = ""
-                                descriptionInput = ""
-                                linkInput = ""
-                                selectedImageBase64 = null
-                                showPostDialog = false
+                                val rawLink = linkInput.trim().takeIf { it.isNotBlank() }
+                                val safeLink = rawLink?.let(WebLinkPolicy::normalizeWebUrl)
+                                if (rawLink != null && safeLink == null) {
+                                    offerLinkError = "Informe um endereço HTTP(S) válido, como exemplo.com.br ou wa.me/55..."
+                                } else {
+                                    onPostOffer(
+                                        professionInput.trim(),
+                                        descriptionInput.trim(),
+                                        selectedImageBase64,
+                                        safeLink
+                                    )
+                                    professionInput = ""
+                                    descriptionInput = ""
+                                    linkInput = ""
+                                    selectedImageBase64 = null
+                                    showPostDialog = false
+                                }
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = RadarCyan, contentColor = DeepBlack),
@@ -691,14 +697,20 @@ fun OffersTab(
                     Button(
                         onClick = {
                             if (editProfession.isNotBlank() && editDescription.isNotBlank()) {
-                                onUpdateOffer(
-                                    offerToEdit.id,
-                                    editProfession.trim(),
-                                    editDescription.trim(),
-                                    editImageBase64,
-                                    editLink.trim().takeIf { it.isNotBlank() }
-                                )
-                                editingOffer = null
+                                val rawLink = editLink.trim().takeIf { it.isNotBlank() }
+                                val safeLink = rawLink?.let(WebLinkPolicy::normalizeWebUrl)
+                                if (rawLink != null && safeLink == null) {
+                                    offerLinkError = "Informe um endereço HTTP(S) válido."
+                                } else {
+                                    onUpdateOffer(
+                                        offerToEdit.id,
+                                        editProfession.trim(),
+                                        editDescription.trim(),
+                                        editImageBase64,
+                                        safeLink
+                                    )
+                                    editingOffer = null
+                                }
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = RadarCyan, contentColor = DeepBlack),
@@ -713,6 +725,17 @@ fun OffersTab(
                     }
                 },
                 containerColor = DarkSurface
+            )
+        }
+
+        offerLinkError?.let { error ->
+            AlertDialog(
+                onDismissRequest = { offerLinkError = null },
+                title = { Text("Endereço externo") },
+                text = { Text(error) },
+                confirmButton = {
+                    TextButton(onClick = { offerLinkError = null }) { Text("Entendi") }
+                }
             )
         }
 
