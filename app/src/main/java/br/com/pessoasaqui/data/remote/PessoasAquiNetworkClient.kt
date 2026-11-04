@@ -181,70 +181,85 @@ open class PessoasAquiNetworkClient(
     }
 
     /**
-     * Emite autorização de recuperação de identidade por um familiar
+     * Credenciamento assinado: proprietário autoriza uma chave familiar.
+     * Requer PostgreSQL e prova ECDSA válida da identidade titular.
      */
-    suspend fun issueFamilyRecovery(
+    suspend fun registerFamilyRecoveryDelegate(
         targetIdentity: String,
-        familyIdentity: String
-    ): Result<String> = withContext(Dispatchers.IO) {
+        familyIdentity: String,
+        familyPublicKey: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("targetIdentity", targetIdentity)
                 put("familyIdentity", familyIdentity)
+                put("familyPublicKey", familyPublicKey)
+                put("identityProof", identityProof.toJson())
             }
-            val request = Request.Builder()
-                .url("$baseUrl/api/family/recovery/issue")
-                .post(json.toString().toRequestBody(jsonMediaType))
-                .build()
-
+            val request = Request.Builder().url("$baseUrl/api/family/recovery/delegate")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
             client.newCall(request).execute().use { response ->
-                val bodyStr = response.body?.string() ?: "{}"
-                val resObj = JSONObject(bodyStr)
-                if (response.isSuccessful) {
-                    Result.success(resObj.getString("recoveryKey"))
-                } else {
-                    Result.failure(IOException(resObj.optString("error", "Erro ao emitir autorização")))
-                }
+                val obj = JSONObject(response.body?.string() ?: "{}")
+                if (response.isSuccessful && obj.optBoolean("success")) Result.success(true)
+                else Result.failure(IOException(obj.optString("error", "Falha ao autorizar familiar")))
             }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
+    /** A assinatura do familiar vincula autorização ao alvo. */
+    suspend fun issueFamilyRecovery(
+        targetIdentity: String,
+        familyIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<RecoveryIssueResponse> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("targetIdentity", targetIdentity)
+                put("familyIdentity", familyIdentity)
+                put("identityProof", identityProof.toJson())
+            }
+            val request = Request.Builder().url("$baseUrl/api/family/recovery/issue")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val obj = JSONObject(response.body?.string() ?: "{}")
+                if (response.isSuccessful && obj.optBoolean("success")) {
+                    Result.success(RecoveryIssueResponse(
+                        recoveryKey = obj.getString("recoveryKey"),
+                        targetIdentity = obj.getString("targetIdentity"),
+                        expiresAtEpochMs = java.time.Instant.parse(obj.getString("expiresAt")).toEpochMilli()
+                    ))
+                } else Result.failure(IOException(obj.optString("error", "Falha ao gerar autorização")))
+            }
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     /**
-     * Reivindica a identidade no novo aparelho ("Entre na sua")
+     * Novo dispositivo prova posse da nova chave; o PIN não viaja para o
+     * servidor e é reservado à descriptografia posterior do cofre.
      */
     suspend fun claimFamilyRecovery(
         recoveryKey: String,
-        pin: String,
-        newDeviceFingerprint: String
+        newDeviceIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("recoveryKey", recoveryKey)
-                put("pin", pin)
-                put("newDeviceFingerprint", newDeviceFingerprint)
+                put("newDeviceIdentity", newDeviceIdentity)
+                put("identityProof", identityProof.toJson())
             }
-            val request = Request.Builder()
-                .url("$baseUrl/api/family/recovery/claim")
-                .post(json.toString().toRequestBody(jsonMediaType))
-                .build()
-
+            val request = Request.Builder().url("$baseUrl/api/family/recovery/claim")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
             client.newCall(request).execute().use { response ->
-                val bodyStr = response.body?.string() ?: "{}"
-                val resObj = JSONObject(bodyStr)
-                if (response.isSuccessful) {
-                    Result.success(resObj.getString("targetIdentity"))
+                val obj = JSONObject(response.body?.string() ?: "{}")
+                if (response.isSuccessful && obj.optBoolean("success")) {
+                    Result.success(obj.getString("targetIdentity"))
                 } else {
-                    val errMsg = resObj.optString("error", "Erro ao recuperar identidade")
-                    val lockoutSec = resObj.optInt("remainingSeconds", resObj.optInt("lockoutSeconds", 0))
-                    val fullErr = if (lockoutSec > 0) "$errMsg (Bloqueio de $lockoutSec s)" else errMsg
-                    Result.failure(IOException(fullErr))
+                    Result.failure(IOException(obj.optString("error", "Recuperação não autorizada")))
                 }
             }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     /**
