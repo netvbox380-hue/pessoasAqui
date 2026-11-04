@@ -16,6 +16,7 @@ const { hashPin, verifyPinHash, generateNonce, calculateLockoutDurationSeconds }
 const {
   INVITE_LIFETIME_MS, tokenDigest, verifyStoredToken, validateInviteId, validateInviteToken
 } = require('./inviteSecurity');
+const { verifyInviteIdentityProof, deriveInviteId } = require('./inviteAuth');
 
 function verifyClientEcdsaSignature(publicKeyBase64, dataString, signatureBase64) {
   if (!publicKeyBase64 || !signatureBase64) return false;
@@ -1089,7 +1090,14 @@ app.post('/api/invites/create', async (req, res) => {
     return res.status(503).json({ error: 'Serviço de convites temporariamente indisponível.' });
   }
 
-  const inviteId = `inv_${generateNonce().slice(0, 24).toLowerCase()}`;
+  // Autenticação vinculada à chave que gerou a identidade técnica (SHA-256/SPKI).
+  // NÃO aceitar somente senderIdentity, nem uma chave pública não vinculada ao ID.
+  if (!verifyInviteIdentityProof('CREATE', sender, alias, '', '', req.body?.identityProof)) {
+    return res.status(401).json({ error: 'Identidade não autenticada. Atualize o aplicativo ou valide a recuperação da identidade.' });
+  }
+  // ID determinístico do nonce assinado: replay não gera segundo convite,
+  // inclusive em instâncias distintas que compartilham a chave primária do PostgreSQL.
+  const inviteId = deriveInviteId(sender, req.body.identityProof.nonce);
   const token = generateNonce(); // 256 bits; só seu SHA-256 vai para o banco
   const expiresAt = Date.now() + INVITE_LIFETIME_MS;
   const signature = signInvitePayload(inviteId, token, sender, expiresAt);
@@ -1108,7 +1116,7 @@ app.post('/api/invites/create', async (req, res) => {
         [inviteId, inviteData.tokenHash, sender, alias, signature, expiresAt]
       );
       if (result.rowCount !== 1) {
-        return res.status(503).json({ error: 'Não foi possível registrar o convite.' });
+        return res.status(409).json({ error: 'Solicitação de convite já utilizada. Gere outra.' });
       }
     } catch (err) {
       console.error('[Convite] Falha ao persistir convite:', err.message);
@@ -1116,6 +1124,9 @@ app.post('/api/invites/create', async (req, res) => {
     }
   } else {
     // Modo dev SEM DATABASE_URL: memória somente; não há fallback stateless.
+    if (activeInvites.has(inviteId)) {
+      return res.status(409).json({ error: 'Solicitação de convite já utilizada. Gere outra.' });
+    }
     activeInvites.set(inviteId, inviteData);
     if (localStore.invites) localStore.invites.set(inviteId, inviteData);
   }
@@ -1148,6 +1159,12 @@ app.post('/api/invites/redeem', async (req, res) => {
   }
   if (inviteDbRequired && !isPostgres()) {
     return res.status(503).json({ error: 'Banco de convites indisponível. Tente novamente.' });
+  }
+  // O token bearer sozinho não autoriza assumir receiverIdentity.
+  // A assinatura vincula a aceitação ao titular da identidade destinatária.
+  if (!verifyInviteIdentityProof('REDEEM', receiver, recAlias,
+      inviteId, tokenDigest(token), req.body?.identityProof)) {
+    return res.status(401).json({ error: 'Identidade de quem aceita não autenticada. Atualize o aplicativo.' });
   }
 
   let sender, originalAlias;
