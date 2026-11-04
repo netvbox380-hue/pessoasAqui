@@ -2690,6 +2690,30 @@ class PessoasAquiRepository(
         } catch (e: Exception) { Result.failure(e) }
     }
 
+    suspend fun revokeFamilyForRecovery(personId: String): Result<Boolean> {
+        val id = cleanId(personId).uppercase()
+        if (!Regex("^[A-F0-9]{16}$").matches(id)) {
+            return Result.failure(IllegalArgumentException("Identidade inválida."))
+        }
+        return try {
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_REVOKE",
+                identity = getMyIdentity(), alias = id,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            val result = networkClient.revokeFamilyRecoveryDelegate(
+                targetIdentity = getMyIdentity(), familyIdentity = id,
+                identityProof = proof
+            )
+            if (result.isSuccess) {
+                recoveryEnrollmentConfirmed.remove(id)
+                recoveryEnrollmentApproved.remove(id)
+            }
+            result
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
     suspend fun issueFamilyRecoveryRemote(targetIdentityHash: String): Result<RecoveryAuthorization> {
         val target = cleanId(targetIdentityHash).uppercase()
         if (!Regex("^[A-F0-9]{16}$").matches(target)) {
