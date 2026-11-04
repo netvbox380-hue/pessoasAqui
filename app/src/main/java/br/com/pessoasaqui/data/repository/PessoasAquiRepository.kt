@@ -318,6 +318,20 @@ class PessoasAquiRepository(
         val seen = lastNativeBleSeenMs[cleanId(peerId)] ?: return false
         return seen <= now && now - seen < TEMPORARY_SESSION_EXPIRATION_MS
     }
+
+    /** Para anúncios, janela mais rígida que a sessão de chat:
+     * nenhuma oferta remota sobrevive a 12 s sem descoberta física recente.
+     * A estimativa RSSI tem margem de erro e não é GPS/medição exata.
+     */
+    fun isOfferPeerInRange(peerId:String, now:Long=System.currentTimeMillis()):Boolean {
+        val id=cleanId(peerId)
+        val seen=lastNativeBleSeenMs[id]?:return false
+        if(seen>now||now-seen>12_000L)return false
+        return _realDiscoveredPeople.value.any {
+            cleanId(it.technicalIdentityHash.ifBlank { it.id })==id &&
+                it.estimatedDistanceMeters <= br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS
+        }
+    }
     private var lastStablePeerOrder: List<String> = emptyList()
 
     // Conjuntos persistidos de marcações e conexões mútuas em SharedPreferences
@@ -839,7 +853,7 @@ class PessoasAquiRepository(
 
     private fun sendBleOfferSnapshot(peerId: String, force: Boolean = false) {
         val id = cleanId(peerId)
-        if (!hasFreshNativeBlePresence(id)) return
+        if (!isOfferPeerInRange(id)) return
         val now = System.currentTimeMillis()
         val lastSent = bleOfferSentAt[id] ?: 0L
         if (!force && now - lastSent < 75_000L) return
@@ -862,13 +876,13 @@ class PessoasAquiRepository(
     private fun broadcastBleOffers(force: Boolean = true) {
         _realDiscoveredPeople.value.filter {
             it.estimatedDistanceMeters <= br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS &&
-                hasFreshNativeBlePresence(it.technicalIdentityHash.ifBlank { it.id })
+                isOfferPeerInRange(it.technicalIdentityHash.ifBlank { it.id })
         }.forEach { sendBleOfferSnapshot(it.technicalIdentityHash.ifBlank { it.id }, force) }
     }
 
     private fun receiveBleOffers(sender: String, payload: String) {
         val id = cleanId(sender)
-        if (!hasFreshNativeBlePresence(id)) return
+        if (!isOfferPeerInRange(id)) return
         val decoded = br.com.pessoasaqui.core.proximity.BleOfferProtocol.decode(id, payload)
             ?: return
         val peer = _realDiscoveredPeople.value.firstOrNull {
@@ -1006,6 +1020,14 @@ class PessoasAquiRepository(
         scope.launch {
             proximitySimulator.localChatMessages.collect {
                 updateUnifiedData()
+            }
+        }
+        // Atualiza a aba Ofertas quando uma descoberta BLE expira e não há
+        // novos eventos de scanner (por ex. celular se afasta ou rádio é desligado).
+        scope.launch {
+            while (true) {
+                delay(5_000L)
+                if (bleOfferSnapshots.isNotEmpty()) updateUnifiedData()
             }
         }
         scope.launch {
@@ -1703,7 +1725,7 @@ class PessoasAquiRepository(
                 cleanId(it.technicalIdentityHash.ifBlank { it.id }) == owner
             }
             if (nowForOffers - entry.first > TEMPORARY_SESSION_EXPIRATION_MS ||
-                !hasFreshNativeBlePresence(owner, nowForOffers) ||
+                !isOfferPeerInRange(owner, nowForOffers) ||
                 peer == null ||
                 peer.estimatedDistanceMeters > br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS
             ) emptyList() else entry.second.map {
