@@ -1352,7 +1352,10 @@ class PessoasAquiRepository(
                             val item = if (isMine) ro.copy(proximityLabel = "Seu anúncio • 10m") else ro
                             val idx = current.indexOfFirst { it.id == item.id }
                             if (idx != -1) {
-                                current[idx] = item
+                                if (current[idx] != item) {
+                                    current[idx] = item
+                                    offersChanged = true // Edição remota deve recompor a aba Ofertas.
+                                }
                             } else {
                                 current.add(item)
                                 offersChanged = true
