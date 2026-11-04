@@ -66,6 +66,7 @@ fun MainScreen(
     var showSupportDialog by remember { mutableStateOf(false) }
 
     val people by repository.discoveredPeople.collectAsState()
+    val scope = rememberCoroutineScope()
     val offers by repository.localOffers.collectAsState()
     val animalAvatar by repository.myAnimalAvatar.collectAsState()
     val realProfilePhoto by repository.myRealPhoto.collectAsState()
@@ -97,7 +98,6 @@ fun MainScreen(
     val accountBanned by repository.accountBannedAlert.collectAsState()
     val contactTags by repository.contactTags.collectAsState()
     val contactTagAssignments by repository.contactTagAssignments.collectAsState()
-    val scope = rememberCoroutineScope()
     var showVipDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
     var showMainBroadcastDialog by remember { mutableStateOf(false) }
