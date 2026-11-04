@@ -40,6 +40,11 @@ class WebLinkPolicyTest {
             WebLinkPolicy.normalizeWebUrl("instagram.com/exemplo"))
     }
 
+    @Test fun neverLinkifiesFragmentsOfUnsupportedSchemes() {
+        assertTrue(WebLinkPolicy.findWebLinks("file://secret.com").isEmpty())
+        assertTrue(WebLinkPolicy.findWebLinks("ftp://example.com").isEmpty())
+    }
+
     @Test fun rejectsWhitespaceInExternalLink() {
         assertNull(WebLinkPolicy.normalizeWebUrl("https://example.com/falso caminho"))
     }
