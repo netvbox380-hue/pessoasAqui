@@ -77,6 +77,49 @@ class PessoasAquiRepository(
     val diskCrypto = LocalDiskCryptoManager(context)
     private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.IO)
+    // Um vínculo familiar local não é suficiente para recuperar uma identidade.
+    // O credenciamento exige assinatura do proprietário e persistência confirmada.
+    private val recoveryEnrollmentInFlight =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val recoveryEnrollmentConfirmed =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private fun enrollFamilyRecoveryIfPossible(personId: String) {
+        val familyId = cleanId(personId).uppercase()
+        if (familyId.isBlank() || familyId == getMyIdentity().uppercase() ||
+            familyId in recoveryEnrollmentConfirmed) return
+        val peer = _realDiscoveredPeople.value.firstOrNull {
+            cleanId(it.technicalIdentityHash.ifBlank { it.id }).uppercase() == familyId &&
+                it.isFamily
+        } ?: return
+        val publicKey = E2eeCryptoEngine.getPeerPublicKeyBase64(familyId) ?: return
+        if (!recoveryEnrollmentInFlight.add(familyId)) return
+        scope.launch {
+            try {
+                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation = "RECOVERY_DELEGATE",
+                    identity = getMyIdentity(),
+                    alias = familyId,
+                    token = publicKey,
+                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge = cryptoIdentityManager::signChallenge
+                )
+                val status = networkClient.registerFamilyRecoveryDelegate(
+                    targetIdentity = getMyIdentity(),
+                    familyIdentity = familyId,
+                    familyPublicKey = publicKey,
+                    identityProof = proof
+                )
+                if (status.isSuccess) recoveryEnrollmentConfirmed.add(familyId)
+                else Log.w("PessoasAqui", "Familiar ainda não habilitado para recuperação segura: " +
+                    (status.exceptionOrNull()?.message ?: "sem conexão"))
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Autorização de recuperação não persistida: ${e.message}")
+            } finally {
+                recoveryEnrollmentInFlight.remove(familyId)
+            }
+        }
+    }
 
     val voiceNoteManager = VoiceNoteManager()
 
@@ -1471,6 +1514,9 @@ class PessoasAquiRepository(
             p.publicKeyBase64?.let { pubKey ->
                 E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
             }
+            if (current.any {
+                    cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cId && it.isFamily
+                }) enrollFamilyRecoveryIfPossible(cId)
             // Presença remota é telemetria, NÃO autorização de relacionamento.
             // Somente /connections/status ou evento de confirmação do backend altera o vínculo.
 
@@ -1532,6 +1578,9 @@ class PessoasAquiRepository(
         peer.publicKeyBase64?.let { pubKey ->
             E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
         }
+        if (_realDiscoveredPeople.value.any {
+                cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cId && it.isFamily
+            }) enrollFamilyRecoveryIfPossible(cId)
 
         // Estado de presença não concede privilégios permanentes.
 
@@ -2564,6 +2613,7 @@ class PessoasAquiRepository(
         }
         proximitySimulator.setFamilyRole(personId, role)
         updateUnifiedData()
+        enrollFamilyRecoveryIfPossible(cleanId)
     }
 
     fun generateFamilyRecovery(targetIdentityHash: String, familyName: String): RecoveryAuthorization {
@@ -2571,38 +2621,58 @@ class PessoasAquiRepository(
     }
 
     suspend fun claimRecovery(recoveryKey: String, pin: String): Result<String> {
-        // Tenta validação e reivindicação no servidor de produção (Render / Supabase)
-        val remoteResult = networkClient.claimFamilyRecovery(
-            recoveryKey = recoveryKey.trim().uppercase(),
-            pin = pin.trim(),
-            newDeviceFingerprint = deviceSessionManager.getDeviceId()
-        )
-        if (remoteResult.isSuccess) {
-            val recoveredId = remoteResult.getOrThrow()
-            deviceSessionManager.resetSession()
-            return Result.success(recoveredId)
+        // Sem fallback via simulador: recuperação sem autorização persistente
+        // permitiria assumir identidades com dados fornecidos localmente.
+        val cleanKey = recoveryKey.trim().uppercase()
+        if (!Regex("^PA-REC-[A-F0-9]{64}$").matches(cleanKey)) {
+            return Result.failure(IllegalArgumentException("Chave familiar desatualizada ou inválida."))
         }
-
-        // Caso o servidor retorne erro ou chave seja do simulador local
-        val localAuth = proximitySimulator.findActiveRecoveryAuthorization(recoveryKey)
-        if (localAuth != null) {
-            val pinResult = pinSecurityManager.verifyPinForRecovery("session-device-new", pin)
-            if (pinResult.isSuccess) {
-                deviceSessionManager.resetSession()
-                return Result.success(localAuth.targetIdentityHash)
-            } else {
-                return Result.failure(pinResult.exceptionOrNull() ?: Exception("PIN incorreto"))
-            }
-        }
-
-        return Result.failure(remoteResult.exceptionOrNull() ?: Exception("Chave inválida ou expirada."))
+        return try {
+            val deviceId = cryptoIdentityManager.getTechnicalIdentity()
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_CLAIM",
+                identity = deviceId,
+                alias = "",
+                token = cleanKey,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            val claimed = networkClient.claimFamilyRecovery(
+                recoveryKey = cleanKey,
+                newDeviceIdentity = deviceId,
+                identityProof = proof
+            )
+            if (claimed.isSuccess) deviceSessionManager.resetSession()
+            claimed
+        } catch (e: Exception) { Result.failure(e) }
     }
 
-    suspend fun issueFamilyRecoveryRemote(targetIdentityHash: String): Result<String> {
-        return networkClient.issueFamilyRecovery(
-            targetIdentity = targetIdentityHash,
-            familyIdentity = cryptoIdentityManager.getTechnicalIdentity()
-        )
+    suspend fun issueFamilyRecoveryRemote(targetIdentityHash: String): Result<RecoveryAuthorization> {
+        val target = cleanId(targetIdentityHash).uppercase()
+        if (!Regex("^[A-F0-9]{16}$").matches(target)) {
+            return Result.failure(IllegalArgumentException("Identidade do familiar inválida."))
+        }
+        return try {
+            val familyId = cryptoIdentityManager.getTechnicalIdentity()
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_ISSUE",
+                identity = familyId, alias = target,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            networkClient.issueFamilyRecovery(
+                targetIdentity = target,
+                familyIdentity = familyId,
+                identityProof = proof
+            ).map { response ->
+                RecoveryAuthorization(
+                    targetIdentityHash = response.targetIdentity,
+                    authorizedByFamilyName = getMyAlias(),
+                    recoveryKey = response.recoveryKey,
+                    expiresAtEpochMs = response.expiresAtEpochMs
+                )
+            }
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     fun transferIdentityToThisDevice(recoveredIdentityHash: String) {
