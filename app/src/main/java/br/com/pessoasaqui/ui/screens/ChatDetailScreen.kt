@@ -15,6 +15,7 @@ import br.com.pessoasaqui.core.media.DocumentViewerHelper
 import br.com.pessoasaqui.core.media.ImageSearchHelper
 import br.com.pessoasaqui.core.chat.StickerPersistenceManager
 import br.com.pessoasaqui.core.chat.SafeChatImageDecoder
+import br.com.pessoasaqui.core.link.WebLinkPolicy
 import kotlinx.coroutines.withContext
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
@@ -234,8 +235,7 @@ fun LinkifiedMessageText(
     linkColor: Color
 ) {
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
-    val urlRegex = remember { Regex("""(https?://[^\s]+|www\.[^\s]+)""") }
-    val matches = remember(text) { urlRegex.findAll(text).toList() }
+    val matches = remember(text) { WebLinkPolicy.findWebLinks(text) }
 
     if (matches.isEmpty()) {
         Text(
@@ -250,13 +250,13 @@ fun LinkifiedMessageText(
             val annotated = buildAnnotatedString {
                 var lastIndex = 0
                 matches.forEach { match ->
-                    val start = match.range.first
-                    val end = match.range.last + 1
+                    val start = match.start
+                    val end = match.endExclusive
                     if (start > lastIndex) {
                         append(text.substring(lastIndex, start))
                     }
-                    val url = match.value
-                    pushStringAnnotation(tag = "URL", annotation = if (url.startsWith("http")) url else "https://$url")
+                    val url = match.displayText
+                    pushStringAnnotation(tag = "URL", annotation = match.url)
                     withStyle(
                         SpanStyle(
                             color = linkColor,
@@ -291,8 +291,7 @@ fun LinkifiedMessageText(
             )
 
             matches.firstOrNull()?.let { firstMatch ->
-                val rawUrl = firstMatch.value
-                val domain = rawUrl.removePrefix("https://").removePrefix("http://").removePrefix("www.").substringBefore('/')
+                val domain = java.net.URI(firstMatch.url).host?.removePrefix("www.") ?: firstMatch.displayText
                 Spacer(modifier = Modifier.height(4.dp))
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -300,7 +299,7 @@ fun LinkifiedMessageText(
                     border = BorderStroke(0.5.dp, linkColor.copy(alpha = 0.4f)),
                     modifier = Modifier.clickable {
                         try {
-                            uriHandler.openUri(if (rawUrl.startsWith("http")) rawUrl else "https://$rawUrl")
+                            uriHandler.openUri(firstMatch.url)
                         } catch (_: Exception) {}
                     }
                 ) {
