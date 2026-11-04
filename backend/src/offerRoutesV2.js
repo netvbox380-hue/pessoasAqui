@@ -6,8 +6,8 @@
  */
 const {canonicalPublish,canonicalDelete,validOffer,validateOperationProof,sha}=require('./offerAuth');
 const MAX_PER_OWNER=12, LIFE_MS=48*60*60*1000;
-function registerOfferRoutesV2(app,{query,withTransaction,isPostgres,activeOffers}) {
-  const ready=()=>Boolean(process.env.DATABASE_URL&&isPostgres());
+function registerOfferRoutesV2(app,{query,withTransaction,isPostgres,activeOffers,requireDatabase=Boolean(process.env.DATABASE_URL)}) {
+  const ready=()=>Boolean(requireDatabase&&isPostgres());
   async function auth(operation,owner,id,body,proof) {
     if(!ready())return {error:503};
     const binding=await query('SELECT public_key_spki FROM identity_key_bindings WHERE identity_id=$1',[owner]);
