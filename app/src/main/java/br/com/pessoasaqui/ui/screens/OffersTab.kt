@@ -72,7 +72,7 @@ fun OffersTab(
     ) { uri: Uri? ->
         uri?.let {
             coroutineScope.launch(Dispatchers.IO) {
-                val b64 = uriToBase64Image(context, it)
+                val b64 = br.com.pessoasaqui.core.offer.OfferPhotoCodec.fromUri(context, it)
                 if (b64 != null) {
                     selectedImageBase64 = b64
                 }
@@ -87,7 +87,7 @@ fun OffersTab(
     ) { uri: Uri? ->
         uri?.let {
             coroutineScope.launch(Dispatchers.IO) {
-                val b64 = uriToBase64Image(context, it)
+                val b64 = br.com.pessoasaqui.core.offer.OfferPhotoCodec.fromUri(context, it)
                 if (b64 != null) {
                     editImageBase64 = b64
                 }
