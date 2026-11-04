@@ -251,6 +251,7 @@ fun PessoasAquiNavHost(
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
     var currentMainTab by remember { mutableIntStateOf(0) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
+    var familyRecoveryError by remember { mutableStateOf<String?>(null) }
     var isCreatingInvite by remember { mutableStateOf(false) }
     var showVipDialog by remember { mutableStateOf(false) }
 
@@ -377,11 +378,18 @@ fun PessoasAquiNavHost(
                     repository.requestFamilyRole(targetPerson, role)
                 },
                 onGenerateFamilyRecovery = { targetPerson ->
-                    val auth = repository.generateFamilyRecovery(
-                        targetIdentityHash = targetPerson.technicalIdentityHash,
-                        familyName = targetPerson.alias
-                    )
-                    activeFamilyRecoveryAuth = Pair(targetPerson, auth)
+                    // Autorizações locais simuladas não transferem identidades.
+                    scope.launch {
+                        val result = repository.issueFamilyRecoveryRemote(
+                            targetIdentityHash = targetPerson.technicalIdentityHash
+                        )
+                        result.onSuccess { auth ->
+                            activeFamilyRecoveryAuth = Pair(targetPerson, auth)
+                        }.onFailure { error ->
+                            familyRecoveryError = error.message
+                                ?: "Não foi possível autenticar a autorização familiar."
+                        }
+                    }
                 },
                 onBlockUser = { userId ->
                     repository.moderationManager.blockUser(userId)
@@ -515,6 +523,18 @@ fun PessoasAquiNavHost(
                 onDeleteMessageForEveryone = { peerId, msgId -> repository.deleteMessageForEveryone(peerId, msgId) }
             )
 
+            familyRecoveryError?.let { error ->
+                AlertDialog(
+                    onDismissRequest = { familyRecoveryError = null },
+                    title = { Text("Recuperação familiar segura") },
+                    text = { Text(error + "\nVerifique se o titular autorizou este familiar enquanto a conta estava ativa.") },
+                    confirmButton = {
+                        TextButton(onClick = { familyRecoveryError = null }) {
+                            Text("Entendi")
+                        }
+                    }
+                )
+            }
             activeFamilyRecoveryAuth?.let { (person, auth) ->
                 FamilyRecoveryDialog(
                     person = person,
@@ -529,9 +549,9 @@ fun PessoasAquiNavHost(
 
             EntreNaSuaRecoveryScreen(
                 pinSecurityManager = repository.pinSecurityManager,
-                onFindAuthorization = { key ->
-                    repository.proximitySimulator.findActiveRecoveryAuthorization(key)
-                },
+                // Somente o servidor valida o código v2. Nunca aceitar
+                // autorização local do simulador como prova de titularidade.
+                onFindAuthorization = { _ -> null },
                 onClaimRecovery = { key, pin ->
                     repository.claimRecovery(key, pin)
                 },
