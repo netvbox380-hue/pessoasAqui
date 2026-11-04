@@ -1899,9 +1899,19 @@ app.post('/admin/api/reports/:id/action', requireAdminAuth, async (req, res) => 
 /**
  * Listagem de Ofertas Ativas no Mural para Auditoria
  */
-app.get('/admin/api/offers', requireAdminAuth, (req, res) => {
-  const offersList = Array.from(activeOffers.values());
-  res.json({ success: true, offers: offersList });
+app.get('/admin/api/offers', requireAdminAuth, async (req, res) => {
+  if(!process.env.DATABASE_URL||!isPostgres())
+    return res.status(503).json({error:'Ofertas seguras indisponíveis sem banco.'});
+  try {
+    const results=await query(
+      'SELECT id,author_id,author_alias,profession,description,image_base64,external_link,created_at FROM offers_secure ORDER BY created_at DESC LIMIT 200');
+    return res.json({success:true,offers:results.rows.map(row=>({
+      id:row.id,authorId:row.author_id,authorAlias:row.author_alias,
+      profession:row.profession,description:row.description,
+      imageBase64:row.image_base64,externalLink:row.external_link,
+      createdAt:Number(new Date(row.created_at))
+    }))});
+  } catch(_) {return res.status(503).json({error:'Falha ao consultar ofertas.'});}
 });
 
 /**
