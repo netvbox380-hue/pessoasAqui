@@ -446,17 +446,21 @@ class PessoasAquiRepository(
         savedMutualPeople.clear(); savedMutualPeople.addAll(confirmed)
         _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
             val cid = cleanId(peer.technicalIdentityHash.ifBlank { peer.id })
-            val active = peer.isFamily || cid in confirmed
+            val active = cid in confirmed
             peer.copy(
                 isMarkedByMe = cid in own || cid in confirmed,
                 isMarkingMe = cid in remote || cid in confirmed,
                 isMutualConnection = active,
-                isPhotoVisible = active
+                isPhotoVisible = active,
+                mutualProfilePhotoBase64 = if (active) profilePhotoStore?.readPhoto(cid) else null
             )
         }
         saveConnectionsToPrefs()
         updateUnifiedData()
         newlyConfirmed.forEach { promoteTemporarySessionToMutual(it) }
+        // Após reconectar, publicar foto E2EE apenas às identidades confirmadas.
+        // Versão/hash impede reenvios a cada heartbeat.
+        scope.launch { confirmed.forEach { sendRealPhotoToMutual(it) } }
     }
 
     /**
