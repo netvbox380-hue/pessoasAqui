@@ -20,6 +20,10 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.barcode.common.Barcode
+import androidx.compose.ui.platform.LocalContext
 import br.com.pessoasaqui.core.crypto.PinSecurityManager
 import br.com.pessoasaqui.domain.model.RecoveryAuthorization
 import br.com.pessoasaqui.ui.theme.*
@@ -28,7 +32,7 @@ import kotlinx.coroutines.launch
 /**
  * Tela de Recuperação e Transferência de Identidade Criptográfica.
  * Arquitetura segura sem dados tradicionais (sem e-mail/senha).
- * Fluxo de recuperação e transferência de identidade via autorização de familiar + PIN pessoal.
+ * Fluxo de recuperação com aprovação familiar assinada; PIN do backup é independente.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,6 +45,15 @@ fun EntreNaSuaRecoveryScreen(
     onBack: () -> Unit
 ) {
     val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+    val qrScanner = remember(context) {
+        GmsBarcodeScanning.getClient(
+            context, GmsBarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .enableAutoZoom()
+                .build()
+        )
+    }
     val coroutineScope = rememberCoroutineScope()
     val recoverySessionId = remember { "session-device-new" }
 
@@ -50,6 +63,7 @@ fun EntreNaSuaRecoveryScreen(
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var isSuccess by remember { mutableStateOf(false) }
+    var isReadingQr by remember { mutableStateOf(false) }
 
     val lockoutState = pinSecurityManager.getLockoutState(recoverySessionId)
 
@@ -155,7 +169,7 @@ fun EntreNaSuaRecoveryScreen(
                     }
                 }
             } else if (validatedAuth == null) {
-                // Passo 1: Inserir a Chave ou Simular Leitura do QR Code emitido pelo familiar
+                // Passo 1: ler QR real ou inserir chave assinada emitida pelo familiar
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = DarkSurface),
@@ -204,6 +218,33 @@ fun EntreNaSuaRecoveryScreen(
                                 unfocusedBorderColor = DarkCardElevated
                             )
                         )
+
+                        OutlinedButton(
+                            onClick = {
+                                if (!isReadingQr) {
+                                    isReadingQr = true
+                                    qrScanner.startScan().addOnSuccessListener { barcode ->
+                                        val key = barcode.rawValue.orEmpty().trim().uppercase()
+                                        if (Regex("^PA-REC-[A-F0-9]{64}$").matches(key)) {
+                                            recoveryKeyInput = key
+                                            statusMessage = "QR reconhecido. A autorização será verificada no servidor."
+                                        } else {
+                                            statusMessage = "QR inválido. Use o código oficial de recuperação familiar."
+                                        }
+                                    }.addOnFailureListener {
+                                        statusMessage = "Leitor indisponível. Utilize Colar ou digite a chave."
+                                    }.addOnCompleteListener {
+                                        isReadingQr = false
+                                    }
+                                }
+                            },
+                            enabled = !isReadingQr,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.QrCodeScanner, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (isReadingQr) "Abrindo leitor..." else "Ler QR de recuperação")
+                        }
 
                         Button(
                             onClick = {
