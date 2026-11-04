@@ -30,6 +30,9 @@ function registerOfferRoutesV2(app,{query,withTransaction,isPostgres,activeOffer
       if(verified.error)return res.status(503).json({error:'Autenticação indisponível.'});
       if(!verified.valid)return res.status(401).json({error:'Assinatura do autor inválida.'});
       const saved=await withTransaction(async run=>{
+        // Bloqueio por identidade serializa limite por autor em POSTs concorrentes.
+        const ownerRow=await run('SELECT id FROM identities WHERE UPPER(id)=UPPER($1) FOR UPDATE',[owner]);
+        if(ownerRow.rowCount!==1)return {status:409};
         const nonce=await run(
           'INSERT INTO offer_action_nonces(author_id,nonce) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING nonce',
           [owner,src.identityProof.nonce]);
