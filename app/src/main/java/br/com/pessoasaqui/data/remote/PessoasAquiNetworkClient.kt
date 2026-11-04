@@ -708,7 +708,7 @@ open class PessoasAquiNetworkClient(
     /**
      * Publica ou atualiza uma oferta/divulgação local no servidor
      */
-    suspend fun publishOffer(offer: OfferItem): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun publishOffer(offer: OfferItem, identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("id", offer.id)
@@ -720,6 +720,7 @@ open class PessoasAquiNetworkClient(
                 put("externalLink", offer.externalLink ?: "")
                 put("distanceMeters", offer.distanceMeters)
                 put("proximityLabel", offer.proximityLabel)
+                put("identityProof", identityProof.toJson())
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/offers/publish")
@@ -727,7 +728,13 @@ open class PessoasAquiNetworkClient(
                 .build()
 
             client.newCall(request).execute().use { response ->
-                Result.success(response.isSuccessful)
+                if (response.isSuccessful) Result.success(true)
+                else {
+                    val error = runCatching {
+                        JSONObject(response.body?.string() ?: "{}").optString("error")
+                    }.getOrDefault("Falha HTTP ${response.code}")
+                    Result.failure(IOException(error))
+                }
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -737,15 +744,26 @@ open class PessoasAquiNetworkClient(
     /**
      * Remove uma oferta/divulgação local do servidor
      */
-    suspend fun deleteOffer(offerId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun deleteOffer(offerId: String, authorId: String, identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            val payload = JSONObject().apply {
+                put("offerId", offerId)
+                put("authorId", authorId)
+                put("identityProof", identityProof.toJson())
+            }
             val request = Request.Builder()
-                .url("$baseUrl/api/offers/$offerId")
-                .delete()
+                .url("$baseUrl/api/offers/remove")
+                .post(payload.toString().toRequestBody(jsonMediaType))
                 .build()
 
             client.newCall(request).execute().use { response ->
-                Result.success(response.isSuccessful)
+                if (response.isSuccessful) Result.success(true)
+                else {
+                    val error = runCatching {
+                        JSONObject(response.body?.string() ?: "{}").optString("error")
+                    }.getOrDefault("Falha HTTP ${response.code}")
+                    Result.failure(IOException(error))
+                }
             }
         } catch (e: Exception) {
             Result.failure(e)
