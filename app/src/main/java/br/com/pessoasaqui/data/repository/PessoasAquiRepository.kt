@@ -2053,7 +2053,13 @@ class PessoasAquiRepository(
             val link = try {
                 // Convite válido só existe quando criado/assinado no backend.
                 // Nunca produzir um URL offline fictício nem expor token inventado.
-                networkClient.createOneTimeInvite(getMyIdentity(), getMyAlias())
+                val alias = getMyAlias().trim().take(64).ifBlank { "Usuário" }
+                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation = "CREATE", identity = getMyIdentity(), alias = alias,
+                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge = cryptoIdentityManager::signChallenge
+                )
+                networkClient.createOneTimeInvite(getMyIdentity(), alias, proof)
                     .getOrNull()?.inviteUrl
             } catch (e: Exception) {
                 Log.w("PessoasAqui", "Não foi possível criar convite seguro: ${e.message}")
@@ -2085,11 +2091,19 @@ class PessoasAquiRepository(
             }
 
             try {
+                val receiverAlias = getMyAlias().trim().take(64).ifBlank { "Usuário Convidado" }
+                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation = "REDEEM", identity = myId, alias = receiverAlias,
+                    inviteId = inviteId, token = token,
+                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge = cryptoIdentityManager::signChallenge
+                )
                 val res = networkClient.redeemOneTimeInvite(
                     inviteId = inviteId,
                     token = token,
                     receiverIdentity = myId,
-                    receiverAlias = getMyAlias(),
+                    receiverAlias = receiverAlias,
+                    identityProof = proof,
                     senderIdentity = cleanSender,
                     senderAlias = senderAlias,
                     signature = signature,
