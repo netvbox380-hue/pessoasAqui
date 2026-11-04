@@ -40,6 +40,11 @@ function fixture({postgres=false,failDb=false,shared=null}={}) {
   let seq=0;
   const query=async(sql,args)=>{
     if(failDb)throw Error('DB down');
+    // Identidades não recuperadas não possuem vínculo de chave rotacionada.
+    // Simula a consulta nova sem mascarar consultas SQL inesperadas.
+    if(sql.includes('SELECT public_key_spki FROM identity_key_bindings')) {
+      return {rowCount:0,rows:[]};
+    }
     if(sql.includes('INSERT INTO invites')) {
       const [id,token,s,alias,signature,expiresAt]=args;
       if(store.invites.has(id))return {rowCount:0,rows:[]};
