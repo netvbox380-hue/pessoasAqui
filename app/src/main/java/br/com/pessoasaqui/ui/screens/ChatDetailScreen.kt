@@ -340,6 +340,7 @@ fun ChatDetailScreen(
     onAcceptMutualConnection: (NearbyPerson) -> Unit = { _ -> },
     onRequestFamilyRole: (NearbyPerson, FamilyRole) -> Unit = { _, _ -> },
     onGenerateFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
+    onAuthorizeFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
     onBlockUser: (String) -> Unit = { _ -> },
     onReportUser: (String) -> Unit = { _ -> },
     onReportUserWithDetails: ((String, String, String, List<ChatMessage>) -> Unit)? = null,
@@ -824,6 +825,19 @@ fun ChatDetailScreen(
                                 }
                             )
                         } else {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "🛡️ Autorizar ${person.alias} para me ajudar a recuperar",
+                                        color = FamilyPurple,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onAuthorizeFamilyRecovery(person)
+                                }
+                            )
                             DropdownMenuItem(
                                 text = {
                                     Text(
@@ -2484,7 +2498,7 @@ fun ChatDetailScreen(
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "A rede familiar requer confirmação mútua. Ao escolher o papel, um convite criptografado será enviado para ${person.alias} aceitar.",
+                            text = "A rede familiar requer confirmação mútua. A aceitação também permite configurar este familiar para auxiliar na recuperação de identidade. Você poderá revisar e autorizar essa função no menu da conversa.",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
                         FamilyRole.values().forEach { role ->
