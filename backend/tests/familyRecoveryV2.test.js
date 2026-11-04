@@ -75,7 +75,7 @@ function setup(){
   // serialization guarantee; transactional concurrency must be tested with a DB.
   const withTransaction=async fn=>fn(query);
   registerFamilyRecoveryRoutes(app,{
-    query,withTransaction,isPostgres:()=>postgres,
+    query,withTransaction,isPostgres:()=>postgres,databaseRequired:true,
     activeSockets:new Map(),WebSocket:{OPEN:1}
   });
   async function post(route,body){
