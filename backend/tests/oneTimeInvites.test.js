@@ -206,3 +206,10 @@ test('recovered identity without a signed key-transfer fails safely',async()=>{
   altered.senderIdentity='DEADBEEFDEADBEEF';
   assert.equal((await f.post('/api/invites/create',altered)).code,401);
 });
+
+test('canonical UTF-16 length encoding matches Android fixed vector',()=>{
+  assert.equal(auth.canonicalInviteProof(
+    'CREATE','ABCDEF0123456789','João','','',1700000000000,
+    '12345678-1234-1234-1234-123456789abc'
+  ), '17:PA-INVITE-AUTH-V1|6:CREATE|16:ABCDEF0123456789|4:João|0:|0:|13:1700000000000|36:12345678-1234-1234-1234-123456789abc');
+});
