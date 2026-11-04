@@ -51,6 +51,13 @@ object E2eeCryptoEngine {
         } catch (_: Exception) {}
     }
 
+    /** A chave pública conhecida é apenas candidata; o servidor confirma
+     * criptograficamente que pertence ao identificador do familiar. */
+    fun getPeerPublicKeyBase64(identity: String): String? {
+        val clean = identity.removePrefix("peer-").trim().uppercase()
+        return peerPublicKeys[clean]?.encoded?.let { Base64Helper.encode(it) }
+    }
+
     /**
      * Utilitário multiplataforma para codificação Base64 (compatível com Android Runtime e JVM Unit Tests)
      */
