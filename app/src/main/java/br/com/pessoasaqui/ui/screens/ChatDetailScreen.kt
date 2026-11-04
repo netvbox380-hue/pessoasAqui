@@ -341,6 +341,7 @@ fun ChatDetailScreen(
     onRequestFamilyRole: (NearbyPerson, FamilyRole) -> Unit = { _, _ -> },
     onGenerateFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
     onAuthorizeFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
+    onRevokeFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
     onBlockUser: (String) -> Unit = { _ -> },
     onReportUser: (String) -> Unit = { _ -> },
     onReportUserWithDetails: ((String, String, String, List<ChatMessage>) -> Unit)? = null,
@@ -376,6 +377,7 @@ fun ChatDetailScreen(
     var showReportDialog by remember { mutableStateOf(false) }
     var showFamilyRoleDialog by remember { mutableStateOf(false) }
     var showFamilyRecoveryDelegateConfirm by remember { mutableStateOf(false) }
+    var showFamilyRecoveryRevokeConfirm by remember { mutableStateOf(false) }
     var showFamilyRecoveryIssueConfirm by remember { mutableStateOf(false) }
     var showRemindersDialog by remember { mutableStateOf(false) }
     var reminderInitialText by remember { mutableStateOf("") }
@@ -838,6 +840,16 @@ fun ChatDetailScreen(
                                 onClick = {
                                     menuExpanded = false
                                     showFamilyRecoveryDelegateConfirm = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text("🔒 Revogar autorização de recuperação",
+                                        color = WarningAmber)
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    showFamilyRecoveryRevokeConfirm = true
                                 }
                             )
                             DropdownMenuItem(
@@ -2492,6 +2504,24 @@ fun ChatDetailScreen(
             )
         }
 
+        if (showFamilyRecoveryRevokeConfirm) {
+            AlertDialog(
+                onDismissRequest = { showFamilyRecoveryRevokeConfirm = false },
+                title = { Text("Revogar recuperação familiar") },
+                text = { Text("Cancelar a autorização de ${person.alias} para recuperar sua conta? Códigos ainda válidos serão anulados no servidor. O vínculo de conversa permanece.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showFamilyRecoveryRevokeConfirm = false
+                        onRevokeFamilyRecovery(person)
+                    }) { Text("Revogar permissão") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showFamilyRecoveryRevokeConfirm = false }) {
+                        Text("Manter")
+                    }
+                }
+            )
+        }
         if (showFamilyRecoveryDelegateConfirm) {
             AlertDialog(
                 onDismissRequest = { showFamilyRecoveryDelegateConfirm = false },
