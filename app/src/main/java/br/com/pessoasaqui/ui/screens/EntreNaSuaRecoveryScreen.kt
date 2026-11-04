@@ -341,21 +341,16 @@ fun EntreNaSuaRecoveryScreen(
                                         isLoading = false
                                         if (result.isSuccess) {
                                             isSuccess = true
-                                            pinSecurityManager.registerUserPin(pinInput)
+                                            // O PIN só é confirmado quando um cofre real
+                                            // descriptografa corretamente; não sobrescrever
+                                            // o PIN antigo antes dessa validação.
                                             onRecoverySuccess(result.getOrThrow())
                                         } else {
                                             statusMessage = result.exceptionOrNull()?.message
                                         }
                                     }
                                 } else {
-                                    val result = pinSecurityManager.verifyPinForRecovery(recoverySessionId, pinInput)
-                                    if (result.isSuccess) {
-                                        isSuccess = true
-                                        pinSecurityManager.registerUserPin(pinInput)
-                                        onRecoverySuccess(validatedAuth!!.targetIdentityHash)
-                                    } else {
-                                        statusMessage = result.exceptionOrNull()?.message
-                                    }
+                                    statusMessage = "Recuperação local insegura desativada. Atualize o aplicativo."
                                 }
                             },
                             enabled = pinInput.isNotBlank() && !lockoutState.isLocked && !isLoading,
