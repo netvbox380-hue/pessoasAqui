@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const crypto = require('node:crypto');
 const guard = require('../src/inviteSecurity');
 
-const src = fs.readFileSync(path.join(__dirname, '../src/server.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, '../src/server.js'), 'utf8').replace(/\r\n/g, '\n');
 const start = src.indexOf('// Um convite é uma credencial bearer.');
 const end = src.indexOf('/**\n * Landing Page Web do Convite', start);
 assert.ok(start >= 0 && end > start, 'invite routes were not found');
