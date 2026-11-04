@@ -15,7 +15,6 @@ import br.com.pessoasaqui.core.media.DocumentViewerHelper
 import br.com.pessoasaqui.core.media.ImageSearchHelper
 import br.com.pessoasaqui.core.chat.StickerPersistenceManager
 import br.com.pessoasaqui.core.chat.SafeChatImageDecoder
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
@@ -32,6 +31,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -1334,20 +1334,21 @@ fun ChatDetailScreen(
                                             }
                                         }
 
-                                        if (bitmap != null) {
+                                        val currentBitmap = bitmap
+                                        if (currentBitmap != null) {
                                             if (isSticker) {
                                                 // Figurinha Autêntica Estilo WhatsApp: Flutuante, Transparente e Sem Balão
                                                 Box(
                                                     modifier = Modifier
                                                         .size(144.dp)
                                                         .clickable {
-                                                            fullscreenImageBitmap = bitmap
+                                                            fullscreenImageBitmap = currentBitmap
                                                             fullscreenImageSender = msg.senderAlias
                                                         },
                                                     contentAlignment = Alignment.Center
                                                 ) {
                                                     Image(
-                                                        bitmap = bitmap,
+                                                        bitmap = currentBitmap,
                                                         contentDescription = "Figurinha",
                                                         modifier = Modifier.fillMaxSize(),
                                                         contentScale = ContentScale.Fit
@@ -1359,12 +1360,12 @@ fun ChatDetailScreen(
                                                         .fillMaxWidth()
                                                         .clip(RoundedCornerShape(12.dp))
                                                         .clickable {
-                                                            fullscreenImageBitmap = bitmap
+                                                            fullscreenImageBitmap = currentBitmap
                                                             fullscreenImageSender = msg.senderAlias
                                                         }
                                                 ) {
                                                     Image(
-                                                        bitmap = bitmap,
+                                                        bitmap = currentBitmap,
                                                         contentDescription = "Foto Cifrada (Toque para ampliar)",
                                                         modifier = Modifier
                                                             .fillMaxWidth()
