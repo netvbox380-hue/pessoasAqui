@@ -41,6 +41,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun OffersTab(
     offers: List<OfferItem>,
+    backendWarning: String? = null,
     myId: String = "",
     myAlias: String = "",
     onToggleMarkAuthor: (String) -> Unit,
@@ -111,6 +112,14 @@ fun OffersTab(
                 .fillMaxSize()
                 .padding(horizontal = 16.dp)
         ) {
+            backendWarning?.let { warning ->
+                Text(
+                    text = "⚠ ${warning}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WarningAmber,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                )
+            }
             // Cabeçalho informativo
             Card(
                 shape = RoundedCornerShape(16.dp),
