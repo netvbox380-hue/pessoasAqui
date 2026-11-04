@@ -592,7 +592,7 @@ fun MainScreen(
                                 it.technicalIdentityHash.ifBlank { it.id }
                                     .removePrefix("peer-").equals(
                                         authorId.removePrefix("peer-"), ignoreCase = true
-                                    ) && repository.hasFreshNativeBlePresence(
+                                    ) && repository.isOfferPeerInRange(
                                         it.technicalIdentityHash.ifBlank { it.id }
                                     )
                             }
@@ -605,7 +605,7 @@ fun MainScreen(
                                 it.technicalIdentityHash.ifBlank { it.id }
                                     .removePrefix("peer-").equals(
                                         authorId.removePrefix("peer-"), ignoreCase = true
-                                    ) && repository.hasFreshNativeBlePresence(
+                                    ) && repository.isOfferPeerInRange(
                                         it.technicalIdentityHash.ifBlank { it.id }
                                     )
                             }
@@ -615,7 +615,7 @@ fun MainScreen(
                                 it.technicalIdentityHash.ifBlank { it.id }
                                     .removePrefix("peer-").equals(
                                         authorId.removePrefix("peer-"), ignoreCase = true
-                                    ) && repository.hasFreshNativeBlePresence(
+                                    ) && repository.isOfferPeerInRange(
                                         it.technicalIdentityHash.ifBlank { it.id }
                                     )
                             }?.let { onOpenChat(it) }
