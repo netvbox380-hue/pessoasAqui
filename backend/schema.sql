@@ -68,6 +68,44 @@ CREATE TABLE IF NOT EXISTS recovery_authorizations (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 6.0b. RECUPERAÇÃO CRIPTOGRÁFICA V2 (pessoas autorizadas previamente)
+-- Tabelas novas, sem alterar ou apagar backups, convites ou autorizações legadas.
+CREATE TABLE IF NOT EXISTS identity_key_bindings (
+    identity_id VARCHAR(64) PRIMARY KEY REFERENCES identities(id) ON DELETE CASCADE,
+    public_key_spki TEXT NOT NULL,
+    generation BIGINT NOT NULL DEFAULT 1,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS recovery_delegations (
+    target_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+    family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+    family_public_key TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(target_identity, family_identity),
+    CHECK (target_identity <> family_identity)
+);
+CREATE TABLE IF NOT EXISTS recovery_proof_nonces (
+    identity_id VARCHAR(64) NOT NULL,
+    operation VARCHAR(32) NOT NULL,
+    nonce VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(identity_id, operation, nonce)
+);
+CREATE TABLE IF NOT EXISTS recovery_grants (
+    id VARCHAR(64) PRIMARY KEY,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    target_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+    family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+    family_public_key TEXT NOT NULL,
+    expected_generation BIGINT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_grants_target
+    ON recovery_grants(target_identity,expires_at);
+
 -- 6.1. CONVITES CRIPTOGRAFADOS DE USO ÚNICO (Conexão Mútua à Distância)
 CREATE TABLE IF NOT EXISTS invites (
     id VARCHAR(64) PRIMARY KEY,                  -- ID do convite (ex: inv_abc123)
