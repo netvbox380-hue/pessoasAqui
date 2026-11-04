@@ -207,6 +207,28 @@ open class PessoasAquiNetworkClient(
         } catch (e: Exception) { Result.failure(e) }
     }
 
+    /** Revoga autorização familiar e todos os códigos pendentes. */
+    suspend fun revokeFamilyRecoveryDelegate(
+        targetIdentity: String,
+        familyIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("targetIdentity", targetIdentity)
+                put("familyIdentity", familyIdentity)
+                put("identityProof", identityProof.toJson())
+            }
+            val request = Request.Builder().url("$baseUrl/api/family/recovery/revoke")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val obj = JSONObject(response.body?.string() ?: "{}")
+                if (response.isSuccessful && obj.optBoolean("success")) Result.success(true)
+                else Result.failure(IOException(obj.optString("error", "Não foi possível revogar a autorização")))
+            }
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
     /** A assinatura do familiar vincula autorização ao alvo. */
     suspend fun issueFamilyRecovery(
         targetIdentity: String,
