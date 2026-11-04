@@ -21,7 +21,7 @@ function deriveInviteId(identity, nonce) {
 }
 function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHash, proof, now = Date.now(), activePublicKey = null) {
   try {
-    if (!['CREATE', 'REDEEM', 'RECOVERY_DELEGATE', 'RECOVERY_ISSUE', 'RECOVERY_CLAIM', 'RECOVERY_REVOKE'].includes(operation) ||
+    if (!['CREATE', 'REDEEM', 'RECOVERY_DELEGATE', 'RECOVERY_ISSUE', 'RECOVERY_CLAIM', 'RECOVERY_REVOKE', 'OFFER_PUBLISH', 'OFFER_DELETE'].includes(operation) ||
         typeof identity !== 'string' || typeof alias !== 'string' ||
         typeof inviteId !== 'string' || typeof tokenHash !== 'string' ||
         !proof || proof.v !== 1) return false;
@@ -35,6 +35,7 @@ function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHa
         (operation === 'REDEEM' && (!/^inv_[a-f0-9]{12,24}$/i.test(inviteId) ||
           !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
         (operation === 'CREATE' && (inviteId !== '' || tokenHash !== '')) ||
+        (operation.startsWith('OFFER_') && (inviteId !== '' || !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
         (operation.startsWith('RECOVERY_') && (inviteId !== '' ||
           (['RECOVERY_ISSUE', 'RECOVERY_REVOKE'].includes(operation) ? tokenHash !== '' : !/^[a-f0-9]{64}$/i.test(tokenHash))))) return false;
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(publicKey) ||
