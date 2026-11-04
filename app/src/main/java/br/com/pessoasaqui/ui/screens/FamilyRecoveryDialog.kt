@@ -75,7 +75,7 @@ fun FamilyRecoveryDialog(
                 )
 
                 Text(
-                    text = "Autorização temporária gerada para ${person.alias}. O novo aparelho precisará apontar a câmera ou inserir esta chave e o PIN pessoal.",
+                    text = "Autorização temporária gerada para ${person.alias}. Confira a identidade da pessoa antes de compartilhar. O PIN pessoal será usado somente para abrir o backup criptografado, se disponível.",
                     style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary),
                     textAlign = TextAlign.Center
                 )
@@ -158,7 +158,7 @@ fun FamilyRecoveryDialog(
                     color = WarningAmber.copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = "⚠️ Válido por 15 minutos • Uso único • Você NÃO deve saber o PIN do usuário.",
+                        text = "⚠️ Válido por 15 minutos • Uso único • Quem obtiver esta chave poderá tentar recuperar a identidade. Entregue somente ao titular.",
                         style = MaterialTheme.typography.labelSmall.copy(
                             color = WarningAmber,
                             fontWeight = FontWeight.Medium
