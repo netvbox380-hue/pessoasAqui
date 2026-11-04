@@ -388,6 +388,8 @@ class PessoasAquiRepository(
             val cid = cleanId(p.technicalIdentityHash.ifBlank { p.id })
             expiredIds.add(cid)
             lastNativeBleSeenMs.remove(cid)
+            bleOfferSnapshots.remove(cid)
+            bleOfferSentAt.remove(cid)
             proximitySimulator.clearPrivateChat(cid)
             // Preservação estrita: sessões temporárias existem apenas na memória RAM.
             // Históricos legados em disco NUNCA são apagados por timeout de afastamento BLE.
@@ -715,6 +717,58 @@ class PessoasAquiRepository(
     private val _realOffers = MutableStateFlow<List<OfferItem>>(loadUserOffersFromPrefs())
     private val _unifiedOffers = MutableStateFlow<List<OfferItem>>(emptyList())
     val localOffers: StateFlow<List<OfferItem>> = _unifiedOffers.asStateFlow()
+    // Ofertas de terceiros só entram na lista quando chegam por BLE/GATT.
+    // Nunca persistir a sessão temporária ou enviar foto de perfil no anúncio.
+    private val bleOfferSnapshots = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<OfferItem>>>()
+    private val bleOfferSentAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val _offerSyncError = MutableStateFlow<String?>(null)
+    val offerSyncError: StateFlow<String?> = _offerSyncError.asStateFlow()
+
+    private fun sendBleOfferSnapshot(peerId: String, force: Boolean = false) {
+        val id = cleanId(peerId)
+        if (!hasFreshNativeBlePresence(id)) return
+        val now = System.currentTimeMillis()
+        val lastSent = bleOfferSentAt[id] ?: 0L
+        if (!force && now - lastSent < 75_000L) return
+        val mine = _realOffers.value.filter {
+            cleanId(it.authorId) == cleanId(getMyIdentity())
+        }.take(3)
+        // Um snapshot vazio remove ofertas antigas. Sem oferta publicada,
+        // um contato novo não precisa receber tráfego desnecessário.
+        if (mine.isEmpty() && lastSent == 0L) return
+        val payload = br.com.pessoasaqui.core.proximity.BleOfferProtocol.encode(
+            getMyIdentity(), mine
+        ) ?: return
+        bleOfferSentAt[id] = now
+        val accepted = bleTransportCoordinator.sendTemporaryMessage(
+            id, payload, _currentAlias.value
+        )
+        if (!accepted) bleOfferSentAt.remove(id, now)
+    }
+
+    private fun broadcastBleOffers(force: Boolean = true) {
+        _realDiscoveredPeople.value.filter {
+            it.estimatedDistanceMeters <= br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS &&
+                hasFreshNativeBlePresence(it.technicalIdentityHash.ifBlank { it.id })
+        }.forEach { sendBleOfferSnapshot(it.technicalIdentityHash.ifBlank { it.id }, force) }
+    }
+
+    private fun receiveBleOffers(sender: String, payload: String) {
+        val id = cleanId(sender)
+        if (!hasFreshNativeBlePresence(id)) return
+        val decoded = br.com.pessoasaqui.core.proximity.BleOfferProtocol.decode(id, payload)
+            ?: return
+        val peer = _realDiscoveredPeople.value.firstOrNull {
+            cleanId(it.technicalIdentityHash.ifBlank { it.id }) == id
+        } ?: return
+        if (peer.estimatedDistanceMeters > br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS) return
+        bleOfferSnapshots[id] = System.currentTimeMillis() to decoded.map {
+            it.copy(distanceMeters = peer.estimatedDistanceMeters,
+                proximityLabel = "BLE • até ~10 m")
+        }
+        updateUnifiedData()
+    }
+
 
     private val _unifiedLocalChatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val localChatMessages: StateFlow<List<ChatMessage>> = _unifiedLocalChatMessages.asStateFlow()
@@ -881,8 +935,10 @@ class PessoasAquiRepository(
         // Configura Coordenador de Transporte Bluetooth Direto (ETAPA 3D & 3E)
         bleTransportCoordinator.onTemporaryMessageReceived = { peerId, text, _ ->
             val cleanSender = cleanId(peerId)
-            // Se o contato for permanente (Modo B), não roteia por canal temporário
-            if (!isPeerPermanent(cleanSender)) {
+            if (br.com.pessoasaqui.core.proximity.BleOfferProtocol.isOfferPayload(text)) {
+                receiveBleOffers(cleanSender, text)
+            } else if (!isPeerPermanent(cleanSender)) {
+                // Protocolo interno não vira mensagem de conversa.
                 val peerAlias = _realDiscoveredPeople.value.firstOrNull {
                     cleanId(it.id) == cleanSender || cleanId(it.technicalIdentityHash) == cleanSender
                 }?.alias ?: "Pessoa Próxima"
@@ -1507,7 +1563,25 @@ class PessoasAquiRepository(
             .distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }) }
             .map { applyConnectionState(it) }
         _unifiedDiscoveredPeople.value = sortWithHysteresis(applied)
-        _unifiedOffers.value = _realOffers.value
+        val nowForOffers = System.currentTimeMillis()
+        val mineForOffers = _realOffers.value.filter {
+            cleanId(it.authorId) == cleanId(getMyIdentity())
+        }
+        val nearbyBle = bleOfferSnapshots.flatMap { (owner, entry) ->
+            val peer = _realDiscoveredPeople.value.firstOrNull {
+                cleanId(it.technicalIdentityHash.ifBlank { it.id }) == owner
+            }
+            if (nowForOffers - entry.first > TEMPORARY_SESSION_EXPIRATION_MS ||
+                !hasFreshNativeBlePresence(owner, nowForOffers) ||
+                peer == null ||
+                peer.estimatedDistanceMeters > br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS
+            ) emptyList() else entry.second.map {
+                it.copy(distanceMeters = peer.estimatedDistanceMeters)
+            }
+        }
+        // Um resultado da API não comprova proximidade física.
+        _unifiedOffers.value = (mineForOffers + nearbyBle)
+            .distinctBy { it.id }
 
         // Apenas mensagens reais trocadas ou persistidas (isolamento absoluto)
         _unifiedLocalChatMessages.value = proximitySimulator.localChatMessages.value
@@ -1745,6 +1819,10 @@ class PessoasAquiRepository(
                         if (peerCleanId == myId || cleanId(realPeer.id) == myId) return@startScanning
                         // Nomes iguais não impedem descoberta de identidades distintas.
                         recordNativeBlePresence(peerCleanId, realPeer.lastSeenEpochMs)
+                        if (realPeer.estimatedDistanceMeters <=
+                            br.com.pessoasaqui.core.proximity.BleConstants.MAX_DISCOVERY_DISTANCE_METERS) {
+                            sendBleOfferSnapshot(peerCleanId)
+                        }
 
                         val currentList = _realDiscoveredPeople.value.toMutableList()
                         val idx = currentList.indexOfFirst {
