@@ -814,12 +814,8 @@ fun ConversationsTab(
                                             Icon(Icons.Default.Headset, contentDescription = "Canal de suporte oficial",
                                                 tint = EmeraldGreen, modifier = Modifier.size(26.dp))
                                         } else {
-                                            Text(
-                                                text = contact.alias.take(1).uppercase(),
-                                                style = MaterialTheme.typography.titleMedium.copy(
-                                                    color = Color(contact.avatarColorHex),
-                                                    fontWeight = FontWeight.Bold
-                                                )
+                                            br.com.pessoasaqui.ui.components.PeerPrivacyAvatar(
+                                                person = contact, modifier = Modifier.fillMaxSize()
                                             )
                                         }
                                     }
