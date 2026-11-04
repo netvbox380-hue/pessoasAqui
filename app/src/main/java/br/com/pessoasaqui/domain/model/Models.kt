@@ -55,7 +55,9 @@ data class NearbyPerson(
     val isMutualConnection: Boolean = false, // True se ambos se marcaram (permite distância ilimitada)
     val isFamily: Boolean = false,
     val familyRole: FamilyRole? = null,
-    val isPhotoVisible: Boolean = false, // Foto oculta por padrão para desconhecidos
+    val isPhotoVisible: Boolean = false, // Legado. A foto real exige relação mútua válida.
+    val animalAvatarId: String? = null, // Apenas animal escolhido é público no BLE.
+    val mutualProfilePhotoBase64: String? = null, // E2EE, exibido EXCLUSIVAMENTE aos mútuos.
     val avatarColorHex: Long = 0xFF00E5FF,
     val lastSeenEpochMs: Long = System.currentTimeMillis(),
     val hasPendingFamilyRequest: Boolean = false,
