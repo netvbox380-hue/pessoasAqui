@@ -36,7 +36,7 @@ function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHa
           !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
         (operation === 'CREATE' && (inviteId !== '' || tokenHash !== '')) ||
         (operation.startsWith('RECOVERY_') && (inviteId !== '' ||
-          (operation === 'RECOVERY_ISSUE' ? tokenHash !== '' : !/^[a-f0-9]{64}$/i.test(tokenHash))))) return false;
+          (['RECOVERY_ISSUE', 'RECOVERY_REVOKE'].includes(operation) ? tokenHash !== '' : !/^[a-f0-9]{64}$/i.test(tokenHash))))) return false;
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(publicKey) ||
         !/^[A-Za-z0-9+/]+={0,2}$/.test(signature)) return false;
     const der = Buffer.from(publicKey, 'base64');
