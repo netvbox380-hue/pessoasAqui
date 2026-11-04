@@ -556,7 +556,33 @@ fun MainScreen(
                         myId = repository.getMyIdentity(),
                         myAlias = currentAlias,
                         onToggleMarkAuthor = { authorId ->
-                            repository.toggleMarkPerson(authorId)
+                            // Marcar é ato explícito, não pode desmarcar por engano.
+                            // A identidade deve estar realmente listada no Radar BLE.
+                            val peer = radarPeople.firstOrNull {
+                                it.technicalIdentityHash.ifBlank { it.id }
+                                    .removePrefix("peer-").equals(
+                                        authorId.removePrefix("peer-"), ignoreCase = true
+                                    )
+                            }
+                            if (peer != null) {
+                                repository.setMarkPerson(peer.technicalIdentityHash.ifBlank { peer.id }, mark = true)
+                            }
+                        },
+                        isAuthorNearby = { authorId ->
+                            radarPeople.any {
+                                it.technicalIdentityHash.ifBlank { it.id }
+                                    .removePrefix("peer-").equals(
+                                        authorId.removePrefix("peer-"), ignoreCase = true
+                                    )
+                            }
+                        },
+                        onOpenAuthorChat = { authorId ->
+                            radarPeople.firstOrNull {
+                                it.technicalIdentityHash.ifBlank { it.id }
+                                    .removePrefix("peer-").equals(
+                                        authorId.removePrefix("peer-"), ignoreCase = true
+                                    )
+                            }?.let { onOpenChat(it) }
                         },
                         onPostOffer = { prof, desc, img, link ->
                             repository.postLocalOffer(prof, desc, img, link)
