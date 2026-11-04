@@ -207,6 +207,14 @@ class PessoasAquiRepository(
         val id = cleanId(peerId)
         if (id.isNotBlank()) lastNativeBleSeenMs[id] = seenAtMs
     }
+
+    /** Para abrir chat a partir de anúncio é necessária descoberta BLE REAL.
+     * Presença do Render, contato salvo ou distância visual não são evidência.
+     */
+    fun hasFreshNativeBlePresence(peerId: String, now: Long = System.currentTimeMillis()): Boolean {
+        val seen = lastNativeBleSeenMs[cleanId(peerId)] ?: return false
+        return seen <= now && now - seen < TEMPORARY_SESSION_EXPIRATION_MS
+    }
     private var lastStablePeerOrder: List<String> = emptyList()
 
     // Conjuntos persistidos de marcações e conexões mútuas em SharedPreferences
