@@ -54,8 +54,13 @@ function registerFamilyRecoveryRoutes(app, deps) {
     const family=normalizeId(req.body?.familyIdentity);
     const pub=req.body?.familyPublicKey;
     if(!VALID_ID.test(owner)||!VALID_ID.test(family)||owner===family||
-       publicKeyIdentity(pub)!==family) return res.status(400).json({error:'Identidades ou chave familiar inválidas.'});
+       publicKeyIdentity(pub)===null) return res.status(400).json({error:'Identidades ou chave familiar inválidas.'});
     try {
+      // Familiares que recuperaram sua identidade podem possuir chave rotacionada.
+      // Só confiar nessa exceção quando a chave ativa vier do PostgreSQL.
+      const boundFamilyKey=await boundKey(family);
+      if(boundFamilyKey ? pub!==boundFamilyKey : publicKeyIdentity(pub)!==family)
+        return res.status(401).json({error:'Chave familiar não corresponde à identidade ativa.'});
       const proof=req.body.identityProof;
       if(!await authenticated('RECOVERY_DELEGATE', owner, family, hexSha(pub), proof))
         return res.status(401).json({error:'Somente o titular pode autorizar um familiar.'});
