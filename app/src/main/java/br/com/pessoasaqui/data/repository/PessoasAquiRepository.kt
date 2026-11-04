@@ -83,10 +83,15 @@ class PessoasAquiRepository(
         java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val recoveryEnrollmentConfirmed =
         java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val recoveryEnrollmentApproved =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val pendingOutgoingFamilyRequests =
+        java.util.concurrent.ConcurrentHashMap<String, FamilyRole>()
 
     private fun enrollFamilyRecoveryIfPossible(personId: String) {
         val familyId = cleanId(personId).uppercase()
         if (familyId.isBlank() || familyId == getMyIdentity().uppercase() ||
+            familyId !in recoveryEnrollmentApproved ||
             familyId in recoveryEnrollmentConfirmed) return
         val peer = _realDiscoveredPeople.value.firstOrNull {
             cleanId(it.technicalIdentityHash.ifBlank { it.id }).uppercase() == familyId &&
@@ -96,20 +101,7 @@ class PessoasAquiRepository(
         if (!recoveryEnrollmentInFlight.add(familyId)) return
         scope.launch {
             try {
-                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
-                    operation = "RECOVERY_DELEGATE",
-                    identity = getMyIdentity(),
-                    alias = familyId,
-                    token = publicKey,
-                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
-                    signChallenge = cryptoIdentityManager::signChallenge
-                )
-                val status = networkClient.registerFamilyRecoveryDelegate(
-                    targetIdentity = getMyIdentity(),
-                    familyIdentity = familyId,
-                    familyPublicKey = publicKey,
-                    identityProof = proof
-                )
+                val status = authorizeFamilyForRecovery(familyId, publicKey)
                 if (status.isSuccess) recoveryEnrollmentConfirmed.add(familyId)
                 else Log.w("PessoasAqui", "Familiar ainda não habilitado para recuperação segura: " +
                     (status.exceptionOrNull()?.message ?: "sem conexão"))
@@ -1108,6 +1100,13 @@ class PessoasAquiRepository(
                 val roleName = parts.getOrNull(0) ?: FamilyRole.OUTRO.name
                 val partnerAlias = parts.getOrNull(1) ?: senderAlias
                 val role = try { FamilyRole.valueOf(roleName) } catch (_: Exception) { FamilyRole.OUTRO }
+                // Um FAMILY_ACCEPT não solicitado não pode criar relação
+                // familiar nem conceder recuperação do proprietário.
+                val expected = pendingOutgoingFamilyRequests.remove(cleanSender.uppercase())
+                if (expected != role) {
+                    Log.w("PessoasAqui", "FAMILY_ACCEPT não solicitado ignorado para $cleanSender")
+                    return
+                }
                 setFamilyRole(cleanSender, role)
                 proximitySimulator.receivePrivateMessage(
                     cleanSender,
@@ -2582,6 +2581,7 @@ class PessoasAquiRepository(
 
     fun requestFamilyRole(person: NearbyPerson, role: FamilyRole) {
         val cleanRecipient = person.technicalIdentityHash.removePrefix("peer-")
+        pendingOutgoingFamilyRequests[cleanRecipient.uppercase()] = role
         sendPrivateMessage(cleanRecipient, "[FAMILY_REQ:${role.name}:${_currentAlias.value}]")
         proximitySimulator.receivePrivateMessage(
             cleanRecipient,
@@ -2620,6 +2620,7 @@ class PessoasAquiRepository(
         }
         proximitySimulator.setFamilyRole(personId, role)
         updateUnifiedData()
+        recoveryEnrollmentApproved.add(cleanId.uppercase())
         enrollFamilyRecoveryIfPossible(cleanId)
     }
 
@@ -2651,6 +2652,41 @@ class PessoasAquiRepository(
             )
             if (claimed.isSuccess) deviceSessionManager.resetSession()
             claimed
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
+    /**
+     * Consentimento explícito para um familiar previamente vinculado atuar
+     * como recuperador. A delegação é assinada pela chave do proprietário.
+     * Também serve para credenciar familiares de versões anteriores.
+     */
+    suspend fun authorizeFamilyForRecovery(
+        personId: String,
+        knownPublicKey: String? = null
+    ): Result<Boolean> {
+        val id = cleanId(personId).uppercase()
+        if (!_realDiscoveredPeople.value.any {
+                cleanId(it.technicalIdentityHash.ifBlank { it.id }).uppercase() == id && it.isFamily
+            }) return Result.failure(SecurityException("Contato não possui vínculo familiar confirmado."))
+        val familyPub = knownPublicKey ?: E2eeCryptoEngine.getPeerPublicKeyBase64(id)
+            ?: return Result.failure(IllegalStateException(
+                "A chave pública deste familiar não está disponível. Conectem ambos à internet."))
+        return try {
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_DELEGATE",
+                identity = getMyIdentity(), alias = id, token = familyPub,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            val result = networkClient.registerFamilyRecoveryDelegate(
+                targetIdentity = getMyIdentity(), familyIdentity = id,
+                familyPublicKey = familyPub, identityProof = proof
+            )
+            if (result.isSuccess) {
+                recoveryEnrollmentConfirmed.add(id)
+                recoveryEnrollmentApproved.add(id)
+            }
+            result
         } catch (e: Exception) { Result.failure(e) }
     }
 
