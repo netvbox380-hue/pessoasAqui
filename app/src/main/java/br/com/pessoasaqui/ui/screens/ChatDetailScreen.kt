@@ -677,12 +677,8 @@ fun ChatDetailScreen(
                                 .background(Color(person.avatarColorHex).copy(alpha = 0.2f)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = person.alias.take(1).uppercase(),
-                                style = MaterialTheme.typography.titleSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(person.avatarColorHex)
-                                )
+                            br.com.pessoasaqui.ui.components.PeerPrivacyAvatar(
+                                person = person, modifier = Modifier.fillMaxSize()
                             )
                         }
                         Spacer(modifier = Modifier.width(10.dp))
