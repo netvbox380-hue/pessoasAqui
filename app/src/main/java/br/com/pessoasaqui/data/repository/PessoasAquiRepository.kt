@@ -2112,12 +2112,22 @@ class PessoasAquiRepository(
             proximitySimulator.updateLocalOffer(newOffer)
         }
         updateUnifiedData()
+        broadcastBleOffers()
 
         scope.launch {
             try {
-                networkClient.publishOffer(newOffer)
+                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation = "OFFER_PUBLISH",
+                    identity = getMyIdentity(), alias = newOffer.id,
+                    token = br.com.pessoasaqui.core.crypto.OfferIdentityPayload.canonical(newOffer),
+                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge = cryptoIdentityManager::signChallenge
+                )
+                networkClient.publishOffer(newOffer, proof).getOrThrow()
+                _offerSyncError.value = null
             } catch (e: Exception) {
-                Log.e("PessoasAqui", "Erro ao publicar oferta no backend: ${e.message}")
+                _offerSyncError.value = "Oferta visível localmente por BLE. Publicação online não confirmada."
+                Log.w("PessoasAqui", "Falha ao sincronizar publicação de oferta: ${e.message}")
             }
         }
     }
@@ -2146,30 +2156,52 @@ class PessoasAquiRepository(
                 proximitySimulator.updateLocalOffer(updated)
             }
             updateUnifiedData()
-
+            broadcastBleOffers()
             scope.launch {
                 try {
-                    networkClient.publishOffer(updated)
+                    val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                        operation = "OFFER_PUBLISH",
+                        identity = getMyIdentity(), alias = updated.id,
+                        token = br.com.pessoasaqui.core.crypto.OfferIdentityPayload.canonical(updated),
+                        publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                        signChallenge = cryptoIdentityManager::signChallenge
+                    )
+                    networkClient.publishOffer(updated, proof).getOrThrow()
+                    _offerSyncError.value = null
                 } catch (e: Exception) {
-                    Log.e("PessoasAqui", "Erro ao atualizar oferta no backend: ${e.message}")
+                    _offerSyncError.value = "Alteração local atualizada por BLE; backend não confirmou."
+                    Log.w("PessoasAqui", "Falha ao sincronizar edição de oferta: ${e.message}")
                 }
             }
         }
     }
 
     fun deleteLocalOffer(offerId: String) {
+        if (_realOffers.value.none {
+                it.id == offerId && cleanId(it.authorId) == cleanId(getMyIdentity())
+            }) return
         _realOffers.value = _realOffers.value.filter { it.id != offerId }
         saveUserOffersToPrefs()
         if (_isDemoMode.value) {
             proximitySimulator.deleteLocalOffer(offerId)
         }
         updateUnifiedData()
+        broadcastBleOffers()
 
         scope.launch {
             try {
-                networkClient.deleteOffer(offerId)
+                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation = "OFFER_DELETE", identity = getMyIdentity(),
+                    alias = offerId,
+                    token = br.com.pessoasaqui.core.crypto.OfferIdentityPayload.canonicalDelete(offerId),
+                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge = cryptoIdentityManager::signChallenge
+                )
+                networkClient.deleteOffer(offerId, getMyIdentity(), proof).getOrThrow()
+                _offerSyncError.value = null
             } catch (e: Exception) {
-                Log.e("PessoasAqui", "Erro ao remover oferta no backend: ${e.message}")
+                _offerSyncError.value = "Anúncio removido neste aparelho e no BLE, mas a exclusão online está pendente."
+                Log.w("PessoasAqui", "Falha ao sincronizar exclusão de oferta: ${e.message}")
             }
         }
     }
