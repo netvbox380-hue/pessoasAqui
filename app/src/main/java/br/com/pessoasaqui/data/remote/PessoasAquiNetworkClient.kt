@@ -757,11 +757,12 @@ open class PessoasAquiNetworkClient(
     /**
      * Cria um convite criptografado de uso único no servidor
      */
-    suspend fun createOneTimeInvite(senderIdentity: String, senderAlias: String): Result<CreateInviteResponse> = withContext(Dispatchers.IO) {
+    suspend fun createOneTimeInvite(senderIdentity: String, senderAlias: String, identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof): Result<CreateInviteResponse> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("senderIdentity", senderIdentity)
                 put("senderAlias", senderAlias)
+                put("identityProof", identityProof.toJson())
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/invites/create")
@@ -804,7 +805,8 @@ open class PessoasAquiNetworkClient(
         senderIdentity: String? = null,
         senderAlias: String? = null,
         signature: String? = null,
-        expiresAt: Long? = null
+        expiresAt: Long? = null,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
     ): Result<RedeemInviteResponse> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
@@ -812,6 +814,7 @@ open class PessoasAquiNetworkClient(
                 put("token", token)
                 put("receiverIdentity", receiverIdentity)
                 put("receiverAlias", receiverAlias)
+                put("identityProof", identityProof.toJson())
                 if (!senderIdentity.isNullOrBlank()) put("senderIdentity", senderIdentity)
                 if (!senderAlias.isNullOrBlank()) put("senderAlias", senderAlias)
                 if (!signature.isNullOrBlank()) put("signature", signature)
