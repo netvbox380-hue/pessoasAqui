@@ -94,6 +94,37 @@ function registerFamilyRecoveryRoutes(app, deps) {
     }
   });
 
+  // O titular pode revogar a delegação sem desfazer o vínculo de chat.
+  // Tokens pendentes emitidos pelo familiar também são invalidados.
+  app.post('/api/family/recovery/revoke', async(req,res)=>{
+    if(!ready())return dbUnavailable(res);
+    const owner=normalizeId(req.body?.targetIdentity);
+    const family=normalizeId(req.body?.familyIdentity);
+    if(!VALID_ID.test(owner)||!VALID_ID.test(family)||owner===family)
+      return res.status(400).json({error:'Identidade inválida.'});
+    try {
+      const proof=req.body?.identityProof;
+      if(!await authenticated('RECOVERY_REVOKE',owner,family,'',proof))
+        return res.status(401).json({error:'Somente o titular pode revogar o recuperador.'});
+      await withTransaction(async run=>{
+        const nonce=await run(
+          'INSERT INTO recovery_proof_nonces(identity_id,operation,nonce) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING nonce',
+          [owner,'REVOKE',proof.nonce]);
+        if(nonce.rowCount!==1)throw Object.assign(Error('Assinatura já utilizada'),{status:409});
+        await run(
+          'UPDATE recovery_delegations SET is_active=FALSE,updated_at=NOW() WHERE target_identity=$1 AND family_identity=$2',
+          [owner,family]);
+        await run(
+          'UPDATE recovery_grants SET used_at=NOW() WHERE target_identity=$1 AND family_identity=$2 AND used_at IS NULL',
+          [owner,family]);
+      });
+      return res.json({success:true});
+    } catch(e) {
+      if(e.status===409)return res.status(409).json({error:e.message});
+      return dbUnavailable(res);
+    }
+  });
+
   // Emitido pelo familiar autorizado; código 256 bits, 15 minutos,
   // hash no banco. O familiar não recebe PIN ou material de chave privada.
   app.post('/api/family/recovery/issue', async (req,res)=>{
