@@ -46,7 +46,7 @@ data class InviteIdentityProof(
             inviteId: String = "", token: String = ""
         ): InviteIdentityProof {
             require(operation in setOf("CREATE", "REDEEM",
-                "RECOVERY_DELEGATE", "RECOVERY_ISSUE", "RECOVERY_CLAIM"))
+                "RECOVERY_DELEGATE", "RECOVERY_ISSUE", "RECOVERY_CLAIM", "RECOVERY_REVOKE"))
             val timestamp = System.currentTimeMillis()
             val nonce = UUID.randomUUID().toString()
             val hash = if (operation in setOf("REDEEM",
