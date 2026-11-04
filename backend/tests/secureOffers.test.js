@@ -32,6 +32,8 @@ function fixture(){
     if(failed)throw Error('database offline');
     if(sql.includes('SELECT public_key_spki FROM identity_key_bindings'))
       return {rows:[],rowCount:0};
+    if(sql.includes('SELECT id FROM identities WHERE UPPER(id)'))
+      return {rows:args[0]===me.id?[{id:me.id}]:[],rowCount:args[0]===me.id?1:0};
     if(sql.includes('INSERT INTO offer_action_nonces')){
       const key=args.join(':');if(nonces.has(key))return {rowCount:0,rows:[]};
       nonces.add(key);return {rowCount:1,rows:[{nonce:args[1]}]};
