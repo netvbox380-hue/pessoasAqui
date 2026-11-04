@@ -150,7 +150,7 @@ fun OffersTab(
                             )
                         )
                         Text(
-                            text = "Anúncios locais salvos no aparelho e recebidos pela rede. Para conversar via Bluetooth, confirme a presença no Radar.",
+                            text = "Anúncios recebidos por Bluetooth ficam visíveis enquanto o profissional está próximo (~10 m). A internet não é necessária para a descoberta.",
                             style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary)
                         )
                     }
@@ -478,7 +478,7 @@ fun OffersTab(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Text(
-                            text = "Seu anúncio será salvo neste aparelho. Para outros usuários o visualizarem, é necessária a sincronização do serviço; o Radar comprova proximidade física.",
+                            text = "Seu anúncio será salvo aqui e enviado a pessoas encontradas pelo rádio Bluetooth (~10 m). A publicação online só é confirmada com servidor disponível.",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
 
