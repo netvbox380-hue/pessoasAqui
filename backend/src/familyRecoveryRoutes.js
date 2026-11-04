@@ -126,6 +126,7 @@ function registerFamilyRecoveryRoutes(app, deps) {
       });
       return res.json({success:true,recoveryKey:secret,
         targetIdentity:target,expiresAt:generated.expires_at,
+        expiresAtEpochMs:new Date(generated.expires_at).getTime(),
         notice:'Válido por 15 minutos • Uso único • Confirme a identidade do destinatário.'});
     }catch(e){
       if(e.status===409)return res.status(409).json({error:e.message});
