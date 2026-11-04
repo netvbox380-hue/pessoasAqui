@@ -150,9 +150,9 @@ fun AnimalPortrait(id: String, modifier: Modifier = Modifier) {
             oval(Color(0xFF493833),100f,139f,15f,10f)
             val mouth=Path().apply {
                 moveTo(x0+100*u,y0+146*u)
-                quadraticTo(x0+95*u,y0+158*u,x0+85*u,y0+156*u)
+                quadraticBezierTo(x0+95*u,y0+158*u,x0+85*u,y0+156*u)
                 moveTo(x0+100*u,y0+146*u)
-                quadraticTo(x0+105*u,y0+158*u,x0+115*u,y0+156*u)
+                quadraticBezierTo(x0+105*u,y0+158*u,x0+115*u,y0+156*u)
             }
             drawPath(mouth,Color(0xFF58443C),style=Stroke(width=2.5f*u))
         }
