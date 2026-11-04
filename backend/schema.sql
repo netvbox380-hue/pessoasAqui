@@ -106,6 +106,26 @@ CREATE TABLE IF NOT EXISTS recovery_grants (
 CREATE INDEX IF NOT EXISTS idx_recovery_grants_target
     ON recovery_grants(target_identity,expires_at);
 
+-- OFERTAS V2 — publicações autenticadas e persistidas; localização verificada via BLE no Android.
+CREATE TABLE IF NOT EXISTS offers_secure (
+  id VARCHAR(64) PRIMARY KEY,
+  author_id VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+  author_alias VARCHAR(64) NOT NULL,
+  profession VARCHAR(64) NOT NULL,
+  description VARCHAR(500) NOT NULL,
+  image_base64 TEXT,
+  external_link TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_offers_secure_owner ON offers_secure(author_id, created_at);
+CREATE TABLE IF NOT EXISTS offer_action_nonces (
+  author_id VARCHAR(64) NOT NULL,
+  nonce VARCHAR(64) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY(author_id, nonce)
+);
+
 -- 6.1. CONVITES CRIPTOGRAFADOS DE USO ÚNICO (Conexão Mútua à Distância)
 CREATE TABLE IF NOT EXISTS invites (
     id VARCHAR(64) PRIMARY KEY,                  -- ID do convite (ex: inv_abc123)
