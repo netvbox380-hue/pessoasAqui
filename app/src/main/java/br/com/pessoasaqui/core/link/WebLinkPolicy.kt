@@ -46,7 +46,8 @@ object WebLinkPolicy {
             val scheme = parsed.scheme?.lowercase(Locale.ROOT)
             val host = parsed.host
             if (scheme !in setOf("http", "https") || host.isNullOrBlank() ||
-                parsed.rawUserInfo != null || parsed.fragment?.contains("\u0000") == true) null
+                parsed.rawUserInfo != null ||
+                (!host.contains('.') && !(raw.contains("://") && host.equals("localhost", true)))) null
             else parsed.toASCIIString()
         } catch (_: Exception) {
             null
