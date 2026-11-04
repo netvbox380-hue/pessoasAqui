@@ -30,6 +30,14 @@ function publicKeyIdentity(base64) {
 function registerFamilyRecoveryRoutes(app, deps) {
   const {query, withTransaction, isPostgres, activeSockets, WebSocket} = deps;
   const ready = () => Boolean((deps.databaseRequired ?? Boolean(process.env.DATABASE_URL)) && isPostgres());
+  // O código é bearer e nunca deve ser armazenado em caches HTTP.
+  if (typeof app.use === 'function') {
+    app.use('/api/family/recovery', (_req, response, next) => {
+      response.set('Cache-Control', 'no-store, private');
+      response.set('Pragma', 'no-cache');
+      next();
+    });
+  }
   function dbUnavailable(res) { return res.status(503).json({error:'Recuperação segura indisponível. Nenhuma identidade foi transferida.'}); }
 
   async function boundKey(identity, execute = query) {
