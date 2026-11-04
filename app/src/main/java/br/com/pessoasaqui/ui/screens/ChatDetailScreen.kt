@@ -593,11 +593,44 @@ fun ChatDetailScreen(
                             text = "${selectedMessageIds.size} selecionada(s)",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            )
+                                color = TextPrimary,
+                                fontSize = 14.sp
+                            ),
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                         )
                     },
                     actions = {
+                        // Pressionar a mensagem abre a seleção. A ação ⭐ deve
+                        // estar na barra selecionada, ao lado de Copiar/Compartilhar/Excluir.
+                        // Apenas uma mensagem por vez para não alternar estrelas indevidamente.
+                        val selectedImportantMessage = selectedMessageIds.singleOrNull()?.let { id ->
+                            messages.firstOrNull { it.id == id && !it.isDeleted }
+                        }
+                        if (selectedImportantMessage != null && onToggleImportantMessage != null) {
+                            IconButton(
+                                onClick = {
+                                    val peerId = person.technicalIdentityHash.ifBlank { person.id }
+                                    val wasImportant = selectedImportantMessage.isImportant
+                                    onToggleImportantMessage.invoke(peerId, selectedImportantMessage.id)
+                                    selectedMessageIds = emptySet()
+                                    Toast.makeText(
+                                        context,
+                                        if (wasImportant) "Mensagem removida dos importantes"
+                                        else "Mensagem marcada como importante ⭐",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = if (selectedImportantMessage.isImportant)
+                                        Icons.Default.Star else Icons.Default.StarBorder,
+                                    contentDescription = if (selectedImportantMessage.isImportant)
+                                        "Remover de importantes" else "Marcar como importante",
+                                    tint = WarningAmber
+                                )
+                            }
+                        }
                         IconButton(onClick = {
                             val textToCopy = messages
                                 .filter { it.id in selectedMessageIds && it.text.isNotBlank() && !it.isDeleted }
