@@ -377,6 +377,18 @@ fun PessoasAquiNavHost(
                 onRequestFamilyRole = { targetPerson, role ->
                     repository.requestFamilyRole(targetPerson, role)
                 },
+                onRevokeFamilyRecovery = { targetPerson ->
+                    scope.launch {
+                        repository.revokeFamilyForRecovery(
+                            targetPerson.technicalIdentityHash.ifBlank { targetPerson.id }
+                        ).onSuccess {
+                            familyRecoveryError = "Autorização familiar revogada no servidor. Os códigos pendentes foram invalidados."
+                        }.onFailure { error ->
+                            familyRecoveryError = error.message
+                                ?: "Não foi possível confirmar a revogação."
+                        }
+                    }
+                },
                 onAuthorizeFamilyRecovery = { targetPerson ->
                     scope.launch {
                         repository.authorizeFamilyForRecovery(
