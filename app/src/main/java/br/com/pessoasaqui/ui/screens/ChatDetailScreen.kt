@@ -375,6 +375,8 @@ fun ChatDetailScreen(
     var menuExpanded by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
     var showFamilyRoleDialog by remember { mutableStateOf(false) }
+    var showFamilyRecoveryDelegateConfirm by remember { mutableStateOf(false) }
+    var showFamilyRecoveryIssueConfirm by remember { mutableStateOf(false) }
     var showRemindersDialog by remember { mutableStateOf(false) }
     var reminderInitialText by remember { mutableStateOf("") }
     var showResourceDrawer by remember { mutableStateOf(false) }
@@ -835,7 +837,7 @@ fun ChatDetailScreen(
                                 },
                                 onClick = {
                                     menuExpanded = false
-                                    onAuthorizeFamilyRecovery(person)
+                                    showFamilyRecoveryDelegateConfirm = true
                                 }
                             )
                             DropdownMenuItem(
@@ -848,7 +850,7 @@ fun ChatDetailScreen(
                                 },
                                 onClick = {
                                     menuExpanded = false
-                                    onGenerateFamilyRecovery(person)
+                                    showFamilyRecoveryIssueConfirm = true
                                 }
                             )
                         }
@@ -2487,6 +2489,43 @@ fun ChatDetailScreen(
                     }
                 },
                 containerColor = DarkSurface
+            )
+        }
+
+        if (showFamilyRecoveryDelegateConfirm) {
+            AlertDialog(
+                onDismissRequest = { showFamilyRecoveryDelegateConfirm = false },
+                title = { Text("Autorizar familiar para recuperação") },
+                text = { Text("Você autoriza ${person.alias} a emitir uma chave de recuperação para sua identidade. Essa pessoa poderá ajudar a transferir sua conta para outro aparelho. Autorize somente alguém de absoluta confiança.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showFamilyRecoveryDelegateConfirm = false
+                        onAuthorizeFamilyRecovery(person)
+                    }) { Text("Autorizar familiar") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showFamilyRecoveryDelegateConfirm = false }) {
+                        Text("Cancelar")
+                    }
+                }
+            )
+        }
+        if (showFamilyRecoveryIssueConfirm) {
+            AlertDialog(
+                onDismissRequest = { showFamilyRecoveryIssueConfirm = false },
+                title = { Text("Emitir recuperação de identidade") },
+                text = { Text("Confirme pessoalmente que ${person.alias} solicitou a recuperação. Qualquer pessoa que receba o QR ou a chave temporária pode tentar transferir esta identidade. Não compartilhe com terceiros.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showFamilyRecoveryIssueConfirm = false
+                        onGenerateFamilyRecovery(person)
+                    }) { Text("Emitir chave de uso único") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showFamilyRecoveryIssueConfirm = false }) {
+                        Text("Cancelar")
+                    }
+                }
             )
         }
 
