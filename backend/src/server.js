@@ -18,6 +18,7 @@ const {
 } = require('./inviteSecurity');
 const { verifyInviteIdentityProof, deriveInviteId } = require('./inviteAuth');
 const { registerFamilyRecoveryRoutes } = require('./familyRecoveryRoutes');
+const { registerOfferRoutesV2 } = require('./offerRoutesV2');
 
 function verifyClientEcdsaSignature(publicKeyBase64, dataString, signatureBase64) {
   if (!publicKeyBase64 || !signatureBase64) return false;
@@ -131,6 +132,24 @@ setTimeout(async () => {
       )`);
       await query(`CREATE INDEX IF NOT EXISTS idx_recovery_grants_target
         ON recovery_grants(target_identity,expires_at)`);
+      await query(`CREATE TABLE IF NOT EXISTS offers_secure (
+        id VARCHAR(64) PRIMARY KEY,
+        author_id VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        author_alias VARCHAR(64) NOT NULL,
+        profession VARCHAR(64) NOT NULL,
+        description VARCHAR(500) NOT NULL,
+        image_base64 TEXT,
+        external_link TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_offers_secure_owner ON offers_secure(author_id,created_at)`);
+      await query(`CREATE TABLE IF NOT EXISTS offer_action_nonces (
+        author_id VARCHAR(64) NOT NULL,
+        nonce VARCHAR(64) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY(author_id,nonce)
+      )`);
       await query(`CREATE TABLE IF NOT EXISTS invites (
         id VARCHAR(64) PRIMARY KEY,
         token VARCHAR(64) NOT NULL,
@@ -740,66 +759,10 @@ app.get('/api/presence/nearby', async (req, res) => {
 });
 
 /**
- * Serviços e Divulgações Locais
+ * Ofertas autenticadas v2: o servidor não presume 10m de proximidade.
+ * BLE/GATT envia anúncios diretamente a pares fisicamente encontrados.
  */
-app.post('/api/offers/publish', (req, res) => {
-  const { id, authorId, authorAlias, profession, description, imageBase64, externalLink } = req.body;
-  if (!authorId || !profession || !description) {
-    return res.status(400).json({ error: 'authorId, profession e description são obrigatórios.' });
-  }
-
-  const offerId = id || `offer_${Date.now()}`;
-  const offer = {
-    id: offerId,
-    authorId: cleanId(authorId),
-    authorAlias: authorAlias || 'Profissional',
-    profession: profession.trim(),
-    description: description.trim(),
-    imageBase64: imageBase64 || null,
-    externalLink: externalLink || null,
-    createdAt: Date.now()
-  };
-
-  activeOffers.set(offerId, offer);
-
-  // Broadcast em tempo real para os dispositivos conectados
-  const payload = JSON.stringify({
-    type: 'OFFER_PUBLISHED',
-    offer
-  });
-  for (const client of activeSockets.values()) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
-    }
-  }
-
-  res.json({ success: true, offer });
-});
-
-app.get('/api/offers/nearby', (req, res) => {
-  const now = Date.now();
-  // Retorna ofertas ativas (últimas 48 horas)
-  const offers = Array.from(activeOffers.values())
-    .filter(o => (now - o.createdAt) < 172800000);
-  res.json({ success: true, count: offers.length, offers });
-});
-
-app.delete('/api/offers/:id', (req, res) => {
-  const { id } = req.params;
-  activeOffers.delete(id);
-
-  const payload = JSON.stringify({
-    type: 'OFFER_DELETED',
-    offerId: id
-  });
-  for (const client of activeSockets.values()) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
-    }
-  }
-
-  res.json({ success: true, deleted: id });
-});
+registerOfferRoutesV2(app,{query,withTransaction,isPostgres,activeOffers});
 
 /**
  * Envio de Mensagem Cifrada via HTTP (Fallback redundante para WebSockets)
@@ -1944,26 +1907,17 @@ app.get('/admin/api/offers', requireAdminAuth, (req, res) => {
 /**
  * Exclusão / Derrubada de Oferta Imprópria pelo Moderador
  */
-app.delete('/admin/api/offers/:id', requireAdminAuth, (req, res) => {
-  const { id } = req.params;
-  if (!activeOffers.has(id)) {
-    return res.status(404).json({ error: 'Oferta não encontrada ou já expirou.' });
-  }
-
-  activeOffers.delete(id);
-
-  // Notifica todos os clientes conectados sobre a remoção da oferta (compatível com ambas versões do app)
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      try {
-        client.send(JSON.stringify({ type: 'OFFER_DELETED', offerId: id }));
-        client.send(JSON.stringify({ type: 'OFFER_REMOVED', offerId: id }));
-      } catch (_) {}
-    }
-  });
-
-  console.log(`[MODERAÇÃO] Oferta ${id} removida pelo moderador.`);
-  res.json({ success: true, message: `Oferta ${id} removida do ar com sucesso.` });
+app.delete('/admin/api/offers/:id', requireAdminAuth, async (req, res) => {
+  if (!process.env.DATABASE_URL || !isPostgres())
+    return res.status(503).json({error:'Moderação de ofertas exige banco persistente.'});
+  const {id}=req.params;
+  try{
+    const result=await withTransaction(run=>
+      run('DELETE FROM offers_secure WHERE id=$1 RETURNING id',[id]));
+    if(result.rowCount!==1) return res.status(404).json({error:'Oferta não encontrada.'});
+    activeOffers.delete(id);
+    return res.json({success:true,deleted:id});
+  }catch(_){return res.status(503).json({error:'Banco indisponível.'});}
 });
 
 /**
