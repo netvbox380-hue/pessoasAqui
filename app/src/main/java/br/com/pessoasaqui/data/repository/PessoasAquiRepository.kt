@@ -1207,7 +1207,9 @@ class PessoasAquiRepository(
                     try {
                         val jsonStr = String(E2eeCryptoEngine.Base64Helper.decode(b64), Charsets.UTF_8)
                         val vault = p2pVaultManager?.deserializeVaultFromJson(jsonStr)
-                        if (vault != null) {
+                        if (vault != null &&
+                            cleanId(vault.ownerIdentityHash).equals(cleanSender, ignoreCase = true) &&
+                            isPeerPermanent(cleanSender)) {
                             val stored = p2pVaultManager?.storePeerVault(vault) ?: false
                             if (stored) {
                                 sendPrivateMessage(cleanSender, "[VAULT_ACK:${vault.version}]")
@@ -1226,6 +1228,9 @@ class PessoasAquiRepository(
             payload.startsWith("[VAULT_QUERY:") -> {
                 val targetOwnerHash = payload.removePrefix("[VAULT_QUERY:").removeSuffix("]").trim().lowercase()
                 scope.launch(Dispatchers.IO) {
+                    // Não entregar ciphertext de terceiro a contato não autorizado.
+                    if (!targetOwnerHash.equals(cleanSender, ignoreCase = true) ||
+                        !isPeerPermanent(cleanSender)) return@launch
                     val vault = p2pVaultManager?.getStoredPeerVault(targetOwnerHash)
                     if (vault != null) {
                         val jsonStr = p2pVaultManager?.serializeVaultToJson(vault) ?: ""
@@ -1240,7 +1245,9 @@ class PessoasAquiRepository(
                     try {
                         val jsonStr = String(E2eeCryptoEngine.Base64Helper.decode(b64), Charsets.UTF_8)
                         val vault = p2pVaultManager?.deserializeVaultFromJson(jsonStr)
-                        if (vault != null) {
+                        if (vault != null &&
+                            cleanId(vault.ownerIdentityHash).equals(getMyIdentity(), ignoreCase = true) &&
+                            isPeerPermanent(cleanSender)) {
                             val current = _receivedVaultResponses.value.toMutableList()
                             current.add(vault)
                             _receivedVaultResponses.value = current
@@ -2938,13 +2945,20 @@ class PessoasAquiRepository(
         val myIdentity = cryptoIdentityManager.getTechnicalIdentity().removePrefix("peer-").trim().lowercase()
         val allPeers = discoveredPeople.value
         val targets = allPeers.filter { it.isFamily || it.isMutualConnection }
+        // Aparelho formatado ainda não terá os contatos restaurados. Consultar
+        // os vínculos mútuos do servidor antes de declarar que não há familiares.
+        val ids = targets.map { cleanId(it.technicalIdentityHash) }.filter { it.isNotBlank() }
+            .ifEmpty {
+                networkClient.fetchConnectionStatus(myIdentity).getOrNull()?.mutual
+                    ?.map { cleanId(it) }?.filter { it.isNotBlank() } ?: emptyList()
+            }.distinct()
 
-        if (targets.isEmpty()) {
-            return Result.failure(Exception("Nenhum familiar ou conexão mútua conectada no momento. Utilize a restauração por arquivo de backup (.backup)."))
+        if (ids.isEmpty()) {
+            return Result.failure(Exception("Nenhuma conexão de confiança disponível para consultar o cofre. Use o arquivo .backup pessoal."))
         }
 
-        for (p in targets) {
-            sendPrivateMessage(p.technicalIdentityHash, "[VAULT_QUERY:$myIdentity]")
+        for (peerId in ids) {
+            sendPrivateMessage(peerId, "[VAULT_QUERY:$myIdentity]")
         }
 
         // Aguarda respostas silenciosas dos aparelhos por até 3.5 segundos
