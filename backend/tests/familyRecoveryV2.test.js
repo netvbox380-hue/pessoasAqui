@@ -38,6 +38,10 @@ function setup(){
       delegations.set(args[0]+'|'+args[1],{key:args[2],active:true});
       return {rowCount:1,rows:[{target_identity:args[0]}]};
     }
+    if(sql.includes('UPDATE recovery_delegations SET is_active=FALSE')){
+      const d=delegations.get(args[0]+'|'+args[1]);if(d)d.active=false;
+      return {rowCount:d?1:0,rows:[]};
+    }
     if(sql.includes('SELECT family_public_key FROM recovery_delegations')){
       const d=delegations.get(args[0]+'|'+args[1]);
       return {rowCount:d?.active?1:0,rows:d?.active?[{family_public_key:d.key}]:[]};
@@ -65,7 +69,10 @@ function setup(){
       auths.set(args[0],args[1]);return {rowCount:1,rows:[{generation:args[2]}]};
     }
     if(sql.includes('UPDATE recovery_grants SET used_at=')){
-      for(const g of grants.values())if(g.target_identity===args[0]&&!g.used_at)g.used_at=new Date();
+      for(const g of grants.values()) {
+        if(g.target_identity===args[0] && (args.length<2||g.family_identity===args[1])
+            && !g.used_at) g.used_at=new Date();
+      }
       return {rowCount:1,rows:[]};
     }
     if(sql.includes('UPDATE devices SET'))return {rowCount:0,rows:[]};
@@ -88,6 +95,10 @@ function setup(){
     targetIdentity:owner.id,familyIdentity:by.id,familyPublicKey:by.pub,
     identityProof:proof(who,'RECOVERY_DELEGATE',owner.id,by.id,by.pub)
   });
+  const revoke=()=>post('/api/family/recovery/revoke',{
+    targetIdentity:owner.id,familyIdentity:family.id,
+    identityProof:proof(owner,'RECOVERY_REVOKE',owner.id,family.id)
+  });
   const issue=(by=family)=>post('/api/family/recovery/issue',{
     targetIdentity:owner.id,familyIdentity:by.id,
     identityProof:proof(by,'RECOVERY_ISSUE',by.id,owner.id)
@@ -96,7 +107,7 @@ function setup(){
     recoveryKey:token,newDeviceIdentity:newWho.id,
     identityProof:proof(newWho,'RECOVERY_CLAIM',newWho.id,'',token)
   });
-  return {post,delegate,issue,claim,auths,delegations,grants,nonceSet,
+  return {post,delegate,revoke,issue,claim,auths,delegations,grants,nonceSet,
     fail:()=>failSql=true,offline:()=>postgres=false};
 }
 test('normal family and owner identity keys self-certify',()=>{
@@ -151,4 +162,13 @@ test('system fails closed with PostgreSQL unavailable',async()=>{
 test('weak legacy eight-char recovery keys are invalid',async()=>{
   const a=setup();await a.delegate();
   assert.equal((await a.claim('PA-REC-994A1F82')).status,400);
+});
+
+test('owner signed revocation disables family and pending recovery code',async()=>{
+  const a=setup();
+  assert.equal((await a.delegate()).status,200);
+  const grant=(await a.issue()).data;
+  assert.equal((await a.revoke()).status,200);
+  assert.equal((await a.claim(grant.recoveryKey)).status,410);
+  assert.equal((await a.issue()).status,403);
 });
