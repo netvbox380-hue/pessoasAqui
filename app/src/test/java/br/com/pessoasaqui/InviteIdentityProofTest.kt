@@ -73,6 +73,39 @@ class InviteIdentityProofTest {
         assertTrue(original.contains("REDEEM"))
     }
 
+    @Test fun familyRecoveryClaimIsBoundToSecretAndDeviceIdentity() {
+        val hash = InviteIdentityProof.tokenDigest("PA-REC-" + "A".repeat(64))
+        val claim = InviteIdentityProof.canonical(
+            "RECOVERY_CLAIM", "ABCDEF0123456789", "", "", hash,
+            1700000000000L, "12345678-1234-1234-1234-123456789abc"
+        )
+        val tampered = InviteIdentityProof.canonical(
+            "RECOVERY_CLAIM", "AABBCC0123456789", "", "", hash,
+            1700000000000L, "12345678-1234-1234-1234-123456789abc"
+        )
+        val invite = InviteIdentityProof.canonical(
+            "REDEEM", "ABCDEF0123456789", "", "", hash,
+            1700000000000L, "12345678-1234-1234-1234-123456789abc"
+        )
+        assertNotEquals(claim, tampered)
+        assertNotEquals(claim, invite)
+    }
+
+    @Test fun recoveryAuthorizationBindsFamilyPublicKey() {
+        val key = "family-public-key"
+        val digest = InviteIdentityProof.tokenDigest(key)
+        val first = InviteIdentityProof.canonical(
+            "RECOVERY_DELEGATE", "ABCDEF0123456789", "1234567890ABCDEF", "", digest,
+            1700000000000L, "12345678-1234-1234-1234-123456789abc"
+        )
+        val altered = InviteIdentityProof.canonical(
+            "RECOVERY_DELEGATE", "ABCDEF0123456789", "1234567890ABCDEF", "",
+            InviteIdentityProof.tokenDigest("other-public-key"),
+            1700000000000L, "12345678-1234-1234-1234-123456789abc"
+        )
+        assertNotEquals(first, altered)
+    }
+
     @Test fun fallbackSignatureIsNeverSentAsAuthentication() {
         try {
             InviteIdentityProof.create(
