@@ -181,7 +181,7 @@ fun EntreNaSuaRecoveryScreen(
                             value = recoveryKeyInput,
                             onValueChange = { recoveryKeyInput = it.uppercase() },
                             label = { Text("Chave de Recuperação / QR Payload") },
-                            placeholder = { Text("Ex: PA-REC-994A1F82") },
+                            placeholder = { Text("PA-REC- + 64 caracteres hexadecimais") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
                             trailingIcon = {
@@ -212,14 +212,14 @@ fun EntreNaSuaRecoveryScreen(
                                 if (auth != null) {
                                     validatedAuth = auth
                                     statusMessage = "Autorização de ${auth.authorizedByFamilyName} validada!"
-                                } else if (key.startsWith("PA-REC-") || key.length >= 6) {
+                                } else if (Regex("^PA-REC-[A-F0-9]{64}$").matches(key)) {
                                     validatedAuth = RecoveryAuthorization(
                                         targetIdentityHash = "REMOTE",
                                         authorizedByFamilyName = "Familiar Autorizado",
                                         recoveryKey = key,
                                         expiresAtEpochMs = System.currentTimeMillis() + 15 * 60 * 1000
                                     )
-                                    statusMessage = "Chave de autorização identificada. Prossiga para o PIN."
+                                    statusMessage = "Formato reconhecido. A validade será conferida pelo servidor ao confirmar."
                                 } else {
                                     statusMessage = "Chave inválida ou expirada. Verifique se o familiar gerou a chave recentemente."
                                 }
@@ -274,14 +274,14 @@ fun EntreNaSuaRecoveryScreen(
                         )
 
                         Text(
-                            text = "O familiar NÃO conhece o seu PIN. Digite seu PIN pessoal cadastrado nesta identidade.",
+                            text = "O familiar não conhece seu PIN. Ele será usado somente para abrir o backup criptografado, se disponível. A transferência da identidade exige autorização familiar assinada, verificada pelo servidor.",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
 
                         OutlinedTextField(
                             value = pinInput,
                             onValueChange = { pinInput = it },
-                            label = { Text("Seu PIN Pessoal") },
+                            label = { Text("PIN do backup criptografado") },
                             singleLine = true,
                             enabled = !lockoutState.isLocked,
                             modifier = Modifier.fillMaxWidth(),
@@ -334,7 +334,7 @@ fun EntreNaSuaRecoveryScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("Restaurando...", fontWeight = FontWeight.Bold)
                             } else {
-                                Text("Confirmar PIN e Restaurar Identidade", fontWeight = FontWeight.Bold)
+                                Text("Confirmar autorização e transferir identidade", fontWeight = FontWeight.Bold)
                             }
                         }
                     }
