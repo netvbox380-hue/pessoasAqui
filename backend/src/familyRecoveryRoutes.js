@@ -208,7 +208,8 @@ function registerFamilyRecoveryRoutes(app, deps) {
           throw Object.assign(Error('Solicitação desatualizada após transferência'),{status:409});
         const delegated=await run(
           `SELECT family_public_key FROM recovery_delegations
-             WHERE target_identity=$1 AND family_identity=$2 AND is_active=TRUE`,
+             WHERE target_identity=$1 AND family_identity=$2 AND is_active=TRUE
+             FOR SHARE`,
           [grant.target_identity,grant.family_identity]);
         if(delegated.rows.length!==1||
            delegated.rows[0].family_public_key!==grant.family_public_key)
