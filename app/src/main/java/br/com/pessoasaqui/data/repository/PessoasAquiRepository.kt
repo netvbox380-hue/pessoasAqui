@@ -2985,8 +2985,14 @@ class PessoasAquiRepository(
         // os vínculos mútuos do servidor antes de declarar que não há familiares.
         val ids = targets.map { cleanId(it.technicalIdentityHash) }.filter { it.isNotBlank() }
             .ifEmpty {
-                networkClient.fetchConnectionStatus(myIdentity).getOrNull()?.mutual
-                    ?.map { cleanId(it) }?.filter { it.isNotBlank() } ?: emptyList()
+                val status = networkClient.fetchConnectionStatus(myIdentity).getOrNull()
+                if (status != null) {
+                    // Após formatar, reidratar vínculos persistentes antes de
+                    // tentar o canal permanente de cofre criptografado.
+                    reconcileConnectionStatus(status.markedByMe, status.markingMe, status.mutual)
+                }
+                status?.mutual?.map { cleanId(it) }?.filter { it.isNotBlank() }
+                    ?: emptyList()
             }.distinct()
 
         if (ids.isEmpty()) {
