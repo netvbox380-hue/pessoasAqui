@@ -56,6 +56,7 @@ fun ConversationsTab(
     contactTagAssignments: Map<String, Set<String>> = emptyMap()
 ) {
     var showPasteInviteDialog by remember { mutableStateOf(false) }
+    var showConversationsDrawer by remember { mutableStateOf(false) }
     var scannedInviteText by remember { mutableStateOf("") }
     var isScanningInviteQr by remember { mutableStateOf(false) }
     var qrScannerError by remember { mutableStateOf<String?>(null) }
@@ -88,7 +89,6 @@ fun ConversationsTab(
             }
             .addOnCompleteListener { isScanningInviteQr = false }
     }
-    var showConversationsDrawer by remember { mutableStateOf(false) }
     var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showAllImportant by rememberSaveable { mutableStateOf(false) }
