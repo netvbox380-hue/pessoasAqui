@@ -13,6 +13,16 @@ class InviteIdentityProofTest {
     private fun identityFromDer(der: ByteArray) = MessageDigest.getInstance("SHA-256")
         .digest(der).take(8).joinToString("") { "%02X".format(it.toInt() and 0xff) }
 
+    @Test fun canonicalPayloadMatchesNodeFixedVector() {
+        assertEquals(
+            "17:PA-INVITE-AUTH-V1|6:CREATE|16:ABCDEF0123456789|4:João|0:|0:|13:1700000000000|36:12345678-1234-1234-1234-123456789abc",
+            InviteIdentityProof.canonical(
+                "CREATE", "ABCDEF0123456789", "João", "", "",
+                1700000000000L, "12345678-1234-1234-1234-123456789abc"
+            )
+        )
+    }
+
     @Test fun tokenDigestUsesSha256() {
         assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             InviteIdentityProof.tokenDigest("abc"))
