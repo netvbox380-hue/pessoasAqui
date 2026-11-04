@@ -428,7 +428,8 @@ open class PessoasAquiNetworkClient(
                                     distanceMeters = o.optDouble("distanceMeters", 10.0),
                                     proximityLabel = o.optString("proximityLabel", "Profissional Próximo • 10m"),
                                     imageBase64 = o.optString("imageBase64").takeIf { it.isNotBlank() },
-                                    externalLink = o.optString("externalLink").takeIf { it.isNotBlank() }
+                                    externalLink = o.optString("externalLink").takeIf { it.isNotBlank() },
+                                    createdAtMs = o.optLong("createdAt", System.currentTimeMillis())
                                 )
                                 onOfferPublished?.invoke(item)
                             }
@@ -779,7 +780,8 @@ open class PessoasAquiNetworkClient(
                                 distanceMeters = o.optDouble("distanceMeters", 10.0),
                                 proximityLabel = o.optString("proximityLabel", "Profissional Próximo • 10m"),
                                 imageBase64 = o.optString("imageBase64").takeIf { it.isNotBlank() },
-                                externalLink = o.optString("externalLink").takeIf { it.isNotBlank() }
+                                externalLink = o.optString("externalLink").takeIf { it.isNotBlank() },
+                                createdAtMs = o.optLong("createdAt", System.currentTimeMillis())
                             )
                         )
                     }
