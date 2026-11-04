@@ -46,11 +46,13 @@ data class InviteIdentityProof(
             inviteId: String = "", token: String = ""
         ): InviteIdentityProof {
             require(operation in setOf("CREATE", "REDEEM",
-                "RECOVERY_DELEGATE", "RECOVERY_ISSUE", "RECOVERY_CLAIM", "RECOVERY_REVOKE"))
+                "RECOVERY_DELEGATE", "RECOVERY_ISSUE", "RECOVERY_CLAIM", "RECOVERY_REVOKE",
+                "OFFER_PUBLISH", "OFFER_DELETE"))
             val timestamp = System.currentTimeMillis()
             val nonce = UUID.randomUUID().toString()
             val hash = if (operation in setOf("REDEEM",
-                    "RECOVERY_DELEGATE", "RECOVERY_CLAIM")) tokenDigest(token) else ""
+                    "RECOVERY_DELEGATE", "RECOVERY_CLAIM",
+                    "OFFER_PUBLISH", "OFFER_DELETE")) tokenDigest(token) else ""
             val payload = canonical(
                 operation, identity.removePrefix("peer-").trim(), alias,
                 inviteId, hash, timestamp, nonce
