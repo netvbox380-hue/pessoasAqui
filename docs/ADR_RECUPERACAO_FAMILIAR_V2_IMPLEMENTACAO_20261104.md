@@ -17,6 +17,10 @@ A recuperação de identidade e a restauração do histórico são processos dis
   `RECOVERY_ISSUE` para a identidade do dono. O servidor exige delegação
   ativa e responde código de 256 bits `PA-REC-<64 hex>`, com 15 minutos
   de validade. Só o SHA-256 do código fica no PostgreSQL.
+- **Revogação explícita do familiar:** o titular assina
+  `RECOVERY_REVOKE`; o servidor desativa a delegação e invalida os códigos
+  pendentes em uma única transação. A autorização de recuperação pode ser
+  desativada sem desfazer a conexão familiar ou o chat.
 - **Reivindicação no aparelho novo:** assina `RECOVERY_CLAIM` vinculando
   a própria identidade recém-criada ao hash do código. O servidor confere
   token, uso único, validade, vínculo familiar vigente e geração da
