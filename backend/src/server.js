@@ -11,12 +11,13 @@ const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 const crypto = require('crypto');
-const { initDatabase, localStore, isPostgres, query } = require('./db');
+const { initDatabase, localStore, isPostgres, query, withTransaction } = require('./db');
 const { hashPin, verifyPinHash, generateNonce, calculateLockoutDurationSeconds } = require('./crypto');
 const {
   INVITE_LIFETIME_MS, tokenDigest, verifyStoredToken, validateInviteId, validateInviteToken
 } = require('./inviteSecurity');
 const { verifyInviteIdentityProof, deriveInviteId } = require('./inviteAuth');
+const { registerFamilyRecoveryRoutes } = require('./familyRecoveryRoutes');
 
 function verifyClientEcdsaSignature(publicKeyBase64, dataString, signatureBase64) {
   if (!publicKeyBase64 || !signatureBase64) return false;
@@ -95,6 +96,41 @@ app.use('/legal', express.static(path.join(__dirname, '../public/legal')));
 setTimeout(async () => {
   if (isPostgres()) {
     try {
+      // Esquema aditivo v2: não altera registros antigos, exige persistência.
+      await query(`CREATE TABLE IF NOT EXISTS identity_key_bindings (
+        identity_id VARCHAR(64) PRIMARY KEY REFERENCES identities(id) ON DELETE CASCADE,
+        public_key_spki TEXT NOT NULL,
+        generation BIGINT NOT NULL DEFAULT 1,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await query(`CREATE TABLE IF NOT EXISTS recovery_delegations (
+        target_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        family_public_key TEXT NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY(target_identity,family_identity)
+      )`);
+      await query(`CREATE TABLE IF NOT EXISTS recovery_proof_nonces (
+        identity_id VARCHAR(64) NOT NULL,
+        operation VARCHAR(32) NOT NULL,
+        nonce VARCHAR(64) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY(identity_id,operation,nonce)
+      )`);
+      await query(`CREATE TABLE IF NOT EXISTS recovery_grants (
+        id VARCHAR(64) PRIMARY KEY,
+        token_hash CHAR(64) NOT NULL UNIQUE,
+        target_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        family_public_key TEXT NOT NULL,
+        expected_generation BIGINT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        used_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_recovery_grants_target
+        ON recovery_grants(target_identity,expires_at)`);
       await query(`CREATE TABLE IF NOT EXISTS invites (
         id VARCHAR(64) PRIMARY KEY,
         token VARCHAR(64) NOT NULL,
@@ -373,6 +409,33 @@ wss.on('connection', (ws, req) => {
           }));
           setTimeout(() => { try { ws.close(4003, 'Banned'); } catch (_) {} }, 200);
           return;
+        }
+
+        // Após recuperação, a chave antiga NÃO pode recuperar a sessão WS.
+        // Demais contas permanecem sob protocolo legado, preservado nesta etapa.
+        if (process.env.DATABASE_URL) {
+          try {
+            if (!isPostgres()) throw new Error('Banco indisponível');
+            const active = await query(
+              'SELECT public_key_spki FROM identity_key_bindings WHERE identity_id=$1',
+              [authenticatedIdentity]);
+            if (!isPostgres()) throw new Error('Banco indisponível');
+            const boundKey = active.rows[0]?.public_key_spki;
+            if (boundKey) {
+              if (!msg.publicKey || msg.publicKey !== boundKey || !msg.signature ||
+                  !msg.authNonce || !verifyClientEcdsaSignature(
+                    boundKey, authenticatedIdentity + ':' + msg.authNonce, msg.signature)) {
+                ws.send(JSON.stringify({type:'AUTH_FAILED',message:'Chave da identidade revogada.'}));
+                try { ws.close(4001,'Expired identity key'); } catch (_) {}
+                return;
+              }
+              registeredDevicePublicKeys.set(kAuth,boundKey);
+            }
+          } catch (_) {
+            ws.send(JSON.stringify({type:'AUTH_FAILED',message:'Autenticação indisponível.'}));
+            try { ws.close(4001,'Identity verification unavailable'); } catch (_) {}
+            return;
+          }
         }
 
         // Blindagem criptográfica contra sequestro de identidade WebSocket (Zero-Knowledge Auth)
@@ -1079,6 +1142,21 @@ app.post('/api/connections/unmark', async (req, res) => {
 // armazenamento em terceiros. Somente o banco decide quem o resgatou.
 const inviteDbRequired = Boolean(process.env.DATABASE_URL);
 const inviteMutex = new Set();
+// Caso uma identidade tenha sido recuperada, APENAS a chave registrada
+// atomicamente como ativa no PostgreSQL pode assinar convites.
+async function verifyActiveInviteProof(operation, identity, alias, inviteId, tokenHash, proof) {
+  let binding = null;
+  if (inviteDbRequired) {
+    if (!isPostgres()) throw new Error('Banco de autenticação indisponível');
+    const found = await query(
+      'SELECT public_key_spki FROM identity_key_bindings WHERE identity_id=$1',
+      [identity]);
+    if (!isPostgres()) throw new Error('Banco de autenticação indisponível');
+    binding = found.rows[0]?.public_key_spki || null;
+  }
+  return verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHash, proof,
+    Date.now(), binding);
+}
 
 app.post('/api/invites/create', async (req, res) => {
   const sender = cleanId(req.body?.senderIdentity);
@@ -1092,7 +1170,11 @@ app.post('/api/invites/create', async (req, res) => {
 
   // Autenticação vinculada à chave que gerou a identidade técnica (SHA-256/SPKI).
   // NÃO aceitar somente senderIdentity, nem uma chave pública não vinculada ao ID.
-  if (!verifyInviteIdentityProof('CREATE', sender, alias, '', '', req.body?.identityProof)) {
+  let creatorVerified = false;
+  try {
+    creatorVerified = await verifyActiveInviteProof('CREATE', sender, alias, '', '', req.body?.identityProof);
+  } catch (_) { return res.status(503).json({error:'Autenticação indisponível.'}); }
+  if (!creatorVerified) {
     return res.status(401).json({ error: 'Identidade não autenticada. Atualize o aplicativo ou valide a recuperação da identidade.' });
   }
   // ID determinístico do nonce assinado: replay não gera segundo convite,
@@ -1162,8 +1244,12 @@ app.post('/api/invites/redeem', async (req, res) => {
   }
   // O token bearer sozinho não autoriza assumir receiverIdentity.
   // A assinatura vincula a aceitação ao titular da identidade destinatária.
-  if (!verifyInviteIdentityProof('REDEEM', receiver, recAlias,
-      inviteId, tokenDigest(token), req.body?.identityProof)) {
+  let receiverVerified = false;
+  try {
+    receiverVerified = await verifyActiveInviteProof('REDEEM', receiver, recAlias,
+      inviteId, tokenDigest(token), req.body?.identityProof);
+  } catch (_) { return res.status(503).json({error:'Autenticação indisponível.'}); }
+  if (!receiverVerified) {
     return res.status(401).json({ error: 'Identidade de quem aceita não autenticada. Atualize o aplicativo.' });
   }
 
@@ -1463,164 +1549,11 @@ app.get('/.well-known/assetlinks.json', (req, res) => {
 });
 
 /**
- * Emissão de Autorização de Recuperação por Familiar Autorizado (Seções 19 e 20)
+ * Fluxo de recuperação familiar v2. O antigo protocolo sem autorização
+ * criptográfica foi removido para impedir tomada de conta.
  */
-app.post('/api/family/recovery/issue', async (req, res) => {
-  const { targetIdentity, familyIdentity } = req.body;
-
-  if (!targetIdentity || !familyIdentity) {
-    return res.status(400).json({ error: 'Identidade alvo e familiar obrigatórios.' });
-  }
-
-  const recoveryKey = `PA-REC-${generateNonce().slice(0, 8).toUpperCase()}`;
-  const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutos
-
-  if (isPostgres()) {
-    await query(
-      `INSERT INTO recovery_authorizations (id, target_identity, issued_by_family, recovery_key, expires_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [generateNonce().slice(0, 16), targetIdentity, familyIdentity, recoveryKey, expiresAt]
-    );
-  } else {
-    localStore.recoveryAuthorizations.set(recoveryKey, {
-      targetIdentity,
-      familyIdentity,
-      recoveryKey,
-      expiresAt: expiresAt.getTime(),
-      failedAttempts: 0,
-      lockedUntil: 0,
-      isUsed: false
-    });
-  }
-
-  res.json({
-    success: true,
-    recoveryKey,
-    expiresAt,
-    notice: 'Válido por 15 minutos • Uso único • O familiar NÃO deve saber o PIN do usuário.'
-  });
-});
-
-/**
- * Validação de PIN e Transferência de Identidade no Novo Aparelho (“🔐 Entre na sua”)
- * Aplica estritamente a escada de bloqueios (Seção 23) e o isolamento de dispositivo (Seção 24).
- */
-app.post('/api/family/recovery/claim', async (req, res) => {
-  const { recoveryKey, pin, newDeviceFingerprint } = req.body;
-
-  if (!recoveryKey || !pin) {
-    return res.status(400).json({ error: 'Chave de recuperação e PIN obrigatórios.' });
-  }
-
-  let authRecord = null;
-
-  if (isPostgres()) {
-    const result = await query(
-      `SELECT * FROM recovery_authorizations WHERE recovery_key = $1 AND is_used = FALSE`,
-      [recoveryKey]
-    );
-    authRecord = result.rows[0];
-  } else {
-    authRecord = localStore.recoveryAuthorizations.get(recoveryKey);
-  }
-
-  if (!authRecord) {
-    return res.status(404).json({ error: 'Chave de recuperação inválida, já utilizada ou inexistente.' });
-  }
-
-  const now = Date.now();
-  const expiresAtMs = new Date(authRecord.expires_at || authRecord.expiresAt).getTime();
-
-  if (now > expiresAtMs) {
-    return res.status(410).json({ error: 'Esta autorização de recuperação expirou (limite de 15 minutos).' });
-  }
-
-  const lockedUntilMs = authRecord.locked_until ? new Date(authRecord.locked_until).getTime() : (authRecord.lockedUntil || 0);
-  if (now < lockedUntilMs) {
-    const remainingSec = Math.ceil((lockedUntilMs - now) / 1000);
-    return res.status(429).json({
-      error: `Aguarde o término do bloqueio de segurança: ${remainingSec}s restantes.`,
-      remainingSeconds: remainingSec
-    });
-  }
-
-  // Busca o hash do PIN da identidade alvo
-  let expectedPinHash = '';
-  if (isPostgres()) {
-    const identRes = await query(`SELECT pin_salted_hash FROM identities WHERE id = $1`, [authRecord.target_identity]);
-    expectedPinHash = identRes.rows[0]?.pin_salted_hash;
-  } else {
-    expectedPinHash = localStore.identities.get(authRecord.targetIdentity)?.pinHash;
-  }
-
-  const isPinValid = verifyPinHash(pin, expectedPinHash);
-
-  if (!isPinValid) {
-    // Incrementa erros de tentativa
-    const currentAttempts = (authRecord.failed_pin_attempts || authRecord.failedAttempts || 0) + 1;
-    const lockoutSec = calculateLockoutDurationSeconds(currentAttempts);
-
-    if (currentAttempts >= 10 || lockoutSec === -1) {
-      if (isPostgres()) {
-        await query(`UPDATE recovery_authorizations SET is_used = TRUE WHERE recovery_key = $1`, [recoveryKey]);
-      } else {
-        authRecord.isUsed = true;
-      }
-      return res.status(403).json({ error: '10ª tentativa incorreta: processo de recuperação encerrado definitivamente.' });
-    }
-
-    const newLockedUntil = lockoutSec > 0 ? new Date(now + lockoutSec * 1000) : null;
-
-    if (isPostgres()) {
-      await query(
-        `UPDATE recovery_authorizations SET failed_pin_attempts = $1, locked_until = $2 WHERE recovery_key = $3`,
-        [currentAttempts, newLockedUntil, recoveryKey]
-      );
-    } else {
-      authRecord.failedAttempts = currentAttempts;
-      authRecord.lockedUntil = newLockedUntil ? newLockedUntil.getTime() : 0;
-    }
-
-    return res.status(401).json({
-      error: `PIN incorreto. Tentativa ${currentAttempts} de 10.`,
-      lockoutSeconds: lockoutSec
-    });
-  }
-
-  // ========================================================
-  // SUCESSO! A IDENTIDADE É TRANSFERIDA PARA O NOVO APARELHO
-  // REGRA 18: 1 IDENTIDADE = 1 DISPOSITIVO ATIVO
-  // ========================================================
-  const targetId = authRecord.target_identity || authRecord.targetIdentity;
-
-  if (isPostgres()) {
-    await query(`UPDATE recovery_authorizations SET is_used = TRUE WHERE recovery_key = $1`, [recoveryKey]);
-    await query(`UPDATE devices SET is_active = FALSE, revoked_at = NOW() WHERE identity_id = $1`, [targetId]);
-    await query(
-      `INSERT INTO devices (id, identity_id, device_fingerprint, is_active)
-       VALUES ($1, $2, $3, TRUE)`,
-      [generateNonce().slice(0, 16), targetId, newDeviceFingerprint || 'device-fingerprint']
-    );
-  } else {
-    authRecord.isUsed = true;
-  }
-
-  // Emite sinal imediato via WebSocket para revogar a sessão do aparelho antigo
-  const oldWs = activeSockets.get(cleanId(targetId));
-  if (oldWs && oldWs.readyState === WebSocket.OPEN) {
-    try {
-      oldWs.send(JSON.stringify({
-        type: 'SESSION_REVOKED',
-        message: '🔐 Sua identidade PessoasAqui foi transferida para um novo aparelho.'
-      }));
-    } catch (_) {}
-  }
-
-  res.json({
-    success: true,
-    targetIdentity: targetId,
-    message: 'Identidade recuperada e transferida com sucesso. O dispositivo antigo foi revogado.'
-  });
+registerFamilyRecoveryRoutes(app, {
+  query, withTransaction, isPostgres, activeSockets, WebSocket
 });
 
 // =========================================================================
