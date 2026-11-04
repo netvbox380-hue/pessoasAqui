@@ -29,7 +29,7 @@ function publicKeyIdentity(base64) {
 
 function registerFamilyRecoveryRoutes(app, deps) {
   const {query, withTransaction, isPostgres, activeSockets, WebSocket} = deps;
-  const ready = () => Boolean(process.env.DATABASE_URL && isPostgres());
+  const ready = () => Boolean((deps.databaseRequired ?? Boolean(process.env.DATABASE_URL)) && isPostgres());
   function dbUnavailable(res) { return res.status(503).json({error:'Recuperação segura indisponível. Nenhuma identidade foi transferida.'}); }
 
   async function boundKey(identity, execute = query) {
