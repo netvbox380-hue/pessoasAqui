@@ -3260,7 +3260,8 @@ class PessoasAquiRepository(
      */
     suspend fun executeDistributedBackup(
         pin: String,
-        onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> }
+        onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> },
+        recoverySecret: String? = null
     ): Result<Int> {
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
@@ -3290,7 +3291,8 @@ class PessoasAquiRepository(
             ownerAlias = myAlias,
             privateChats = privateChats,
             localMural = localMural,
-            contacts = myContacts
+            contacts = myContacts,
+            recoverySecret = recoverySecret
         )
 
         val jsonStr = vm.serializeVaultToJson(vault)
@@ -3333,7 +3335,8 @@ class PessoasAquiRepository(
      */
     suspend fun queryAndRestoreFromFamilyVault(
         pin: String,
-        onStatusUpdate: (String) -> Unit = {}
+        onStatusUpdate: (String) -> Unit = {},
+        recoverySecret: String? = null
     ): Result<Int> {
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
@@ -3384,7 +3387,7 @@ class PessoasAquiRepository(
 
         onStatusUpdate("Cofre versão ${bestVault.version} localizado! Descriptografando...")
 
-        val restoreResult = vm.restoreFromVaultPackage(bestVault, pin)
+        val restoreResult = vm.restoreFromVaultPackage(bestVault, pin, recoverySecret)
         if (restoreResult.isFailure) {
             return Result.failure(restoreResult.exceptionOrNull() ?: Exception("Falha na descriptografia"))
         }
@@ -3406,7 +3409,7 @@ class PessoasAquiRepository(
     /**
      * Exporta o cofre em formato texto/JSON cifrado para contingência pessoal.
      */
-    fun exportLocalBackupJson(pin: String): Result<String> {
+    fun exportLocalBackupJson(pin: String, recoverySecret: String? = null): Result<String> {
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
 
@@ -3435,7 +3438,8 @@ class PessoasAquiRepository(
             ownerAlias = myAlias,
             privateChats = privateChats,
             localMural = localMural,
-            contacts = myContacts
+            contacts = myContacts,
+            recoverySecret = recoverySecret
         )
 
         val jsonStr = vm.serializeVaultToJson(vault)
@@ -3445,14 +3449,14 @@ class PessoasAquiRepository(
     /**
      * Restaura o cofre a partir de um arquivo/JSON de backup local.
      */
-    fun restoreFromLocalBackupJson(jsonString: String, pin: String): Result<Int> {
+    fun restoreFromLocalBackupJson(jsonString: String, pin: String, recoverySecret: String? = null): Result<Int> {
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
 
         val vault = vm.deserializeVaultFromJson(jsonString)
             ?: return Result.failure(Exception("Arquivo de backup inválido ou incompatível."))
 
-        val restoreResult = vm.restoreFromVaultPackage(vault, pin)
+        val restoreResult = vm.restoreFromVaultPackage(vault, pin, recoverySecret)
         if (restoreResult.isFailure) {
             return Result.failure(restoreResult.exceptionOrNull() ?: Exception("PIN incorreto ou falha na descriptografia."))
         }
