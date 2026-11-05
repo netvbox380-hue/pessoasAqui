@@ -230,4 +230,48 @@ class P2PVaultManagerTest {
         }
     }
 
+    @Test
+    fun testV3RequiresIndependentSecretAndRejectsPinOnlyAttack() {
+        val secret = P2PVaultManager.generateRecoverySecret()
+        val otherSecret = P2PVaultManager.generateRecoverySecret()
+        assertTrue(secret.matches(Regex("^PA-VAULT-V3-[0-9A-F]{64}$")))
+        assertNotEquals(secret, otherSecret)
+        val vault = vaultManager.createVaultPackage(
+            pin = "1234",
+            ownerIdentityHash = "abcdef1234567890",
+            ownerAlias = "Alice",
+            privateChats = mapOf("bob" to listOf(
+                ChatMessage(senderId = "me", senderAlias = "Alice", text = "Mensagem privada", isFromMe = true)
+            )),
+            localMural = emptyList(),
+            recoverySecret = secret
+        )
+        assertEquals(3, vault.formatVersion)
+        assertFalse("O segredo jamais deve aparecer no arquivo serializado",
+            vaultManager.serializeVaultToJson(vault).contains(secret))
+        assertTrue("PIN sozinho nunca deve abrir um V3",
+            vaultManager.restoreFromVaultPackage(vault, "1234").isFailure)
+        assertTrue("Segredo correto com PIN incorreto deve falhar",
+            vaultManager.restoreFromVaultPackage(vault, "0000", secret).isFailure)
+        assertTrue("PIN correto com segredo incorreto deve falhar",
+            vaultManager.restoreFromVaultPackage(vault, "1234", otherSecret).isFailure)
+        val restored = vaultManager.restoreFromVaultPackage(vault, "1234", secret)
+        assertTrue(restored.exceptionOrNull()?.message ?: "", restored.isSuccess)
+        assertEquals("Mensagem privada", restored.getOrThrow().privateChats["bob"]?.first()?.text)
+        assertTrue("Metadados autenticados impedem adulteração",
+            vaultManager.restoreFromVaultPackage(vault.copy(ownerAlias="Mallory"), "1234", secret).isFailure)
+        assertTrue("Troca de versão para V2 não pode abrir um backup V3",
+            vaultManager.restoreFromVaultPackage(vault.copy(formatVersion=2), "1234", secret).isFailure)
+    }
+
+    @Test
+    fun testV3CanBeStoredWithoutAccessToRecoverySecret() {
+        val vault = vaultManager.createVaultPackage(
+            pin="123456",ownerIdentityHash="aabbccddeeff0011",ownerAlias="Alice",
+            privateChats=emptyMap(),localMural=emptyList(),
+            recoverySecret=P2PVaultManager.generateRecoverySecret())
+        assertTrue(vaultManager.storePeerVault(vault))
+        assertEquals(3, vaultManager.getStoredPeerVault("aabbccddeeff0011")?.formatVersion)
+    }
+
 }
