@@ -455,6 +455,12 @@ class P2PVaultManager(
             if (file.exists()) {
                 val existingJson = file.readText(Charsets.UTF_8)
                 val existingVault = json.decodeFromString(EncryptedVaultPackage.serializer(), existingJson)
+                // Nunca substituir um cofre V3 por formato fraco baseado apenas no PIN,
+                // mesmo se o atacante anunciar número de versão artificialmente maior.
+                if (existingVault.formatVersion == 3 && vault.formatVersion < 3) {
+                    SafeLog.w(TAG, "Tentativa de downgrade de cofre V3 bloqueada")
+                    return false
+                }
                 if (vault.version <= existingVault.version) {
                     SafeLog.i(TAG, "Cofre recebido ignorado: versão ${vault.version} é mais antiga que ${existingVault.version}")
                     return false
