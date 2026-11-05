@@ -286,6 +286,26 @@ open class BleDirectTransportCoordinator(
     }
 
     /**
+     * Recria estado de identidade GATT após CLAIM familiar confirmado.
+     * Nunca reutilizar tokens/sessões efêmeras associados ao aparelho antigo.
+     */
+    @Synchronized
+    fun onLocalIdentityRecovered() {
+        stop()
+        sessionManager.clearAll()
+        peerDeviceAddresses.clear()
+        aliasesTransmittedPerSession.clear()
+        val identity = cryptoIdentityManager.getTechnicalIdentity()
+        val pair = cryptoIdentityManager.getActiveKeyPair()
+            ?: throw SecurityException("Chave de identidade recuperada indisponível")
+        serverManager.localIdentityHash = identity
+        serverManager.localIdentityKeyPair = pair
+        clientManager.localIdentityHash = identity
+        clientManager.localIdentityKeyPair = pair
+        start()
+    }
+
+    /**
      * Registra o endereço de hardware Bluetooth associado a um hash de identidade técnica.
      */
     fun recordPeerDeviceAddress(identityHash: String, deviceAddress: String) {
