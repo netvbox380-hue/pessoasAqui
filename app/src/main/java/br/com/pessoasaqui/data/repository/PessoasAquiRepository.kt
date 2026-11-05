@@ -3282,7 +3282,11 @@ class PessoasAquiRepository(
     suspend fun executeDistributedBackup(
         pin: String,
         onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> }
-    ): Result<Int> = executeDistributedBackupInternal(pin, currentVaultSecret(), onProgress)
+    ): Result<Int> {
+        val secret = try { currentVaultSecret() }
+            catch (e: Exception) { return Result.failure(e) }
+        return executeDistributedBackupInternal(pin, secret, onProgress)
+    }
 
     /** V3 exige segredo de recuperação entregue por canal separado do cofre. */
     suspend fun executeDistributedBackupWithSecret(
@@ -3467,6 +3471,8 @@ class PessoasAquiRepository(
     fun exportLocalBackupJson(pin: String, recoverySecret: String? = null): Result<String> {
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
+        val secret = try { recoverySecret ?: currentVaultSecret() }
+            catch (e: Exception) { return Result.failure(e) }
 
         if (pin.isNotBlank()) {
             pinSecurityManager.registerUserPin(pin)
@@ -3494,7 +3500,7 @@ class PessoasAquiRepository(
             privateChats = privateChats,
             localMural = localMural,
             contacts = myContacts,
-            recoverySecret = recoverySecret ?: currentVaultSecret()
+            recoverySecret = secret
         )
 
         val jsonStr = vm.serializeVaultToJson(vault)
