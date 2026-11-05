@@ -25,6 +25,7 @@ import br.com.pessoasaqui.core.subscription.PlayBillingManager
 import br.com.pessoasaqui.core.backup.P2PVaultManager
 import br.com.pessoasaqui.core.backup.EncryptedVaultPackage
 import br.com.pessoasaqui.core.backup.VaultContact
+import br.com.pessoasaqui.core.backup.VaultRecoverySecretStore
 import br.com.pessoasaqui.core.crypto.LocalDiskCryptoManager
 import br.com.pessoasaqui.domain.model.RecurringReminder
 import android.util.Base64
@@ -75,6 +76,26 @@ class PessoasAquiRepository(
 
 
     val diskCrypto = LocalDiskCryptoManager(context)
+    private val vaultSecretStore = context?.let { VaultRecoverySecretStore(it) }
+
+    fun isVaultV3Enabled(): Boolean = vaultSecretStore?.hasConfiguredSecret() == true
+
+    fun createVaultV3RecoverySecret(): String =
+        P2PVaultManager.generateRecoverySecret()
+
+    /** A UI só deve chamar depois de o usuário confirmar que guardou cópia FORA do aparelho. */
+    fun enableVaultV3(secret: String): Boolean =
+        vaultSecretStore?.enable(getMyIdentity(), secret) == true
+
+    private fun currentVaultSecret(): String? {
+        val store = vaultSecretStore ?: return null
+        val secret = store.load(getMyIdentity())
+        if (store.hasConfiguredSecret() && secret == null) {
+            throw SecurityException("Chave local V3 indisponível. Recupere o segredo guardado fora do aparelho.")
+        }
+        return secret
+    }
+
     private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.IO)
     private val profilePhotoStore = context?.let {
@@ -3261,7 +3282,7 @@ class PessoasAquiRepository(
     suspend fun executeDistributedBackup(
         pin: String,
         onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> }
-    ): Result<Int> = executeDistributedBackupInternal(pin, null, onProgress)
+    ): Result<Int> = executeDistributedBackupInternal(pin, currentVaultSecret(), onProgress)
 
     /** V3 exige segredo de recuperação entregue por canal separado do cofre. */
     suspend fun executeDistributedBackupWithSecret(
@@ -3304,7 +3325,7 @@ class PessoasAquiRepository(
             privateChats = privateChats,
             localMural = localMural,
             contacts = myContacts,
-            recoverySecret = recoverySecret
+            recoverySecret = recoverySecret ?: currentVaultSecret()
         )
 
         val jsonStr = vm.serializeVaultToJson(vault)
@@ -3463,7 +3484,7 @@ class PessoasAquiRepository(
             privateChats = privateChats,
             localMural = localMural,
             contacts = myContacts,
-            recoverySecret = recoverySecret
+            recoverySecret = recoverySecret ?: currentVaultSecret()
         )
 
         val jsonStr = vm.serializeVaultToJson(vault)
