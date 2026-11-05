@@ -579,8 +579,9 @@ fun PessoasAquiNavHost(
                 onClaimRecovery = { key, pin ->
                     repository.claimRecovery(key, pin)
                 },
-                onRestoreConversations = { pin ->
-                    repository.queryAndRestoreFromFamilyVault(pin)
+                onRestoreConversations = { pin, secret ->
+                    if (secret.isNullOrBlank()) repository.queryAndRestoreFromFamilyVault(pin)
+                    else repository.queryAndRestoreFromFamilyVaultWithSecret(pin, secret)
                 },
                 onRecoverySuccess = { recoveredHash ->
                     repository.transferIdentityToThisDevice(recoveredHash)
