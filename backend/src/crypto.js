@@ -4,43 +4,40 @@ const crypto = require('crypto');
  * Motor Criptográfico do Servidor PessoasAqui
  */
 
-const PIN_GLOBAL_SALT = 'PA_SALT_2026_';
+const PIN_GLOBAL_SALT = 'PA_SALT_2026_'; // Apenas leitura de hashes históricos
+const PIN_KDF_ROUNDS = 310000;
+const HEX_64 = /^[a-f0-9]{64}$/i;
 
-/**
- * Gera hash resistente contra força bruta utilizando PBKDF2 (10.000 iterações).
- */
+/** Novos registros: sal único criptográfico + PBKDF2-SHA256 versionado. */
 function hashPin(pin) {
-  const cleanPin = pin.trim();
-  const derived = crypto.pbkdf2Sync(cleanPin, PIN_GLOBAL_SALT, 10000, 32, 'sha256').toString('hex');
-  return `pbkdf2$${derived}`;
+  if (typeof pin !== 'string' || !pin.trim()) throw new TypeError('PIN inválido');
+  const salt=crypto.randomBytes(16);
+  const digest=crypto.pbkdf2Sync(pin.trim(),salt,PIN_KDF_ROUNDS,32,'sha256');
+  return `pbkdf2v2$${salt.toString('hex')}$${digest.toString('hex')}`;
 }
 
-/**
- * Validação segura de PIN com verificação em tempo constante (proteção contra timing attacks).
- * Oferece compatibilidade com hashes legados SHA-256 e novos hashes PBKDF2.
- */
+/** Verifica V2 e formatos V1 sem permitir downgrade em gravações novas. */
 function verifyPinHash(pin, expectedHash) {
-  if (!expectedHash || typeof expectedHash !== 'string') return false;
-  const cleanPin = pin.trim();
-
-  try {
-    if (expectedHash.startsWith('pbkdf2$')) {
-      const candidate = hashPin(cleanPin);
-      const bufA = Buffer.from(candidate);
-      const bufB = Buffer.from(expectedHash);
-      if (bufA.length !== bufB.length) return false;
-      return crypto.timingSafeEqual(bufA, bufB);
+  if(typeof pin!=='string' || typeof expectedHash!=='string')return false;
+  const clean=pin.trim();
+  if(!clean)return false;
+  try{
+    const parts=expectedHash.split('$');
+    if(parts[0]==='pbkdf2v2' && parts.length===3 &&
+       /^[a-f0-9]{32}$/i.test(parts[1]) && HEX_64.test(parts[2])){
+      const actual=crypto.pbkdf2Sync(clean,Buffer.from(parts[1],'hex'),PIN_KDF_ROUNDS,32,'sha256');
+      return crypto.timingSafeEqual(actual,Buffer.from(parts[2],'hex'));
     }
-
-    // Validação retrocompatível com o formato SHA-256 legado
-    const legacyCandidate = crypto.createHash('sha256').update(PIN_GLOBAL_SALT + cleanPin).digest('hex');
-    const bufA = Buffer.from(legacyCandidate);
-    const bufB = Buffer.from(expectedHash);
-    if (bufA.length !== bufB.length) return false;
-    return crypto.timingSafeEqual(bufA, bufB);
-  } catch (_) {
+    if(parts[0]==='pbkdf2' && parts.length===2 && HEX_64.test(parts[1])){
+      const actual=crypto.pbkdf2Sync(clean,PIN_GLOBAL_SALT,10000,32,'sha256');
+      return crypto.timingSafeEqual(actual,Buffer.from(parts[1],'hex'));
+    }
+    if(HEX_64.test(expectedHash)){
+      const actual=crypto.createHash('sha256').update(PIN_GLOBAL_SALT+clean).digest();
+      return crypto.timingSafeEqual(actual,Buffer.from(expectedHash,'hex'));
+    }
     return false;
-  }
+  }catch(_){return false;}
 }
 
 function generateNonce() {
