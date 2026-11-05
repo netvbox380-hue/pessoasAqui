@@ -67,6 +67,9 @@ fun DistributedBackupDialog(
     var showRestoreFromTextDialog by remember { mutableStateOf(false) }
 
     var pinInput by remember { mutableStateOf("") }
+    var v3RecoverySecret by remember { mutableStateOf("") }
+    var newSecretForSetup by remember { mutableStateOf<String?>(null) }
+    var secretSavedOutsideDevice by remember { mutableStateOf(false) }
     var restoreTextInput by remember { mutableStateOf("") }
 
     val lastEpoch = vaultManager?.getLastBackupEpochMs() ?: 0L
@@ -265,6 +268,39 @@ fun DistributedBackupDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
+                // Ativação consciente: nunca gerar segredo sem exibi-lo e confirmar
+                // que existe uma cópia guardada fora do aparelho.
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = DarkSurface,
+                    border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.4f))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = if (repository.isVaultV3Enabled())
+                                "Cofre V3 protegido por segredo independente ✅"
+                            else "Ativar proteção reforçada do cofre V3",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "Para backups V3, um PIN sozinho não basta. Guarde o segredo em local separado do telefone; os familiares recebem somente o cofre cifrado.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                        if (!repository.isVaultV3Enabled()) {
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(onClick = {
+                                newSecretForSetup = repository.createVaultV3RecoverySecret()
+                                secretSavedOutsideDevice = false
+                            }) { Text("Gerar segredo de recuperação V3") }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(14.dp))
+
                 // Switch: Backup Automático nos Familiares
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -429,6 +465,7 @@ fun DistributedBackupDialog(
                     onClick = {
                         restoreTextInput = ""
                         pinInput = ""
+                        v3RecoverySecret = ""
                         showRestoreFromTextDialog = true
                     }
                 ) {
@@ -446,7 +483,7 @@ fun DistributedBackupDialog(
 
                 // Explicação de Segurança Militar
                 Text(
-                    text = "🔒 Criptografia Zero-Knowledge: O cofre é compactado e trancado com chave AES-256 derivada exclusivamente do seu PIN. Nem os aparelhos familiares nem terceiros conseguem ler qualquer mensagem.",
+                    text = "🔒 Cofres V3 usam AES-256-GCM, PIN e segredo independente. Cofres legados V1/V2 usam apenas PIN e permanecem vulneráveis a tentativas offline.",
                     style = MaterialTheme.typography.labelSmall.copy(
                         color = TextSecondary.copy(alpha = 0.7f),
                         fontSize = 10.sp,
@@ -458,6 +495,61 @@ fun DistributedBackupDialog(
         }
     }
 
+    if (newSecretForSetup != null) {
+        AlertDialog(
+            onDismissRequest = { newSecretForSetup = null },
+            title = { Text("Guarde o segredo V3 fora do celular") },
+            text = {
+                Column {
+                    Text(
+                        "Se o aparelho for formatado, você precisará deste segredo E do PIN para abrir o cofre. " +
+                            "Não salve o segredo junto com o arquivo .backup e não o envie para grupos ou contatos."
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        newSecretForSetup ?: "",
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = RadarCyan
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = secretSavedOutsideDevice,
+                            onCheckedChange = { secretSavedOutsideDevice = it }
+                        )
+                        Text(
+                            "Confirmei que guardei uma cópia independente, fora deste aparelho.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = secretSavedOutsideDevice,
+                    onClick = {
+                        val secret = newSecretForSetup ?: return@Button
+                        try {
+                            if (repository.enableVaultV3(secret)) {
+                                backupStatusMessage = "Proteção V3 ativada. Próximo backup utilizará o segredo independente."
+                                newSecretForSetup = null
+                            } else {
+                                Toast.makeText(context, "Não foi possível ativar o segredo V3.", Toast.LENGTH_LONG).show()
+                            }
+                        } catch (e: Exception) {
+                            Toast.makeText(context, e.message ?: "Falha ao proteger segredo no Keystore", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                ) { Text("Ativar V3") }
+            },
+            dismissButton = {
+                TextButton(onClick = { newSecretForSetup = null }) { Text("Cancelar") }
+            },
+            containerColor = DarkSurface
+        )
+    }
+
     // Modal para digitar o PIN antes de gerar o Backup Distribuído
     if (showPinPromptForBackup) {
         AlertDialog(
@@ -466,7 +558,7 @@ fun DistributedBackupDialog(
             text = {
                 Column {
                     Text(
-                        text = "Digite seu PIN de segurança de 6 dígitos. Este PIN será a única chave capaz de abrir o cofre no futuro:",
+                        text = if (repository.isVaultV3Enabled()) "Informe seu PIN. O cofre V3 também exigirá o segredo independente guardado fora deste aparelho." else "Digite seu PIN. Para proteger contra ataques offline, ative primeiro o cofre V3 e guarde seu segredo separado.",
                         style = MaterialTheme.typography.bodyMedium.copy(color = TextSecondary)
                     )
                     Spacer(modifier = Modifier.height(12.dp))
@@ -621,6 +713,16 @@ fun DistributedBackupDialog(
                         modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = EmeraldGreen)
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = v3RecoverySecret,
+                        onValueChange = {
+                            if (it.length <= 76) v3RecoverySecret = it.trim().uppercase(java.util.Locale.ROOT)
+                        },
+                        label = { Text("Segredo de recuperação V3 (opcional para V1/V2)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             },
             confirmButton = {
@@ -630,7 +732,7 @@ fun DistributedBackupDialog(
                             Toast.makeText(context, "Preencha o cofre e o PIN.", Toast.LENGTH_SHORT).show()
                             return@Button
                         }
-                        val restoreRes = repository.restoreFromLocalBackupJson(restoreTextInput, pinInput)
+                        val restoreRes = repository.restoreFromLocalBackupJson(restoreTextInput, pinInput, v3RecoverySecret.ifBlank { null })
                         if (restoreRes.isSuccess) {
                             val count = restoreRes.getOrNull() ?: 0
                             repository.pinSecurityManager.registerUserPin(pinInput)
