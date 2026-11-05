@@ -6,7 +6,7 @@ Este é o servidor backend em tempo real do **PessoasAqui**, construído em Node
 
 ## 🏗️ 1. Como Rodar Localmente no seu Computador
 
-O servidor pode ser testado localmente sem precisar configurar nada externo imediatamente (ele possui fallback inteligente em memória).
+O servidor pode ser testado localmente sem precisar configurar nada externo imediatamente (ele utiliza memória apenas quando DATABASE_URL não está configurada).
 
 1. Abra o terminal na pasta `backend`:
    ```bash
@@ -25,7 +25,7 @@ O servidor pode ser testado localmente sem precisar configurar nada externo imed
 2. No painel do seu projeto Supabase, acesse **SQL Editor** no menu lateral esquerdo.
 3. Abra o arquivo `backend/schema.sql`, copie todo o conteúdo e cole no SQL Editor do Supabase.
 4. Clique em **Run**.
-5. Todas as 8 tabelas relacionais (`identities`, `devices`, `connections`, `family_relationships`, `recovery_authorizations`, `e2ee_messages`, `moderation_reports`, etc.) serão criadas com índices otimizados!
+5. Todas as tabelas relacionais necessárias (`identities`, `devices`, `connections`, `family_relationships`, `recovery_authorizations`, `e2ee_messages`, `moderation_reports`, etc.) serão criadas com índices otimizados!
 6. Copie a **Connection String (URI)** em:  
    *Project Settings → Database → Connection string (Node.js)*.
 
@@ -44,6 +44,12 @@ O servidor pode ser testado localmente sem precisar configurar nada externo imed
    - **Start Command**: `node src/server.js`
 5. Na seção **Environment Variables**, adicione:
    - `DATABASE_URL`: Cole a Connection String obtida no Supabase.
+   - `ADMIN_USER`: Identificador privado do administrador.
+   - `ADMIN_PASSWORD`: Senha de pelo menos 12 caracteres (sem valor padrão).
+   - `ADMIN_JWT_SECRET`: Segredo aleatório com pelo menos 32 bytes.
+   - `PG_SSL_CA_PEM`: Opcional, somente para CA privada não distribuída no sistema.
+   
+   **Segurança:** aplicar o `backend/schema.sql` ANTES de habilitar a nova API de identidades e convites. PostgreSQL indisponível deve provocar falha explícita (503), não confirmação em RAM.
 6. Clique em **Deploy Web Service**.
 7. O Render gerará uma URL segura HTTPS/WSS (ex: `https://pessoasaqui-backend.onrender.com`), pronta para ser usada pelos celulares Android em qualquer lugar do mundo!
 
@@ -54,3 +60,19 @@ O servidor pode ser testado localmente sem precisar configurar nada externo imed
 - **Relay Cego (Zero-Knowledge)**: O servidor nunca descriptografa o conteúdo das mensagens privadas; ele atua apenas como canal de trânsito de envelopes cifrados.
 - **1 Identidade = 1 Dispositivo Ativo**: Quando uma identidade é recuperada em um novo celular, o servidor emite imediatamente um evento via WebSocket revogando a sessão do celular antigo.
 - **Proteção Progressiva contra Força Bruta no PIN**: Aplica a escada de bloqueios (3ª tentativa=5h, 4ª=10h, etc.) apenas na tentativa de recuperação, mantendo o celular original ativo e conectado.
+
+
+---
+
+## Homologação de segurança para a versão 1.3.2
+
+O backend inclui autenticação persistente de chave ECDSA/ECDH, consulta assinada
+`POST /api/identities/key`, relatórios assinados e administração sem senhas
+embutidas. Convites LINK e QR compartilham **o mesmo token de uso único**. O
+token é uma credencial de posse de alta entropia transmitida por HTTPS; **não**
+é texto cifrado, portanto não deve aparecer em logs, capturas ou analytics.
+
+Rode: `node --test tests/*.test.js`. Realize a migração de schema e a
+homologação coordenada dos APKs compatíveis ANTES de qualquer deploy no Render.
+Ações administrativas dependem das variáveis de ambiente acima. Não habilite
+deploy automático no Render sem autorização expressa do proprietário.
