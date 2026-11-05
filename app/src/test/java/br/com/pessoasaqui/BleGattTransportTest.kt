@@ -392,9 +392,12 @@ class BleGattTransportTest {
         val idB = CryptoIdentityManager()
 
         val plaintext = "Conversa permanente segura no Modo B"
-        val (cipher, iv) = E2eeCryptoEngine.encrypt(plaintext, idA.getTechnicalIdentity(), idB.getTechnicalIdentity())
-        val decrypted = E2eeCryptoEngine.decrypt(cipher, iv, idA.getTechnicalIdentity(), idB.getTechnicalIdentity())
-
+        E2eeCryptoEngine.registerPeerPublicKey(idA.getTechnicalIdentity(), idA.getPublicKeyBase64())
+        E2eeCryptoEngine.registerPeerPublicKey(idB.getTechnicalIdentity(), idB.getPublicKeyBase64())
+        val (cipher, iv) = E2eeCryptoEngine.encrypt(
+            plaintext, idA.getTechnicalIdentity(), idB.getTechnicalIdentity(), idA.getActivePrivateKey())
+        val decrypted = E2eeCryptoEngine.decrypt(
+            cipher, iv, idA.getTechnicalIdentity(), idB.getTechnicalIdentity(), idB.getActivePrivateKey())
         assertEquals(plaintext, decrypted)
     }
 
