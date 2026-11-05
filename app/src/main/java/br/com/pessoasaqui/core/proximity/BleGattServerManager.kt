@@ -294,10 +294,8 @@ class BleGattServerManager(
         val expectedLocalHash = localIdentityHash
         if (identityPair == null || expectedLocalHash == null ||
             !initData.responderIdHash.trim().equals(expectedLocalHash.trim(),ignoreCase=true) ||
-            !BleCryptoHandshakeEngine.isSelfCertifiedIdentity(
-                initData.initiatorIdHash, initData.initiatorIdentityPubKeyBytes) ||
-            !BleCryptoHandshakeEngine.isSelfCertifiedIdentity(
-                expectedLocalHash, identityPair.public.encoded)) {
+            !br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.isTrustedPeer(
+                initData.initiatorIdHash, initData.initiatorIdentityPubKeyBytes)) {
             onErrorListener?.invoke("BLE: identidade autocertificada inválida ou destinatário incorreto")
             return
         }
