@@ -719,11 +719,9 @@ fun DistributedBackupDialog(
                     OutlinedTextField(
                         value = v3RecoverySecret,
                         onValueChange = {
-                            if (it.length <= 76) v3RecoverySecret = it.filterNot { ch -> ch.isWhitespace() || ch == '-' }.let { cleaned ->
-                                // Preservar prefixo literal PA-VAULT-V3- ao permitir espaços na entrada.
-                                if (it.trim().uppercase(java.util.Locale.ROOT).startsWith("PA-VAULT-V3-")) {
-                                    it.filterNot { ch -> ch.isWhitespace() }.uppercase(java.util.Locale.ROOT)
-                                } else cleaned.uppercase(java.util.Locale.ROOT)
+                            val normalized = it.filterNot { ch -> ch.isWhitespace() }
+                            if (normalized.length <= 76) {
+                                v3RecoverySecret = normalized.uppercase(java.util.Locale.ROOT)
                             }
                         },
                         label = { Text("Segredo de recuperação V3 (opcional para V1/V2)") },
