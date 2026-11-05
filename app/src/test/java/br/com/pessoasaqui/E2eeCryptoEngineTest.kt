@@ -25,7 +25,7 @@ class E2eeCryptoEngineTest {
 
     @Test
     fun testKeyDerivationSymmetry() {
-        val aliceId = "8888888888888888E5"
+        val aliceId = "A1B2C3D4E5"
         val bobId = "F6G7H8I9J0"
 
         val keyAliceBob = E2eeCryptoEngine.deriveSharedKey(aliceId, bobId)
@@ -41,7 +41,7 @@ class E2eeCryptoEngineTest {
         val bob = "F6G7H8I9J0"
 
         val key1 = E2eeCryptoEngine.deriveSharedKey(alice, bob)
-        val key2 = E2eeCryptoEngine.deriveSharedKey("8888888888888888E5", "peer-f6g7h8i9j0")
+        val key2 = E2eeCryptoEngine.deriveSharedKey("A1B2C3D4E5", "peer-f6g7h8i9j0")
 
         assertArrayEquals("Chaves devem ser imunes a prefixo 'peer-' e caixa alta/baixa", key1, key2)
     }
