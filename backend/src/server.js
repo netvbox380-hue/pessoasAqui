@@ -17,6 +17,7 @@ const {
   INVITE_LIFETIME_MS, tokenDigest, verifyStoredToken, validateInviteId, validateInviteToken
 } = require('./inviteSecurity');
 const { verifyInviteIdentityProof, deriveInviteId } = require('./inviteAuth');
+const { verifyWsIdentity } = require('./identityAuth');
 const { registerFamilyRecoveryRoutes } = require('./familyRecoveryRoutes');
 const { registerOfferRoutesV2 } = require('./offerRoutesV2');
 
@@ -409,71 +410,50 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
 
 wss.on('connection', (ws, req) => {
   let authenticatedIdentity = null;
+  const serverChallenge=crypto.randomBytes(24).toString('hex');
+  ws.send(JSON.stringify({type:'AUTH_CHALLENGE',nonce:serverChallenge}));
+  const authTimeout=setTimeout(()=>{
+    if(!authenticatedIdentity){try{ws.close(4001,'Authentication timeout');}catch(_){}}
+  },20000);
+  if(typeof authTimeout.unref==='function')authTimeout.unref();
 
   ws.on('message', async (data) => {
     try {
       const msg = JSON.parse(data.toString());
 
-      if (msg.type === 'AUTH') {
-        authenticatedIdentity = cleanId(msg.identityHash);
-        const incomingAlias = (msg.alias || 'Usuário PessoasAqui').trim();
-        const kAuth = keyId(authenticatedIdentity);
-
-        // Bloqueio imediato para usuários banidos pela moderação
-        if (bannedIdentities.has(kAuth)) {
-          console.warn(`[WS] Conexão rejeitada: ${kAuth} está banido.`);
-          ws.send(JSON.stringify({
-            type: 'ACCOUNT_BANNED',
-            message: 'Sua identidade foi suspensa por violação das Diretrizes da Comunidade.'
-          }));
-          setTimeout(() => { try { ws.close(4003, 'Banned'); } catch (_) {} }, 200);
-          return;
+      if (msg.type === 'AUTH' && !authenticatedIdentity) {
+        const requestedIdentity=cleanId(msg.identityHash);
+        const incomingAlias=String(msg.alias||'Usuário PessoasAqui').trim().slice(0,64);
+        const kAuth=keyId(requestedIdentity);
+        if(!/^[A-F0-9]{16}$/.test(requestedIdentity)){
+          ws.send(JSON.stringify({type:'AUTH_FAILED',message:'Identidade inválida.'}));
+          try{ws.close(4001,'Invalid identity');}catch(_){} return;
         }
-
-        // Após recuperação, a chave antiga NÃO pode recuperar a sessão WS.
-        // Demais contas permanecem sob protocolo legado, preservado nesta etapa.
-        if (process.env.DATABASE_URL) {
-          try {
-            if (!isPostgres()) throw new Error('Banco indisponível');
-            const active = await query(
-              'SELECT public_key_spki FROM identity_key_bindings WHERE identity_id=$1',
-              [authenticatedIdentity]);
-            if (!isPostgres()) throw new Error('Banco indisponível');
-            const boundKey = active.rows[0]?.public_key_spki;
-            if (boundKey) {
-              if (!msg.publicKey || msg.publicKey !== boundKey || !msg.signature ||
-                  !msg.authNonce || !verifyClientEcdsaSignature(
-                    boundKey, authenticatedIdentity + ':' + msg.authNonce, msg.signature)) {
-                ws.send(JSON.stringify({type:'AUTH_FAILED',message:'Chave da identidade revogada.'}));
-                try { ws.close(4001,'Expired identity key'); } catch (_) {}
-                return;
-              }
-              registeredDevicePublicKeys.set(kAuth,boundKey);
-            }
-          } catch (_) {
+        if(bannedIdentities.has(kAuth)){
+          ws.send(JSON.stringify({type:'ACCOUNT_BANNED',message:'Identidade suspensa.'}));
+          try{ws.close(4003,'Account banned');}catch(_){} return;
+        }
+        // Ignorar primeiro AUTH legado, sem aceitar a sessão antes do desafio.
+        if(msg.challengeNonce!==serverChallenge) return;
+        let activeKey=null;
+        if(process.env.DATABASE_URL){
+          try{
+            if(!isPostgres())throw Error('Banco indisponível');
+            const binding=await query('SELECT public_key_spki FROM identity_key_bindings WHERE identity_id=$1',[requestedIdentity]);
+            if(!isPostgres())throw Error('Banco indisponível');
+            activeKey=binding.rows[0]?.public_key_spki||null;
+          }catch(_){
             ws.send(JSON.stringify({type:'AUTH_FAILED',message:'Autenticação indisponível.'}));
-            try { ws.close(4001,'Identity verification unavailable'); } catch (_) {}
-            return;
+            try{ws.close(4001,'Database unavailable');}catch(_){} return;
           }
         }
-
-        // Blindagem criptográfica contra sequestro de identidade WebSocket (Zero-Knowledge Auth)
-        if (msg.publicKey && msg.signature && msg.authNonce) {
-          const registeredKey = registeredDevicePublicKeys.get(kAuth);
-          const keyToVerify = registeredKey || msg.publicKey;
-          const isValid = verifyClientEcdsaSignature(keyToVerify, `${authenticatedIdentity}:${msg.authNonce}`, msg.signature);
-          if (!isValid && registeredKey) {
-            console.warn(`[WS] Bloqueio de sequestro de identidade: assinatura inválida para ${kAuth}`);
-            ws.send(JSON.stringify({ type: 'AUTH_FAILED', message: 'Assinatura criptográfica inválida.' }));
-            setTimeout(() => { try { ws.close(4001, 'Unauthorized'); } catch (_) {} }, 200);
-            return;
-          }
-          if (isValid) {
-            registeredDevicePublicKeys.set(kAuth, msg.publicKey);
-          }
-        } else if (msg.publicKey && !registeredDevicePublicKeys.has(kAuth)) {
-          registeredDevicePublicKeys.set(kAuth, msg.publicKey);
+        if(!verifyWsIdentity(requestedIdentity,msg.publicKey,msg.signature,msg.challengeNonce,serverChallenge,activeKey)){
+          ws.send(JSON.stringify({type:'AUTH_FAILED',message:'Prova criptográfica inválida.'}));
+          try{ws.close(4001,'Invalid proof');}catch(_){} return;
         }
+        authenticatedIdentity=requestedIdentity;
+        clearTimeout(authTimeout);
+        registeredDevicePublicKeys.set(kAuth,msg.publicKey);
 
         // Regra 18: 1 Identidade = 1 Dispositivo Ativo. Fecha socket anterior se houver
         if (activeSockets.has(kAuth)) {
@@ -897,6 +877,33 @@ app.post('/api/connections/sync', async (_req, res) => {
   return res.status(410).json({ success: false, error: 'Sincronização unilateral desativada. Use /connections/mark.' });
 });
 
+// Somente a identidade dona da chave privada pode autorizar marcação e revogação.
+// No modo de desenvolvimento sem DATABASE_URL o caminho antigo fica disponível para testes.
+const connectionProofNonces=new Set();
+async function authorizeConnectionWrite(req,res,operation,from,to){
+  const proof=req.body?.identityProof;
+  if(!process.env.DATABASE_URL && !proof)return true;
+  if(!proof){res.status(401).json({error:'Assinatura criptográfica obrigatória.'});return false;}
+  let verified=false;
+  try{verified=await verifyActiveInviteProof(operation,from,to,'','',proof);}
+  catch(_){res.status(503).json({error:'Autenticação indisponível.'});return false;}
+  if(!verified){res.status(401).json({error:'Assinatura ou chave ativa inválida.'});return false;}
+  if(process.env.DATABASE_URL){
+    try{
+      const r=await query(
+       'INSERT INTO recovery_proof_nonces(identity_id, operation, nonce) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING nonce',
+       [from,operation,proof.nonce]);
+      if(r.rowCount!==1){res.status(409).json({error:'Assinatura já utilizada.'});return false;}
+    }catch(_){res.status(503).json({error:'Não foi possível registrar a autorização.'});return false;}
+  } else {
+    const key=from+':'+operation+':'+proof.nonce;
+    if(connectionProofNonces.has(key)){res.status(409).json({error:'Assinatura já utilizada.'});return false;}
+    if(connectionProofNonces.size>10000)connectionProofNonces.clear();
+    connectionProofNonces.add(key);
+  }
+  return true;
+}
+
 /**
  * Marcação Unilateral e Conexão Mútua (Seções 10 e 11)
  * 10 metros = descoberta | Marcação mútua = vínculo à distância
@@ -906,9 +913,13 @@ app.post('/api/connections/mark', async (req, res) => {
   const from = cleanId(fromIdentity);
   const to = cleanId(toIdentity);
 
-  if (!from || !to) {
-    return res.status(400).json({ error: 'Identidades de origem e destino obrigatórias.' });
+  if(!/^[A-F0-9]{16}$/.test(from)|| !/^[A-F0-9]{16}$/.test(to)||from===to){
+    return res.status(400).json({error:'Identidades válidas e distintas obrigatórias.'});
   }
+  if(process.env.DATABASE_URL && !isPostgres()){
+    return res.status(503).json({error:'Banco de vínculos indisponível.'});
+  }
+  if(!await authorizeConnectionWrite(req,res,'CONNECTION_MARK',from,to))return;
 
   if (process.env.DATABASE_URL && !isPostgres()) {
     return res.status(503).json({success:false,error:'Banco de conexões indisponível.'});
@@ -1038,9 +1049,13 @@ app.post('/api/connections/unmark', async (req, res) => {
   const from = cleanId(fromIdentity);
   const to = cleanId(toIdentity);
 
-  if (!from || !to) {
-    return res.status(400).json({ error: 'Identidades de origem e destino obrigatórias.' });
+  if(!/^[A-F0-9]{16}$/.test(from)|| !/^[A-F0-9]{16}$/.test(to)||from===to){
+    return res.status(400).json({error:'Identidades válidas e distintas obrigatórias.'});
   }
+  if(process.env.DATABASE_URL && !isPostgres()){
+    return res.status(503).json({error:'Banco de vínculos indisponível.'});
+  }
+  if(!await authorizeConnectionWrite(req,res,'CONNECTION_UNMARK',from,to))return;
 
   if (process.env.DATABASE_URL && !isPostgres()) {
     return res.status(503).json({success:false,error:'Banco de conexões indisponível.'});

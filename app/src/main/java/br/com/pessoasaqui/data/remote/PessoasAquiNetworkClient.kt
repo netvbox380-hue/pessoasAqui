@@ -126,9 +126,18 @@ open class PessoasAquiNetworkClient(
         toIdentity: String
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            val signer = lastSignChallenge ?: throw SecurityException("Assinatura indisponível")
+            val publicKey = lastPublicKeyBase64?.takeIf { it.isNotBlank() }
+                ?: throw SecurityException("Chave pública indisponível")
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "CONNECTION_MARK", identity = fromIdentity,
+                alias = toIdentity.removePrefix("peer-").trim().uppercase(java.util.Locale.ROOT),
+                publicKeyBase64 = publicKey, signChallenge = signer
+            )
             val json = JSONObject().apply {
                 put("fromIdentity", fromIdentity)
                 put("toIdentity", toIdentity)
+                put("identityProof", proof.toJson())
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/connections/mark")
@@ -157,9 +166,18 @@ open class PessoasAquiNetworkClient(
         toIdentity: String
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            val signer = lastSignChallenge ?: throw SecurityException("Assinatura indisponível")
+            val publicKey = lastPublicKeyBase64?.takeIf { it.isNotBlank() }
+                ?: throw SecurityException("Chave pública indisponível")
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "CONNECTION_UNMARK", identity = fromIdentity,
+                alias = toIdentity.removePrefix("peer-").trim().uppercase(java.util.Locale.ROOT),
+                publicKeyBase64 = publicKey, signChallenge = signer
+            )
             val json = JSONObject().apply {
                 put("fromIdentity", fromIdentity)
                 put("toIdentity", toIdentity)
+                put("identityProof", proof.toJson())
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/connections/unmark")
@@ -322,7 +340,7 @@ open class PessoasAquiNetworkClient(
         val request = Request.Builder().url(wsUrl).build()
         activeWebSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                isWsConnected = true
+                isWsConnected = false // Aguardar AUTH_SUCCESS do servidor
                 val authNonce = java.util.UUID.randomUUID().toString()
                 val authSignature = signChallenge?.invoke("$myIdentityHash:$authNonce".toByteArray(Charsets.UTF_8))
                 // Autentica este dispositivo no socket com sua identidade, alias, intenção e prova criptográfica
@@ -344,6 +362,26 @@ open class PessoasAquiNetworkClient(
                 try {
                     val obj = JSONObject(text)
                     when (obj.optString("type")) {
+                        "AUTH_SUCCESS" -> { isWsConnected = true }
+                        "AUTH_CHALLENGE" -> {
+                            val challenge = obj.optString("nonce", "")
+                            if (challenge.matches(Regex("^[a-f0-9]{48}$"))) {
+                                val payload = "PA-WS-AUTH-V2|${myIdentityHash.uppercase(java.util.Locale.ROOT)}|$challenge"
+                                val signature = signChallenge?.invoke(payload.toByteArray(Charsets.UTF_8))
+                                if (!signature.isNullOrBlank() && !signature.startsWith("sig-")) {
+                                    webSocket.send(JSONObject().apply {
+                                        put("type","AUTH")
+                                        put("identityHash",myIdentityHash)
+                                        put("alias",myAlias)
+                                        put("intent",myIntent)
+                                        put("publicKey",myPublicKeyBase64)
+                                        put("authNonce",challenge)
+                                        put("challengeNonce",challenge)
+                                        put("signature",signature)
+                                    }.toString())
+                                }
+                            }
+                        }
                         "E2EE_MESSAGE_RECEIVED", "E2EE_MESSAGE" -> {
                             val sender = obj.getString("senderHash")
                             val payload = obj.getString("ciphertextPayload")
