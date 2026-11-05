@@ -1154,12 +1154,13 @@ app.post('/api/invites/create', async (req, res) => {
 
   if (inviteDbRequired) {
     try {
-      // Garante a existência prévia na tabela identities para satisfazer a chave estrangeira
+      // Garante a existência prévia na tabela identities para satisfazer a chave estrangeira invites_sender_identity_fkey.
+      // Utiliza hashPin('0000') compatível com PBKDF2 e ON CONFLICT (id) DO NOTHING para preservar credenciais pré-existentes.
       await query(
         `INSERT INTO identities (id, public_key_ed25519, public_key_x25519, pin_salted_hash, alias)
          VALUES ($1, $2, $2, $3, $4)
-         ON CONFLICT (id) DO UPDATE SET alias = EXCLUDED.alias, updated_at = NOW()`,
-        [sender, req.body.identityProof.publicKey, tokenDigest('0000'), alias]
+         ON CONFLICT (id) DO NOTHING`,
+        [sender, req.body.identityProof.publicKey, hashPin('0000'), alias]
       );
 
       const result = await query(

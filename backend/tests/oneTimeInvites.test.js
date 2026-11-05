@@ -74,6 +74,7 @@ function fixture({postgres=false,failDb=false,shared=null}={}) {
     keyId:v=>String(v||'').toLowerCase(),
     signInvitePayload:()=> 'a'.repeat(64),
     INVITE_LIFETIME_MS:guard.INVITE_LIFETIME_MS,
+    hashPin:require('../src/crypto').hashPin,
     tokenDigest:guard.tokenDigest,verifyStoredToken:guard.verifyStoredToken,
     validateInviteId:guard.validateInviteId,validateInviteToken:guard.validateInviteToken,
     verifyInviteIdentityProof:auth.verifyInviteIdentityProof,

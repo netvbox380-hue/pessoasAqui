@@ -1936,7 +1936,11 @@ class PessoasAquiRepository(
         setDemoMode(false)
     }
 
+    @Volatile
+    private var isIdentityRegisteredOnBackend = false
+
     suspend fun ensureIdentityRegistered(): Boolean {
+        if (isIdentityRegisteredOnBackend) return true
         return try {
             val res = networkClient.registerIdentity(
                 identityHash = cryptoIdentityManager.getTechnicalIdentity(),
@@ -1945,7 +1949,12 @@ class PessoasAquiRepository(
                 pin = "0000",
                 alias = _currentAlias.value
             )
-            res.isSuccess
+            if (res.isSuccess) {
+                isIdentityRegisteredOnBackend = true
+                true
+            } else {
+                false
+            }
         } catch (_: Exception) {
             false
         }
@@ -1954,13 +1963,16 @@ class PessoasAquiRepository(
     private fun registerIdentityOnBackend() {
         scope.launch {
             try {
-                networkClient.registerIdentity(
+                val res = networkClient.registerIdentity(
                     identityHash = cryptoIdentityManager.getTechnicalIdentity(),
                     publicKeyEd25519 = cryptoIdentityManager.getPublicKeyBase64(),
                     publicKeyX25519 = cryptoIdentityManager.getPublicKeyBase64(),
                     pin = "0000",
                     alias = _currentAlias.value
                 )
+                if (res.isSuccess) {
+                    isIdentityRegisteredOnBackend = true
+                }
                 networkClient.sendPresenceHeartbeat(
                     identityHash = cryptoIdentityManager.getTechnicalIdentity(),
                     alias = _currentAlias.value,
@@ -2409,7 +2421,10 @@ class PessoasAquiRepository(
     fun createOneTimeInviteLinkDetailed(onResult: (Result<String>) -> Unit) {
         scope.launch {
             val result = try {
-                ensureIdentityRegistered()
+                val registered = ensureIdentityRegistered()
+                if (!registered) {
+                    Log.w("PessoasAqui", "Aviso: registro prévio da identidade não pôde ser confirmado; prosseguindo com autenticação criptográfica")
+                }
                 val identity = getMyIdentity()
                 val alias = getMyAlias().trim().take(64).ifBlank { "Usuário" }
                 val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(

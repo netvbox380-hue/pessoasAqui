@@ -5,6 +5,8 @@ if (typeof dns.setDefaultResultOrder === 'function') {
   dns.setDefaultResultOrder('ipv4first');
 }
 
+const fs = require('fs');
+const path = require('path');
 const { Pool } = require('pg');
 
 let pool = null;
@@ -59,9 +61,40 @@ function attachPoolErrorListener(p) {
   });
 }
 
+function getSslConfig(connectionString) {
+  if (!connectionString) return false;
+  const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
+  if (isLocal) return false;
+
+  // 1. Suporte prioritário a certificado CA explícito via variável de ambiente (string PEM)
+  const caCert = process.env.SUPABASE_CA_CERT || process.env.DATABASE_CA_CERT || process.env.PGSSLROOTCERT;
+  if (caCert && caCert.includes('-----BEGIN CERTIFICATE-----')) {
+    return {
+      rejectUnauthorized: true,
+      ca: caCert
+    };
+  }
+
+  // 2. Suporte a arquivo de certificado CA local
+  const caPath = process.env.PGSSLROOTCERT_PATH || path.join(__dirname, '../certs/prod-ca-2021.crt');
+  if (fs.existsSync(caPath)) {
+    try {
+      return {
+        rejectUnauthorized: true,
+        ca: fs.readFileSync(caPath, 'utf8')
+      };
+    } catch (_) {}
+  }
+
+  // 3. Fallback seguro para PostgreSQL em Nuvem (Supabase / Render) sem CA local instalada:
+  // O pooler do Supabase (PgBouncer/Supavisor) opera com certificado assinado por CA interna própria.
+  // Em containers onde o arquivo CA da Supabase não é distribuído, a flag rejectUnauthorized: false
+  // garante tráfego criptografado (TLS) sem rejeitar o handshake por falta de CA pública no sistema.
+  return { rejectUnauthorized: false };
+}
+
 function createPool(connectionString) {
   if (!connectionString) return null;
-  const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
   const p = new Pool({
     connectionString,
     connectionTimeoutMillis: 10000,
@@ -69,7 +102,7 @@ function createPool(connectionString) {
     max: 10,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10000,
-    ssl: isLocal ? false : { rejectUnauthorized: false }
+    ssl: getSslConfig(connectionString)
   });
   attachPoolErrorListener(p);
   return p;
@@ -153,20 +186,22 @@ async function query(sql, params = []) {
     await checkDatabaseHealth();
   }
 
-  if (isPostgres && pool) {
-    try {
-      return await pool.query(sql, params);
-    } catch (err) {
-      if (isFatalDbError(err)) {
-        isPostgres = false;
-        circuitBreakerTripped = true;
-        console.warn(`[DB] Erro de rede na consulta (${err.code || err.message}). Ativando modo resiliente.`);
-        return { rows: [], rowCount: 0 };
-      }
-      throw err;
-    }
+  if (!isPostgres || !pool) {
+    const err = new Error('PostgreSQL indisponível');
+    err.code = 'ECONNREFUSED';
+    throw err;
   }
-  return { rows: [], rowCount: 0 };
+
+  try {
+    return await pool.query(sql, params);
+  } catch (err) {
+    if (isFatalDbError(err)) {
+      isPostgres = false;
+      circuitBreakerTripped = true;
+      console.warn(`[DB] Erro de rede na consulta (${err.code || err.message}). Marcando banco como indisponível.`);
+    }
+    throw err;
+  }
 }
 
 async function withTransaction(work) {
@@ -199,5 +234,6 @@ module.exports = {
   withTransaction,
   localStore,
   checkDatabaseHealth,
+  getSslConfig,
   isPostgres: () => isPostgres && !circuitBreakerTripped
 };
