@@ -106,6 +106,23 @@ object BleCryptoHandshakeEngine {
     }
 
     /**
+     * Vincula ID técnico (16 hexadecimais) à chave P-256 apresentada pelo outro aparelho.
+     * Identidades recuperadas com chave rotacionada exigem outro mecanismo autenticado.
+     */
+    fun isSelfCertifiedIdentity(identityHash: String, publicKeyBytes: ByteArray): Boolean {
+        val id = identityHash.trim().replace(Regex("^peer-", RegexOption.IGNORE_CASE), "")
+            .uppercase(java.util.Locale.ROOT)
+        if (!Regex("^[A-F0-9]{16}$").matches(id)) return false
+        return try {
+            decodePublicKey(publicKeyBytes)
+            val digest = MessageDigest.getInstance("SHA-256").digest(publicKeyBytes)
+            val expected = digest.take(8).joinToString("") { "%02X".format(it.toInt() and 0xff) }
+            MessageDigest.isEqual(expected.toByteArray(StandardCharsets.US_ASCII),
+                id.toByteArray(StandardCharsets.US_ASCII))
+        } catch (_: Exception) { false }
+    }
+
+    /**
      * Assina digitalmente o transcript do handshake utilizando a chave privada de identidade persistente.
      */
     fun signTranscript(identityPrivateKey: PrivateKey, transcriptHash: ByteArray): ByteArray {

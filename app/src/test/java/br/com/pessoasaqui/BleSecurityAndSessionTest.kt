@@ -542,4 +542,13 @@ class BleSecurityAndSessionTest {
             lastActiveMs = nowMs
         )
     }
+
+    @Test
+    fun responderIdentityMustMatchPublicKey() {
+        val kp = BleCryptoHandshakeEngine.generateEphemeralKeyPair()
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(kp.public.encoded)
+        val id = digest.take(8).joinToString("") { "%02X".format(it.toInt() and 0xff) }
+        assertTrue(BleCryptoHandshakeEngine.isSelfCertifiedIdentity(id,kp.public.encoded))
+        assertFalse(BleCryptoHandshakeEngine.isSelfCertifiedIdentity("DEADBEEFDEADBEEF",kp.public.encoded))
+    }
 }

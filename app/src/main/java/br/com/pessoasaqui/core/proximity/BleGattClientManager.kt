@@ -406,6 +406,33 @@ class BleGattClientManager(
             return
         }
 
+        // MAC ECDH autentica apenas a sessão, não o nome/identidade do outro aparelho.
+        // Exigir assinatura ECDSA do respondedor sobre o mesmo transcript.
+        if (respData.version != BleCryptoHandshakeEngine.PROTOCOL_VERSION ||
+            !BleCryptoHandshakeEngine.isSelfCertifiedIdentity(
+                peerHash, respData.responderIdentityPubKeyBytes)) {
+            onErrorListener?.invoke("BLE: chave pública não corresponde ao respondedor anunciado")
+            onHandshakeCompletedListener?.invoke(false, null)
+            return
+        }
+        val transcriptHash = BleCryptoHandshakeEngine.buildTranscriptHash(
+            version = respData.version,
+            role = BleCryptoHandshakeEngine.ROLE_RESPONDER,
+            initiatorIdHash = localHash,
+            responderIdHash = peerHash,
+            initiatorEphemeralPubKey = ephem.public.encoded,
+            responderEphemeralPubKey = respData.responderEphemeralPubKeyBytes,
+            initiatorNonce = nonce,
+            responderNonce = respData.responderNonce,
+            timestampMs = pendingHandshakeTimestamp
+        )
+        if (!BleCryptoHandshakeEngine.verifyTranscriptSignature(
+                respIdentityPubKey, transcriptHash, respData.signature)) {
+            onErrorListener?.invoke("BLE: assinatura do respondedor inválida")
+            onHandshakeCompletedListener?.invoke(false, null)
+            return
+        }
+
         val sharedSecret = BleCryptoHandshakeEngine.computeEcdhSharedSecret(ephem.private, respEphemeralPubKey)
         val derived = BleCryptoHandshakeEngine.deriveSessionKeys(
             ecdhSecret = sharedSecret,

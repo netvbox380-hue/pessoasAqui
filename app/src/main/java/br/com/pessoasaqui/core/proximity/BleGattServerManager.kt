@@ -289,6 +289,19 @@ class BleGattServerManager(
             return
         }
 
+        // O iniciador deve assinar a identidade declarada e o destinatário esperado.
+        val identityPair = localIdentityKeyPair
+        val expectedLocalHash = localIdentityHash
+        if (identityPair == null || expectedLocalHash == null ||
+            !initData.responderIdHash.trim().equals(expectedLocalHash.trim(),ignoreCase=true) ||
+            !BleCryptoHandshakeEngine.isSelfCertifiedIdentity(
+                initData.initiatorIdHash, initData.initiatorIdentityPubKeyBytes) ||
+            !BleCryptoHandshakeEngine.isSelfCertifiedIdentity(
+                expectedLocalHash, identityPair.public.encoded)) {
+            onErrorListener?.invoke("BLE: identidade autocertificada inválida ou destinatário incorreto")
+            return
+        }
+
         val transcriptHash = BleCryptoHandshakeEngine.buildTranscriptHash(
             version = initData.version,
             role = BleCryptoHandshakeEngine.ROLE_INITIATOR,
@@ -342,10 +355,10 @@ class BleGattServerManager(
             responderEphemeralPubKey = respEphemeral.public.encoded,
             initiatorNonce = initData.initiatorNonce,
             responderNonce = respNonce,
-            timestampMs = nowMs
+            timestampMs = initData.timestampMs
         )
 
-        val myKeyPair = localIdentityKeyPair ?: BleCryptoHandshakeEngine.generateEphemeralKeyPair()
+        val myKeyPair = identityPair
         val respSig = BleCryptoHandshakeEngine.signTranscript(myKeyPair.private, respTranscriptHash)
 
         val session = BleSessionTokenManager.BleProximitySession(
