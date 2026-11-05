@@ -21,7 +21,7 @@ function fixture({postgres=false, databaseError=false} = {}) {
     query:async (sql,args)=> {dbOps.push({sql,args}); if(databaseError)throw Error('DB down');return {rows:[]}},
     cleanId, keyId:cleanId,
     activePresence:new Map(), activeSockets:new Map(), pendingMessages:new Map(),
-    WebSocket:{OPEN:1}, console, Date};
+    WebSocket:{OPEN:1}, console, Date, process:{env:{}}};
   vm.runInNewContext(handlerSection, context);
   async function call(method, route, body={}, query={}) {
     let code = 200, payload;
@@ -79,4 +79,16 @@ test('database status failure is not mislabeled as empty authoritative snapshot'
   const f=fixture({postgres:true,databaseError:true});
   const res=await f.call('GET','/api/connections/status',{}, {myIdentity:'A'});
   assert.equal(res.code,503);
+});
+
+test('com DATABASE_URL configurada e PostgreSQL desconectado, relações não são fabricadas no cache', async () => {
+  const f=fixture();
+  f.context.process.env.DATABASE_URL='postgres://disconnected';
+  const status=await f.call('GET','/api/connections/status',{}, {myIdentity:'A'});
+  const mark=await f.call('POST','/api/connections/mark',{fromIdentity:'A',toIdentity:'B'});
+  const revoke=await f.call('POST','/api/connections/unmark',{fromIdentity:'A',toIdentity:'B'});
+  assert.equal(status.code,503);
+  assert.equal(mark.code,503);
+  assert.equal(revoke.code,503);
+  assert.equal(f.conns.size,0);
 });

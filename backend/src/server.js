@@ -837,6 +837,10 @@ app.get('/api/connections/status', async (req, res) => {
     return res.status(400).json({ error: 'myIdentity é obrigatório.' });
   }
 
+  if (process.env.DATABASE_URL && !isPostgres()) {
+    return res.status(503).json({success:false,error:'Banco de conexões indisponível.'});
+  }
+
   const kMyId = keyId(myId);
   let markedByMe = [];
   let markingMe = [];
@@ -904,6 +908,10 @@ app.post('/api/connections/mark', async (req, res) => {
 
   if (!from || !to) {
     return res.status(400).json({ error: 'Identidades de origem e destino obrigatórias.' });
+  }
+
+  if (process.env.DATABASE_URL && !isPostgres()) {
+    return res.status(503).json({success:false,error:'Banco de conexões indisponível.'});
   }
 
   // Verifica se o contato de destino já havia marcado a origem
@@ -1032,6 +1040,10 @@ app.post('/api/connections/unmark', async (req, res) => {
 
   if (!from || !to) {
     return res.status(400).json({ error: 'Identidades de origem e destino obrigatórias.' });
+  }
+
+  if (process.env.DATABASE_URL && !isPostgres()) {
+    return res.status(503).json({success:false,error:'Banco de conexões indisponível.'});
   }
 
   const kFrom = keyId(from);
