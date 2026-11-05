@@ -15,6 +15,8 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.zip.GZIPInputStream
@@ -41,7 +43,9 @@ data class EncryptedVaultPackage(
     val ivHex: String,
     val encryptedPayloadBase64: String,
     val payloadSha256: String,
-    val totalMessagesCount: Int
+    val totalMessagesCount: Int,
+    // Formato 1 = histórico PBKDF2 10 mil iterações; formato 2 = versão autenticada.
+    val formatVersion: Int = 1
 )
 
 /**
@@ -96,7 +100,8 @@ class P2PVaultManager(
         private const val KEY_LAST_REPLICATED_COUNT = "last_replicated_count"
         private const val KEY_LAST_MESSAGES_COUNT = "last_messages_count"
 
-        private const val PBKDF2_ITERATIONS = 10_000
+        private const val PBKDF2_ITERATIONS_V1 = 10_000
+        private const val PBKDF2_ITERATIONS_V2 = 310_000
         private const val KEY_LENGTH_BITS = 256
         private const val GCM_IV_LENGTH_BYTES = 12
         private const val GCM_TAG_LENGTH_BITS = 128
@@ -207,11 +212,29 @@ class P2PVaultManager(
     /**
      * Deriva uma chave AES-256 a partir do PIN de 6 dígitos usando PBKDF2WithHmacSHA256.
      */
-    private fun deriveKey(pin: String, salt: ByteArray): SecretKeySpec {
+    private fun deriveKey(pin: String, salt: ByteArray, formatVersion: Int): SecretKeySpec {
+        require(formatVersion == 1 || formatVersion == 2) { "Formato de cofre desconhecido" }
+        require(salt.size == 16) { "Sal do cofre inválido" }
+        require(pin.isNotBlank()) { "PIN do cofre vazio" }
+        val rounds = if (formatVersion == 1) PBKDF2_ITERATIONS_V1 else PBKDF2_ITERATIONS_V2
         val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        val spec = PBEKeySpec(pin.trim().toCharArray(), salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
-        val secretKey = factory.generateSecret(spec)
-        return SecretKeySpec(secretKey.encoded, "AES")
+        val spec = PBEKeySpec(pin.trim().toCharArray(), salt, rounds, KEY_LENGTH_BITS)
+        return try {
+            SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
+        } finally { spec.clearPassword() }
+    }
+
+    /** Autenticação GCM de metadados que antes podiam ser alterados externamente. */
+    private fun associatedData(vault: EncryptedVaultPackage): ByteArray {
+        val parts = listOf(
+            "PESSOASAQUI-VAULT-V2",
+            vault.ownerIdentityHash,
+            vault.ownerAlias,
+            vault.version.toString(),
+            vault.timestampEpochMs.toString(),
+            vault.totalMessagesCount.toString()
+        )
+        return parts.joinToString("|") { "${it.length}:$it" }.toByteArray(Charsets.UTF_8)
     }
 
     /**
@@ -228,7 +251,19 @@ class P2PVaultManager(
      */
     fun decompressGzip(compressed: ByteArray): ByteArray {
         val byteStream = ByteArrayInputStream(compressed)
-        GZIPInputStream(byteStream).use { return it.readBytes() }
+        GZIPInputStream(byteStream).use { stream ->
+            val output = ByteArrayOutputStream()
+            val chunk = ByteArray(8_192)
+            var total = 0
+            while (true) {
+                val size = stream.read(chunk)
+                if (size < 0) break
+                total += size
+                if (total > MAX_ALLOWED_VAULT_BYTES) throw SecurityException("Cofre descompactado excede limite")
+                output.write(chunk, 0, size)
+            }
+            return output.toByteArray()
+        }
     }
 
     fun calculateSha256(data: ByteArray): String {
@@ -281,27 +316,29 @@ class P2PVaultManager(
         val iv = ByteArray(GCM_IV_LENGTH_BYTES)
         random.nextBytes(iv)
 
-        // 3. Deriva chave e cifra com AES-256-GCM
-        val key = deriveKey(pin, salt)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val gcmSpec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
-        cipher.init(Cipher.ENCRYPT_MODE, key, gcmSpec)
-        val encryptedBytes = cipher.doFinal(compressedBytes)
-
-        val nextVersion = getLastBackupVersion() + 1
-        val sha256 = calculateSha256(encryptedBytes)
-        val b64Payload = E2eeCryptoEngine.Base64Helper.encode(encryptedBytes)
-
-        return EncryptedVaultPackage(
+        // 3. Somente os NOVOS cofres usam formato 2. Os antigos são somente leitura.
+        val meta = EncryptedVaultPackage(
             ownerIdentityHash = ownerIdentityHash.removePrefix("peer-").trim().lowercase(),
             ownerAlias = ownerAlias,
-            version = nextVersion,
+            version = getLastBackupVersion() + 1,
             timestampEpochMs = System.currentTimeMillis(),
             saltHex = bytesToHex(salt),
             ivHex = bytesToHex(iv),
-            encryptedPayloadBase64 = b64Payload,
-            payloadSha256 = sha256,
-            totalMessagesCount = totalMsgs
+            encryptedPayloadBase64 = "",
+            payloadSha256 = "",
+            totalMessagesCount = totalMsgs,
+            formatVersion = 2
+        )
+        val key = deriveKey(pin, salt, meta.formatVersion)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val gcmSpec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+        cipher.init(Cipher.ENCRYPT_MODE, key, gcmSpec)
+        cipher.updateAAD(associatedData(meta))
+        val encryptedBytes = cipher.doFinal(compressedBytes)
+        require(encryptedBytes.size <= MAX_ALLOWED_VAULT_BYTES) { "Cofre excede limite seguro" }
+        return meta.copy(
+            encryptedPayloadBase64 = E2eeCryptoEngine.Base64Helper.encode(encryptedBytes),
+            payloadSha256 = calculateSha256(encryptedBytes)
         )
     }
 
@@ -313,7 +350,12 @@ class P2PVaultManager(
         pin: String
     ): Result<VaultContentData> {
         return try {
+            require(vault.formatVersion in 1..2) { "Versão do cofre não suportada" }
+            require(vault.encryptedPayloadBase64.length <= MAX_ALLOWED_VAULT_BYTES * 2) {
+                "Envelope de backup excessivo"
+            }
             val encryptedBytes = E2eeCryptoEngine.Base64Helper.decode(vault.encryptedPayloadBase64)
+            require(encryptedBytes.size in 16..MAX_ALLOWED_VAULT_BYTES) { "Cofre inválido" }
 
             // Valida integridade do payload
             val checkSha = calculateSha256(encryptedBytes)
@@ -323,11 +365,15 @@ class P2PVaultManager(
 
             val salt = hexToBytes(vault.saltHex)
             val iv = hexToBytes(vault.ivHex)
-            val key = deriveKey(pin, salt)
+            require(salt.size == 16 && iv.size == GCM_IV_LENGTH_BYTES) {
+                "Sal ou IV do cofre inválido"
+            }
+            val key = deriveKey(pin, salt, vault.formatVersion)
 
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             val gcmSpec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
             cipher.init(Cipher.DECRYPT_MODE, key, gcmSpec)
+            if (vault.formatVersion == 2) cipher.updateAAD(associatedData(vault))
 
             val decryptedCompressedBytes = cipher.doFinal(encryptedBytes)
             val decompressedBytes = decompressGzip(decryptedCompressedBytes)
@@ -361,14 +407,16 @@ class P2PVaultManager(
      */
     fun storePeerVault(vault: EncryptedVaultPackage): Boolean {
         val clean = cleanKey(vault.ownerIdentityHash)
-        if (clean.isBlank()) return false
+        if (clean.isBlank() || vault.formatVersion !in 1..2 ||
+            vault.encryptedPayloadBase64.length > MAX_ALLOWED_VAULT_BYTES * 2 ||
+            vault.version < 1) return false
         val file = getVaultFile(clean) ?: return false
 
         try {
             if (file.exists()) {
                 val existingJson = file.readText(Charsets.UTF_8)
                 val existingVault = json.decodeFromString(EncryptedVaultPackage.serializer(), existingJson)
-                if (vault.version < existingVault.version) {
+                if (vault.version <= existingVault.version) {
                     SafeLog.i(TAG, "Cofre recebido ignorado: versão ${vault.version} é mais antiga que ${existingVault.version}")
                     return false
                 }
@@ -382,8 +430,9 @@ class P2PVaultManager(
 
             val tempFile = File(file.parentFile, "${file.name}.tmp")
             tempFile.writeText(serialized, Charsets.UTF_8)
-            if (file.exists()) file.delete()
-            tempFile.renameTo(file)
+            // Nunca apagar o backup original antes de confirmar a substituição.
+            Files.move(tempFile.toPath(), file.toPath(),
+                StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             SafeLog.i(TAG, "Cofre silencioso do contato ${vault.ownerAlias} (${vault.ownerIdentityHash}) salvo com sucesso (v${vault.version}).")
             return true
         } catch (e: Exception) {
