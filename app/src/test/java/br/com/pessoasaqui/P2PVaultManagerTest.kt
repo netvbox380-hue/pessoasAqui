@@ -274,4 +274,20 @@ class P2PVaultManagerTest {
         assertEquals(3, vaultManager.getStoredPeerVault("aabbccddeeff0011")?.formatVersion)
     }
 
+    @Test
+    fun testV3StoredBackupCannotBeDowngradedToPinOnlyVault() {
+        val strong = vaultManager.createVaultPackage(
+            pin="123456",ownerIdentityHash="0011223344556677",ownerAlias="Alice",
+            privateChats=emptyMap(),localMural=emptyList(),
+            recoverySecret=P2PVaultManager.generateRecoverySecret())
+        assertTrue(vaultManager.storePeerVault(strong))
+        val weak = vaultManager.createVaultPackage(
+            pin="123456",ownerIdentityHash="0011223344556677",ownerAlias="Alice",
+            privateChats=emptyMap(),localMural=emptyList())
+            .copy(version=strong.version + 100)
+        assertEquals(2,weak.formatVersion)
+        assertFalse(vaultManager.storePeerVault(weak))
+        assertEquals(3,vaultManager.getStoredPeerVault("0011223344556677")?.formatVersion)
+    }
+
 }
