@@ -3,8 +3,18 @@ package br.com.pessoasaqui
 import br.com.pessoasaqui.core.crypto.E2eeCryptoEngine
 import org.junit.Assert.*
 import org.junit.Test
+import java.security.KeyPairGenerator
+import java.util.Base64
 
 class E2eeCryptoEngineTest {
+    private fun setupPeers(aliceId: String, bobId: String): Pair<java.security.KeyPair,java.security.KeyPair> {
+        val gen = KeyPairGenerator.getInstance("EC").apply { initialize(256) }
+        val alice = gen.generateKeyPair()
+        val bob = gen.generateKeyPair()
+        E2eeCryptoEngine.registerPeerPublicKey(aliceId, Base64.getEncoder().encodeToString(alice.public.encoded))
+        E2eeCryptoEngine.registerPeerPublicKey(bobId, Base64.getEncoder().encodeToString(bob.public.encoded))
+        return alice to bob
+    }
 
     @Test
     fun testKeyDerivationSymmetry() {
@@ -36,14 +46,15 @@ class E2eeCryptoEngineTest {
         val message = "Olá Bob! Esta mensagem é estritamente confidencial e protegida por AES-256-GCM."
 
         // Alice criptografa para Bob
-        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(message, aliceId, bobId)
+        val (alice,bob) = setupPeers(aliceId,bobId)
+        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(message, aliceId, bobId, alice.private)
 
-        assertTrue("Envelope cifrado deve possuir prefixo ENC:", ciphertext.startsWith("ENC:"))
+        assertTrue("Novos envios exigem ECDH", ciphertext.startsWith("ENC_ECDH:"))
         assertNotEquals("Texto plano não pode trafegar aberto", message, ciphertext)
         assertTrue("IV não pode ser vazio", iv.isNotBlank())
 
         // Bob decifra a mensagem recebida de Alice
-        val decrypted = E2eeCryptoEngine.decrypt(ciphertext, iv, aliceId, bobId)
+        val decrypted = E2eeCryptoEngine.decrypt(ciphertext, iv, aliceId, bobId, bob.private)
         assertEquals("Mensagem decifrada deve coincidir perfeitamente com o texto original", message, decrypted)
     }
 
@@ -53,8 +64,9 @@ class E2eeCryptoEngineTest {
         val recipient = "1E2F3A4B"
         val callSignal = "[CALL_INIT:true:Alice]"
 
-        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(callSignal, sender, recipient)
-        val decrypted = E2eeCryptoEngine.decrypt(ciphertext, iv, sender, recipient)
+        val (alice,bob) = setupPeers(sender, recipient)
+        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(callSignal, sender, recipient, alice.private)
+        val decrypted = E2eeCryptoEngine.decrypt(ciphertext, iv, sender, recipient, bob.private)
 
         assertEquals("Sinalização de chamada de voz/vídeo deve ser decifrada intacta", callSignal, decrypted)
     }
@@ -66,11 +78,14 @@ class E2eeCryptoEngineTest {
         val eveId = "EVE_EVIL_777"
         val secretMessage = "Dados ultrassecretos de localização e fotos privadas."
 
-        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(secretMessage, aliceId, bobId)
+        val (alice,bob) = setupPeers(aliceId, bobId)
+        val gen = KeyPairGenerator.getInstance("EC").apply { initialize(256) }
+        val eve = gen.generateKeyPair()
+        val (ciphertext, iv) = E2eeCryptoEngine.encrypt(secretMessage, aliceId, bobId, alice.private)
 
         // O envelope cifrado nunca é devolvido ao chamador após falhar a autenticação.
         try {
-            E2eeCryptoEngine.decrypt(ciphertext, iv, aliceId, eveId)
+            E2eeCryptoEngine.decrypt(ciphertext, iv, aliceId, eveId, eve.private)
             fail("Terceiro não autorizado deve receber falha de autenticação")
         } catch (_: SecurityException) {
             // Falha fechada: sem exposição de ENC/ENC_ECDH no histórico.
@@ -81,13 +96,22 @@ class E2eeCryptoEngineTest {
     fun testDamagedCiphertextCannotBecomeChatText() {
         val sender = "A1B2C3D4"
         val recipient = "1A2B3C4D"
-        val (cipher, iv) = E2eeCryptoEngine.encrypt("[CALL_INIT:false:Alice]", sender, recipient)
+        val (alice,bob) = setupPeers(sender, recipient)
+        val (cipher, iv) = E2eeCryptoEngine.encrypt("[CALL_INIT:false:Alice]", sender, recipient, alice.private)
         try {
-            E2eeCryptoEngine.decrypt(cipher, "invalid-IV", sender, recipient)
+            E2eeCryptoEngine.decrypt(cipher, "invalid-IV", sender, recipient, bob.private)
             fail("Uma falha de IV não pode devolver ENC como texto")
         } catch (_: SecurityException) {
             // O aplicativo deve ignorar o comando antes de persistir uma bolha.
         }
+    }
+
+    @Test
+    fun testNewMessageCannotFallBackToPredictableKey() {
+        try {
+            E2eeCryptoEngine.encrypt("Segredo", "UNKNOWN_SENDER_NEW", "UNKNOWN_RECIPIENT_NEW")
+            fail("Envio E2EE sem chave compartilhada deve ser bloqueado")
+        } catch (_: IllegalStateException) {}
     }
 
     @Test

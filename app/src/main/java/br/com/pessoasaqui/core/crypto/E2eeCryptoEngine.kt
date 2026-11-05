@@ -145,14 +145,14 @@ object E2eeCryptoEngine {
             val cleanB = recipientId.removePrefix("peer-").trim().uppercase()
             val sortedPair = listOf(cleanA, cleanB).sorted().joinToString(":")
 
+            // Todo NOVO envio exige ECDH. O modo determinístico antigo só permanece para
+            // decifrar o histórico legado, nunca como fallback de novos envios.
             val peerPubKey = peerPublicKeys[cleanB]
-            val useEcdh = myPrivateKey != null && peerPubKey != null
-            val keyBytes = if (useEcdh) {
-                deriveEcdhSharedKey(myPrivateKey!!, peerPubKey!!)
-            } else {
-                deriveSharedKeyFromPair(sortedPair)
-            }
-            val prefix = if (useEcdh) PREFIX_ECDH else PREFIX
+                ?: throw SecurityException("Chave pública do destinatário indisponível")
+            val senderPrivateKey = myPrivateKey
+                ?: throw SecurityException("Chave privada do remetente indisponível")
+            val keyBytes = deriveEcdhSharedKey(senderPrivateKey, peerPubKey)
+            val prefix = PREFIX_ECDH
 
             val iv = ByteArray(IV_LENGTH_BYTES)
             SecureRandom().nextBytes(iv)
@@ -198,20 +198,21 @@ object E2eeCryptoEngine {
         val cleanSender = senderId.removePrefix("peer-").trim().uppercase()
         val peerPubKey = peerPublicKeys[cleanSender]
 
-        // 1. Tenta decifrar com ECDH se o payload for ENC_ECDH
-        if (isEcdh && myPrivateKey != null && peerPubKey != null) {
+        // Nunca permitir downgrade de ENC_ECDH para a chave legada previsível.
+        if (isEcdh) {
+            if (myPrivateKey == null || peerPubKey == null) {
+                throw SecurityException("Chave ECDH do interlocutor indisponível")
+            }
             try {
                 val keyBytes = deriveEcdhSharedKey(myPrivateKey, peerPubKey)
                 val ciphertextBytes = Base64Helper.decode(rawCiphertext)
-                val ivBytes = if (pureIvB64.isNotBlank()) Base64Helper.decode(pureIvB64) else ByteArray(IV_LENGTH_BYTES)
-
+                val ivBytes = Base64Helper.decode(pureIvB64)
                 val cipher = Cipher.getInstance(ALGORITHM)
-                val spec = GCMParameterSpec(TAG_LENGTH_BITS, ivBytes)
-                cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), spec)
-                val decryptedBytes = cipher.doFinal(ciphertextBytes)
-                return String(decryptedBytes, StandardCharsets.UTF_8)
-            } catch (_: Exception) {
-                // Caso ECDH falhe por chave desatualizada, tenta fallback simétrico abaixo
+                cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"),
+                    GCMParameterSpec(TAG_LENGTH_BITS, ivBytes))
+                return String(cipher.doFinal(ciphertextBytes), StandardCharsets.UTF_8)
+            } catch (e: Exception) {
+                throw SecurityException("Mensagem ECDH não autenticada: fallback proibido", e)
             }
         }
 

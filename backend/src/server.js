@@ -308,31 +308,10 @@ async function getConnectionStatus(myId, peerId) {
   return { isMarkedByMe, isMarkingMe, isMutual };
 }
 
-function unwrapE2eeIfCompatible(payload, ivNonce, senderHash, recipientHash) {
-  if (!payload || typeof payload !== 'string' || !payload.startsWith('ENC:') || !ivNonce) {
-    return payload;
-  }
-  try {
-    const rawIvParts = String(ivNonce).split('|');
-    const ivB64 = rawIvParts[0];
-    const hintPair = rawIvParts[1];
-    const idA = cleanId(senderHash).toUpperCase();
-    const idB = cleanId(recipientHash).toUpperCase();
-    const sortedPair = hintPair || [idA, idB].sort().join(':');
-    const keyMaterial = `${sortedPair}:PESSOASAQUI_E2EE_V1_SECURE_SALT_2026`;
-    const key = crypto.createHash('sha256').update(keyMaterial, 'utf8').digest();
-    const iv = Buffer.from(ivB64, 'base64');
-    const combined = Buffer.from(payload.slice(4), 'base64');
-    if (combined.length <= 16) return payload;
-    const authTag = combined.slice(combined.length - 16);
-    const encryptedData = combined.slice(0, combined.length - 16);
-    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-    decipher.setAuthTag(authTag);
-    const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]).toString('utf8');
-    return decrypted || payload;
-  } catch (err) {
-    return payload;
-  }
+// Backend não decifra nenhum envelope, inclusive os legados ENC:.
+// Mensagens históricas são encaminhadas intactas e decifradas somente pelo cliente.
+function unwrapE2eeIfCompatible(payload) {
+  return payload;
 }
 
 function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, ciphertextPayload, ivNonce, msgId) {
