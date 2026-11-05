@@ -48,4 +48,15 @@ class TrustedIdentityKeysTest {
         assertFalse(TrustedIdentityKeys.acceptAuthenticatedBinding("1122334455667788", b64(pair.public.encoded), 0))
         assertFalse(TrustedIdentityKeys.acceptAuthenticatedBinding("1122334455667788", b64(pair.public.encoded), 1))
     }
+    @Test
+    fun rejectsOtherEcCurvesEvenWhenPublicKeyIsWellFormed() {
+        val generator = KeyPairGenerator.getInstance("EC")
+        generator.initialize(java.security.spec.ECGenParameterSpec("secp384r1"))
+        val otherCurve = generator.generateKeyPair().public.encoded
+        val id = MessageDigest.getInstance("SHA-256").digest(otherCurve)
+            .take(8).joinToString("") { "%02X".format(it.toInt() and 255) }
+        assertFalse(TrustedIdentityKeys.isSelfCertified(id, otherCurve))
+        assertFalse(TrustedIdentityKeys.acceptAuthenticatedBinding(id, b64(otherCurve), 2L))
+    }
+
 }
