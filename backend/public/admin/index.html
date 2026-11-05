@@ -436,7 +436,7 @@
 
   <!-- JAVASCRIPT DO PAINEL -->
   <script>
-    let authToken = localStorage.getItem('pa_admin_token') || '';
+    let authToken = sessionStorage.getItem('pa_admin_token') || '';
     let currentTab = 'dashboard';
     let rawReports = [];
     let rawOffers = [];
@@ -468,7 +468,7 @@
           const data = await res.json();
           if (res.ok && data.token) {
             authToken = data.token;
-            localStorage.setItem('pa_admin_token', authToken);
+            sessionStorage.setItem('pa_admin_token', authToken);
             showApp();
           } else {
             errEl.textContent = data.error || 'Credenciais inválidas.';
@@ -498,7 +498,7 @@
 
     function logout() {
       authToken = '';
-      localStorage.removeItem('pa_admin_token');
+      sessionStorage.removeItem('pa_admin_token');
       showLogin();
     }
 
@@ -595,7 +595,7 @@
         rawReports = res.reports || [];
         renderReports();
       } catch (err) {
-        container.innerHTML = `<div class="p-6 text-center text-red-400 text-xs">Erro ao carregar denúncias: ${err.message}</div>`;
+        container.innerHTML = `<div class="p-6 text-center text-red-400 text-xs">Erro ao carregar denúncias: ${escapeHtml(err.message)}</div>`;
       }
     }
 
@@ -632,7 +632,7 @@
                   <div class="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide">Mensagens Anexadas como Prova:</div>
                   ${parsed.map(m => `
                     <div class="p-1.5 rounded bg-black/40 text-gray-300">
-                      <span class="text-gray-500 text-[10px]">${m.senderAlias || 'Usuário'}:</span> ${escapeHtml(m.text || m.ciphertextPayload || '')}
+                      <span class="text-gray-500 text-[10px]">${escapeHtml(m.senderAlias || 'Usuário')}:</span> ${escapeHtml(m.text || m.ciphertextPayload || '')}
                     </div>
                   `).join('')}
                 </div>
@@ -661,7 +661,7 @@
                 <span class="px-2.5 py-0.5 rounded-md text-[11px] font-extrabold uppercase bg-red-950/70 border border-red-800 text-red-300">
                   ${escapeHtml(rep.violation_type || 'ABUSO')}
                 </span>
-                <span class="text-xs text-gray-400">• ID: <code class="text-gray-300">${rep.id}</code></span>
+                <span class="text-xs text-gray-400">• ID: <code class="text-gray-300">${escapeHtml(rep.id)}</code></span>
                 <span class="text-xs text-gray-500">• ${new Date(rep.created_at).toLocaleString('pt-BR')}</span>
               </div>
               <div>${statusBadge}</div>
@@ -693,13 +693,13 @@
 
             ${isPending ? `
               <div class="pt-3 border-t border-brand-border flex items-center justify-end space-x-2">
-                <button onclick="handleReportAction('${rep.id}', 'DISMISS')" class="px-3 py-1.5 rounded-xl border border-gray-700 text-gray-300 hover:bg-gray-800 text-xs transition">
+                <button data-report-id="${escapeHtml(rep.id)}" onclick="handleReportAction(this.dataset.reportId, 'DISMISS')" class="px-3 py-1.5 rounded-xl border border-gray-700 text-gray-300 hover:bg-gray-800 text-xs transition">
                   <i class="fa-solid fa-xmark mr-1"></i> Descartar
                 </button>
-                <button onclick="handleReportAction('${rep.id}', 'STRIKE')" class="px-3 py-1.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 text-xs transition">
+                <button data-report-id="${escapeHtml(rep.id)}" onclick="handleReportAction(this.dataset.reportId, 'STRIKE')" class="px-3 py-1.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 text-xs transition">
                   <i class="fa-solid fa-bell mr-1"></i> Aplicar Aviso (Strike)
                 </button>
-                <button onclick="handleReportAction('${rep.id}', 'BAN')" class="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-semibold text-xs transition shadow-lg">
+                <button data-report-id="${escapeHtml(rep.id)}" onclick="handleReportAction(this.dataset.reportId, 'BAN')" class="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-semibold text-xs transition shadow-lg">
                   <i class="fa-solid fa-ban mr-1"></i> Banir Usuário
                 </button>
               </div>
@@ -737,7 +737,7 @@
         rawOffers = res.offers || [];
         renderOffers();
       } catch (err) {
-        container.innerHTML = `<div class="col-span-full p-6 text-center text-red-400 text-xs">Erro: ${err.message}</div>`;
+        container.innerHTML = `<div class="col-span-full p-6 text-center text-red-400 text-xs">Erro: ${escapeHtml(err.message)}</div>`;
       }
     }
 
@@ -772,10 +772,10 @@
             </div>
 
             <div class="pt-3 border-t border-brand-border flex items-center justify-between text-xs">
-              <span class="text-gray-500 text-[10px] font-mono truncate max-w-[120px]" title="${off.authorId || off.authorIdentity || ''}">
+              <span class="text-gray-500 text-[10px] font-mono truncate max-w-[120px]" title="${escapeHtml(off.authorId || off.authorIdentity || '')}">
                 Por: ${escapeHtml(off.authorAlias || off.authorId || 'Anônimo')}
               </span>
-              <button onclick="deleteOffer('${off.id}')" class="px-2.5 py-1 rounded-lg bg-red-950 border border-red-800 text-red-300 hover:bg-red-900 text-xs transition">
+              <button data-offer-id="${escapeHtml(off.id)}" onclick="deleteOffer(this.dataset.offerId)" class="px-2.5 py-1 rounded-lg bg-red-950 border border-red-800 text-red-300 hover:bg-red-900 text-xs transition">
                 <i class="fa-solid fa-trash-can mr-1"></i> Derrubar
               </button>
             </div>
@@ -804,7 +804,7 @@
         rawTickets = res.tickets || [];
         renderTickets();
       } catch (err) {
-        container.innerHTML = `<div class="p-6 text-center text-red-400 text-xs">Erro: ${err.message}</div>`;
+        container.innerHTML = `<div class="p-6 text-center text-red-400 text-xs">Erro: ${escapeHtml(err.message)}</div>`;
       }
     }
 
@@ -853,7 +853,7 @@
             ` : ''}
 
             <div class="pt-2 flex justify-end">
-              <button onclick="openReplyModal('${tkt.id}')" class="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-xs transition flex items-center space-x-1.5">
+              <button data-ticket-id="${escapeHtml(tkt.id)}" onclick="openReplyModal(this.dataset.ticketId)" class="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-xs transition flex items-center space-x-1.5">
                 <i class="fa-solid fa-reply"></i>
                 <span>${isOpen ? 'Responder ao Cliente' : 'Enviar Nova Resposta'}</span>
               </button>
@@ -907,7 +907,7 @@
         rawUsers = res.users || [];
         renderUsers();
       } catch (err) {
-        document.getElementById('users-table-body').innerHTML = `<tr><td colspan="5" class="p-6 text-center text-red-400">Erro: ${err.message}</td></tr>`;
+        document.getElementById('users-table-body').innerHTML = `<tr><td colspan="5" class="p-6 text-center text-red-400">Erro: ${escapeHtml(err.message)}</td></tr>`;
       }
     }
 
@@ -940,7 +940,7 @@
             </td>
             <td class="py-3 px-4 text-right">
               ${u.isBanned ? `
-                <button onclick="unbanUser('${u.identity}')" class="px-2.5 py-1 rounded bg-brand-surface hover:bg-emerald-950 text-emerald-400 border border-emerald-800 text-xs transition">
+                <button data-user-id="${escapeHtml(u.identity)}" onclick="unbanUser(this.dataset.userId)" class="px-2.5 py-1 rounded bg-brand-surface hover:bg-emerald-950 text-emerald-400 border border-emerald-800 text-xs transition">
                   <i class="fa-solid fa-unlock mr-1"></i> Desbanir
                 </button>
               ` : `
