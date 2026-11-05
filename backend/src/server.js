@@ -616,7 +616,8 @@ app.get('/api/app/version-check', async (req, res) => {
 /**
  * Atualização da Versão Oficial do App (Permite ao administrador ou CI/CD sincronizar a Play Store)
  */
-app.post(['/api/app/version-update', '/admin/api/app-version'], async (req, res) => {
+app.post(['/api/app/version-update', '/admin/api/app-version'], requireAdminAuth, async (req, res) => {
+  if (process.env.DATABASE_URL && !isPostgres()) return res.status(503).json({error:'Banco indisponível; configuração não alterada.'});
   const { latestVersionCode, latestVersionName, minSupportedVersionCode, forceUpdate, playStoreUrl, releaseNotes } = req.body;
   if (latestVersionCode !== undefined) appVersionConfig.latestVersionCode = parseInt(latestVersionCode, 10);
   if (latestVersionName !== undefined) appVersionConfig.latestVersionName = String(latestVersionName);
@@ -631,6 +632,7 @@ app.post(['/api/app/version-update', '/admin/api/app-version'], async (req, res)
       await query(`INSERT INTO app_config (key, value) VALUES ('version_config', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [JSON.stringify(appVersionConfig)]);
     } catch (e) {
       console.warn('[Version] Aviso ao persistir config de versão no PostgreSQL:', e.message);
+      return res.status(503).json({error:'Não foi possível persistir configuração.'});
     }
   }
 
@@ -662,6 +664,19 @@ async function verifySignedHttp(req,res,operation,identity,alias='',tokenHash=''
   }
   if((httpNonceCache.get(key)||0)>now){
     res.status(409).json({error:'Solicitação já utilizada.'});return false;
+  }
+  if (process.env.DATABASE_URL) {
+    try {
+      const used=await query(
+        'INSERT INTO recovery_proof_nonces(identity_id, operation, nonce) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING nonce',
+        [identity,operation,req.body.identityProof.nonce]);
+      if (!isPostgres()) throw Error('Banco indisponível');
+      if (used.rowCount!==1) {
+        res.status(409).json({error:'Solicitação já utilizada.'});return false;
+      }
+    } catch (_) {
+      res.status(503).json({error:'Proteção contra reutilização indisponível.'});return false;
+    }
   }
   httpNonceCache.set(key,now+125000);
   return true;
@@ -819,15 +834,59 @@ app.post('/api/identities/register', async (req, res) => {
            VALUES ($1,$2,$3,$4,$5)
            ON CONFLICT(id) DO UPDATE SET alias=EXCLUDED.alias, updated_at=NOW()`,
           [identity,proof.publicKey,'',pinHash,alias]);
+        // A chave P-256 usada para ECDSA/ECDH é ligada ao ID em tabela
+        // durável. Nunca substituir chave ativa por registro não autorizado:
+        // rotação ocorre exclusivamente no CLAIM familiar transacional.
+        const bound=await run(
+          `INSERT INTO identity_key_bindings(identity_id,public_key_spki,generation)
+           VALUES($1,$2,1) ON CONFLICT(identity_id) DO NOTHING RETURNING public_key_spki`,
+          [identity,proof.publicKey]);
+        if (bound.rowCount!==1) {
+          const active=await run(
+            'SELECT public_key_spki FROM identity_key_bindings WHERE identity_id=$1',
+            [identity]);
+          if (active.rows[0]?.public_key_spki!==proof.publicKey)
+            throw Object.assign(Error('Chave ativa divergente'),{status:409});
+        }
       });
     }catch(err){
-      if(err.status===409)return res.status(409).json({error:'Prova já utilizada.'});
+      if(err.status===409)return res.status(409).json({error:err.message==='Chave ativa divergente'?'Chave não autorizada.':'Prova já utilizada.'});
       return res.status(503).json({error:'Registro não confirmado no banco.'});
     }
   }
   localStore.identities.set(identity,{id:identity,publicKeySpki:proof.publicKey,alias});
   return res.json({success:true,identityHash:identity});
 });
+/**
+ * Consulta autenticada da chave pública P-256 ativa de um interlocutor.
+ * Chave rotacionada por recuperação traz geração monotônica. TLS e prova
+ * do solicitante obrigatórios; o Android só deve fixá-la após esta resposta.
+ */
+app.post('/api/identities/key', async (req,res)=>{
+  const requester=cleanId(req.body?.requesterIdentity);
+  const target=cleanId(req.body?.targetIdentity);
+  if(!/^[A-F0-9]{16}$/.test(target))
+    return res.status(400).json({error:'Identidade alvo inválida.'});
+  if(!await verifySignedHttp(req,res,'IDENTITY_KEY_LOOKUP',requester,target))return;
+  if(process.env.DATABASE_URL&&!isPostgres())
+    return res.status(503).json({error:'Chaves indisponíveis.'});
+  try {
+    if(isPostgres()){
+      const found=await query(
+        `SELECT k.public_key_spki,k.generation
+           FROM identity_key_bindings k JOIN identities i ON i.id=k.identity_id
+           WHERE k.identity_id=$1 AND COALESCE(i.is_banned,FALSE)=FALSE`,[target]);
+      if(!isPostgres())throw Error('Banco indisponível');
+      if(found.rowCount!==1)return res.status(404).json({error:'Chave não registrada.'});
+      return res.json({success:true,identityHash:target,
+        publicKey:found.rows[0].public_key_spki,generation:Number(found.rows[0].generation)});
+    }
+    const stored=localStore.identities.get(target);
+    if(!stored?.publicKeySpki)return res.status(404).json({error:'Chave não registrada.'});
+    return res.json({success:true,identityHash:target,publicKey:stored.publicKeySpki,generation:1});
+  }catch(_){return res.status(503).json({error:'Falha na consulta de chaves.'});}
+});
+
 /**
  * Consulta de Status de Conexões (Mútuas e Marcações)
  * Isolamento Estrito: Retorna estritamente conexões onde o solicitante (myIdentity) seja participante.
@@ -1559,12 +1618,20 @@ registerFamilyRecoveryRoutes(app, {
 // SISTEMA INTEGRADO DE MODERAÇÃO, SUPORTE E PAINEL ADMINISTRATIVO (WEB)
 // =========================================================================
 
-const ADMIN_USERNAME = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'pessoasaqui2026';
-const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'pa_admin_secret_key_987654321_2026';
+// Sem defaults: instalações não provisionadas não possuem acesso de administração.
+const ADMIN_USERNAME = process.env.ADMIN_USER || '';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || '';
+const ADMIN_READY = ADMIN_USERNAME.length >= 3 && ADMIN_PASSWORD.length >= 12 &&
+  Buffer.byteLength(ADMIN_JWT_SECRET,'utf8') >= 32;
+const equalSafe = (a,b) => {
+  const left=Buffer.from(String(a),'utf8'),right=Buffer.from(String(b),'utf8');
+  return left.length===right.length && crypto.timingSafeEqual(left,right);
+};
 
 function generateAdminToken(username) {
-  const payload = `${username}:${Date.now()}`;
+  if(!ADMIN_READY)throw Error('Admin desabilitado');
+  const payload = `${username}:${Date.now()}:${crypto.randomBytes(16).toString('hex')}`;
   const sig = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(payload).digest('hex');
   return Buffer.from(`${payload}:${sig}`).toString('base64');
 }
@@ -1574,12 +1641,14 @@ function verifyAdminToken(token) {
   try {
     const decoded = Buffer.from(token, 'base64').toString('utf8');
     const parts = decoded.split(':');
-    if (parts.length !== 3) return null;
-    const [username, timestamp, sig] = parts;
-    const expected = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(`${username}:${timestamp}`).digest('hex');
-    if (sig !== expected) return null;
-    // Validade de 7 dias
-    if (Date.now() - parseInt(timestamp, 10) > 7 * 24 * 3600 * 1000) return null;
+    if (!ADMIN_READY || parts.length !== 4) return null;
+    const [username, timestamp, nonce, sig] = parts;
+    const epoch=Number(timestamp), age=Date.now()-epoch;
+    if(username!==ADMIN_USERNAME || !Number.isSafeInteger(epoch) ||
+       age < -60000 || age > 8*3600*1000 || !/^[a-f0-9]{32}$/.test(nonce))return null;
+    const expected = crypto.createHmac('sha256', ADMIN_JWT_SECRET)
+      .update(`${username}:${timestamp}:${nonce}`).digest('hex');
+    if (!equalSafe(sig,expected)) return null;
     return { username, role: 'SUPER_ADMIN' };
   } catch (_) {
     return null;
@@ -1588,7 +1657,7 @@ function verifyAdminToken(token) {
 
 function requireAdminAuth(req, res, next) {
   const authHeader = req.headers.authorization || '';
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.query.admin_token;
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
   const verified = verifyAdminToken(token);
   if (!verified) {
     return res.status(401).json({ error: 'Acesso não autorizado ao painel de moderação.' });
@@ -1606,16 +1675,24 @@ function requireAdminAuth(req, res, next) {
  */
 app.post('/api/reports', async (req, res) => {
   const { reporterIdentity, accusedIdentity, violationType, reason, evidenceMessages } = req.body;
-  if (!accusedIdentity || !reason) {
-    return res.status(400).json({ error: 'accusedIdentity e reason são obrigatórios.' });
+  if (!reporterIdentity || !accusedIdentity || typeof reason!=='string' ||
+      reason.trim().length===0 || reason.length>4000) {
+    return res.status(400).json({ error: 'Identidades e motivo válido são obrigatórios.' });
   }
-
-  const reportId = 'rep_' + Date.now().toString(36) + '_' + crypto.randomBytes(3).toString('hex');
   const cleanReporter = cleanId(reporterIdentity);
   const cleanAccused = cleanId(accusedIdentity);
-  const vType = (violationType || 'ABUSE').toUpperCase();
-  const evidencePayloadStr = typeof evidenceMessages === 'object' ? JSON.stringify(evidenceMessages) : (evidenceMessages || '');
+  const vType = String(violationType || 'ABUSE').toUpperCase();
+  const evidencePayloadStr = typeof evidenceMessages === 'object' ?
+    JSON.stringify(evidenceMessages) : String(evidenceMessages || '');
+  if (!/^[A-F0-9]{16}$/.test(cleanAccused) || evidencePayloadStr.length>16000)
+    return res.status(400).json({error:'Denúncia inválida ou evidência excessiva.'});
+  if(!await verifySignedHttp(req,res,'REPORT_CREATE',cleanReporter,cleanAccused,
+      digestHttpParts([String(reporterIdentity||''),String(accusedIdentity||''),
+        String(violationType||''),String(reason||''),evidencePayloadStr])))return;
+  if(process.env.DATABASE_URL&&!isPostgres())
+    return res.status(503).json({error:'Denúncia não registrada; banco indisponível.'});
 
+  const reportId = 'rep_' + Date.now().toString(36) + '_' + crypto.randomBytes(3).toString('hex');
   const reportObj = {
     id: reportId,
     reporter_identity: cleanReporter,
@@ -1629,9 +1706,6 @@ app.post('/api/reports', async (req, res) => {
     resolved_at: null
   };
 
-  localStore.moderationReports.unshift(reportObj);
-  if (localStore.moderationReports.length > 500) localStore.moderationReports.pop();
-
   if (isPostgres()) {
     try {
       await query(
@@ -1640,9 +1714,12 @@ app.post('/api/reports', async (req, res) => {
         [reportId, cleanReporter, cleanAccused, vType, reason.trim(), evidencePayloadStr]
       );
     } catch (e) {
-      console.warn('[DB] Nota ao registrar denúncia no PostgreSQL:', e.message);
+      console.warn('[DB] Falha ao registrar denúncia no PostgreSQL:', e.message);
+      return res.status(503).json({error:'Denúncia não confirmada no banco.'});
     }
   }
+  localStore.moderationReports.unshift(reportObj);
+  if (localStore.moderationReports.length > 500) localStore.moderationReports.pop();
 
   console.log(`[MODERAÇÃO] Nova denúncia ${reportId}: ${cleanReporter} denunciou ${cleanAccused} (${vType})`);
   res.json({
@@ -1682,9 +1759,7 @@ app.post('/api/tickets', async (req, res) => {
     created_at: new Date().toISOString()
   };
 
-  localStore.supportTickets.unshift(ticketObj);
-  if (localStore.supportTickets.length > 500) localStore.supportTickets.pop();
-
+  if(process.env.DATABASE_URL&&!isPostgres())return res.status(503).json({error:'Chamado não registrado; banco indisponível.'});
   if (isPostgres()) {
     try {
       await query(
@@ -1693,9 +1768,12 @@ app.post('/api/tickets', async (req, res) => {
         [ticketId, cleanAuthor, authorAlias || 'Usuário', cat, subj, message.trim()]
       );
     } catch (e) {
-      console.warn('[DB] Nota ao gravar ticket no PostgreSQL:', e.message);
+      console.warn('[DB] Falha ao gravar ticket no PostgreSQL:', e.message);
+      return res.status(503).json({error:'Chamado não confirmado no banco.'});
     }
   }
+  localStore.supportTickets.unshift(ticketObj);
+  if (localStore.supportTickets.length > 500) localStore.supportTickets.pop();
 
   console.log(`[SUPORTE] Novo chamado ${ticketId} de ${cleanAuthor} (${subj})`);
   res.json({
@@ -1754,12 +1832,13 @@ app.post('/admin/api/login', (req, res) => {
     return res.status(429).json({ error: `Muitas tentativas incorretas. Aguarde ${waitSec} segundos.` });
   }
 
-  const { username, password } = req.body;
+  if(!ADMIN_READY) return res.status(503).json({error:'Credenciais administrativas não provisionadas.'});
+  const { username, password } = req.body || {};
   if (!username || !password) {
     return res.status(400).json({ error: 'Usuário e senha são obrigatórios.' });
   }
 
-  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+  if (equalSafe(username,ADMIN_USERNAME) && equalSafe(password,ADMIN_PASSWORD)) {
     adminLoginAttempts.delete(clientIp);
     const token = generateAdminToken(username);
     console.log(`[ADMIN] Login realizado com sucesso por ${username}`);
