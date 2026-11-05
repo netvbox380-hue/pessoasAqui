@@ -1007,6 +1007,7 @@ class PessoasAquiRepository(
     private var lastSupportSyncMs = 0L
 
     init {
+        br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.initialize(context)
         // Revogações não podem ser apagadas ao reiniciar, evitando ressuscitar vínculos antigos.
         chatPersistence?.let { cp ->
             proximitySimulator.setPersistenceManager(cp)
@@ -1745,6 +1746,26 @@ class PessoasAquiRepository(
         _unifiedPrivateChats.value = proximitySimulator.privateChats.value
     }
 
+    private val lastVerifiedKeySyncMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun refreshPeerBindingIfDue(peerIdentity: String) {
+        if (context == null) return // Testes JVM não fazem rede real.
+        val peer = cleanId(peerIdentity)
+        if (!isPeerPermanent(peer)) return
+        val now = System.currentTimeMillis()
+        val last = lastVerifiedKeySyncMs[peer] ?: 0L
+        if (now - last < 5 * 60_000L) return
+        lastVerifiedKeySyncMs[peer] = now
+        scope.launch {
+            val result = networkClient.refreshAuthenticatedPeerKey(
+                cryptoIdentityManager.getTechnicalIdentity(), peer)
+            if (result.isFailure) {
+                lastVerifiedKeySyncMs.remove(peer)
+                Log.w("PessoasAqui", "Falha ao confirmar chave ECDH de contato: $peer")
+            }
+        }
+    }
+
     internal fun handleRemotePresenceSync(remotePeers: List<RemotePeer>) {
         val myId = cleanId(cryptoIdentityManager.getTechnicalIdentity())
         val myAlias = _currentAlias.value.trim()
@@ -1762,6 +1783,7 @@ class PessoasAquiRepository(
             p.publicKeyBase64?.let { pubKey ->
                 E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
             }
+            refreshPeerBindingIfDue(cId)
             if (current.any {
                     cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cId && it.isFamily
                 }) enrollFamilyRecoveryIfPossible(cId)
@@ -1826,6 +1848,7 @@ class PessoasAquiRepository(
         peer.publicKeyBase64?.let { pubKey ->
             E2eeCryptoEngine.registerPeerPublicKey(cId, pubKey)
         }
+        refreshPeerBindingIfDue(cId)
         if (_realDiscoveredPeople.value.any {
                 cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cId && it.isFamily
             }) enrollFamilyRecoveryIfPossible(cId)
@@ -2606,6 +2629,20 @@ class PessoasAquiRepository(
         // Roteamento exclusivamente via Internet (WebSocket + REST HTTP) com E2EE permanente.
         // Nunca utiliza Bluetooth BLE para conversas permanentes.
         val myId = cryptoIdentityManager.getTechnicalIdentity()
+        // Falha fechada: não enviar nem enfileirar plaintext antes de fixar a
+        // chave autenticada; solicitar sincronização assíncrona com o servidor.
+        if (E2eeCryptoEngine.getPeerPublicKeyBase64(cleanRecipient) == null) {
+            refreshPeerBindingIfDue(cleanRecipient)
+            if (!isSignaling && !isAudio && !isImage && !isDoc) {
+                proximitySimulator.updateMessageDeliveryStatus(
+                    cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                )
+            }
+            return ContentModerationManager.ModerationResult(
+                isAllowed = false,
+                reason = "Chave segura do contato ainda não validada. Tente novamente quando a sincronização terminar."
+            )
+        }
         // Criptografia de Ponta a Ponta com AES-256-GCM e ECDH Zero-Knowledge
         val (ciphertext, iv) = try {
             E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, cryptoIdentityManager.getActivePrivateKey())
