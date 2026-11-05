@@ -72,7 +72,12 @@ function initDatabase() {
       connectionString,
       connectionTimeoutMillis: 4000,
       idleTimeoutMillis: 30000,
-      ssl: connectionString.includes('supabase') ? { rejectUnauthorized: false } : false
+      // O TLS sem validação permitiria ao intermediário ler ou alterar chaves.
+      // Pode fornecer CA própria via PG_SSL_CA_PEM em ambientes privados.
+      ssl: connectionString.includes('supabase') || process.env.PG_SSL_CA_PEM
+        ? {rejectUnauthorized:true,
+           ...(process.env.PG_SSL_CA_PEM ? {ca:process.env.PG_SSL_CA_PEM.replace(/\\n/g,'\n')} : {})}
+        : false
     });
     pool.on('error', (err) => {
       if (isFatalDbError(err)) {
@@ -107,11 +112,12 @@ async function query(sql, params = []) {
     } catch (err) {
       if (isFatalDbError(err)) {
         tripCircuitBreaker(err);
-        return { rows: [], rowCount: 0 };
+        throw err;
       }
       throw err;
     }
   }
+  if(process.env.DATABASE_URL)throw new Error('PostgreSQL indisponível; operação não confirmada');
   return { rows: [], rowCount: 0 };
 }
 
