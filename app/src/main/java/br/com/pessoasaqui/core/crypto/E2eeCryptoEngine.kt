@@ -19,7 +19,7 @@ import javax.crypto.spec.SecretKeySpec
  * Utiliza o algoritmo padrão da indústria AES-256-GCM (Galois/Counter Mode) com:
  * - Acordo de chaves assimétricas de Conhecimento Zero via ECDH (Elliptic Curve Diffie-Hellman)
  *   quando ambas as partes trocam chaves públicas através de presença e convites;
- * - Fallback determinístico seguro para pares legados em migração;
+ * - Leitura histórica legada isolada; novos envios jamais usam chave previsível;
  * - Vetor de Inicialização (IV) de 12 bytes aleatório criptograficamente por mensagem (nonce único);
  * - Tag de autenticação de 128 bits para integridade e proteção contra adulteração de tráfego.
  *
@@ -45,6 +45,9 @@ object E2eeCryptoEngine {
         if (clean.isBlank() || publicKeyBase64.isBlank()) return
         try {
             val pubBytes = Base64Helper.decode(publicKeyBase64)
+            // Anúncio WS não autoriza trocar uma chave fixada por outra.
+            // Identidade recuperada exige geração autenticada pelo backend.
+            if (!TrustedIdentityKeys.isTrustedPeer(clean, pubBytes)) return
             val kf = KeyFactory.getInstance("EC")
             val pubKey = kf.generatePublic(X509EncodedKeySpec(pubBytes))
             peerPublicKeys[clean] = pubKey
@@ -189,7 +192,7 @@ object E2eeCryptoEngine {
         val isEcdh = payload.startsWith(PREFIX_ECDH)
         val isLegacy = payload.startsWith(PREFIX)
         if (!isEcdh && !isLegacy) {
-            return payload
+            throw SecurityException("Mensagem privada não cifrada rejeitada")
         }
 
         val pureIvB64 = ivBase64.substringBefore("|").trim()
