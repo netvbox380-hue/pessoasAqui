@@ -1007,6 +1007,8 @@ class PessoasAquiRepository(
     private var lastSupportSyncMs = 0L
 
     init {
+        networkClient.configureIdentityCredentials(
+            cryptoIdentityManager.getPublicKeyBase64(), cryptoIdentityManager::signChallenge)
         br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.initialize(context)
         // Revogações não podem ser apagadas ao reiniciar, evitando ressuscitar vínculos antigos.
         chatPersistence?.let { cp ->
@@ -3076,6 +3078,8 @@ class PessoasAquiRepository(
 
         // 1. Atualiza e persiste a identidade criptográfica neste aparelho
         cryptoIdentityManager.setRecoveredIdentity(cleanHash)
+        networkClient.configureIdentityCredentials(
+            cryptoIdentityManager.getPublicKeyBase64(), cryptoIdentityManager::signChallenge)
         bleTransportCoordinator.onLocalIdentityRecovered()
         // A publicidade BLE também contém o ID; atualizar após rotação.
         bleManager?.startAdvertising(
