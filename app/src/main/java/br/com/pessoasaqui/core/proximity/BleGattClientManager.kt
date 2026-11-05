@@ -409,7 +409,7 @@ class BleGattClientManager(
         // MAC ECDH autentica apenas a sessão, não o nome/identidade do outro aparelho.
         // Exigir assinatura ECDSA do respondedor sobre o mesmo transcript.
         if (respData.version != BleCryptoHandshakeEngine.PROTOCOL_VERSION ||
-            !BleCryptoHandshakeEngine.isSelfCertifiedIdentity(
+            !br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.isTrustedPeer(
                 peerHash, respData.responderIdentityPubKeyBytes)) {
             onErrorListener?.invoke("BLE: chave pública não corresponde ao respondedor anunciado")
             onHandshakeCompletedListener?.invoke(false, null)
