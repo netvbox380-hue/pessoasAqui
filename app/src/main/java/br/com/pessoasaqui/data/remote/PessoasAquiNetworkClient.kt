@@ -996,6 +996,12 @@ open class PessoasAquiNetworkClient(
                     arr.put(evObj)
                 }
                 put("evidenceMessages", arr)
+                put("identityProof", signedHttpProof(
+                    "REPORT_CREATE", reporterIdentity, accusedIdentity,
+                    br.com.pessoasaqui.core.crypto.InviteIdentityProof.digestParts(
+                        reporterIdentity, accusedIdentity, violationType, reason, arr.toString()
+                    )
+                ))
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/reports")
