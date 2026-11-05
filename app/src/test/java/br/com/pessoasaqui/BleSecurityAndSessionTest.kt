@@ -512,12 +512,15 @@ class BleSecurityAndSessionTest {
         val idManagerBob = CryptoIdentityManager()
 
         val text = "Mensagem do Modo Permanente via Internet"
+        E2eeCryptoEngine.registerPeerPublicKey(idManagerAlice.getTechnicalIdentity(), idManagerAlice.getPublicKeyBase64())
+        E2eeCryptoEngine.registerPeerPublicKey(idManagerBob.getTechnicalIdentity(), idManagerBob.getPublicKeyBase64())
         val (encrypted, ivInfo) = E2eeCryptoEngine.encrypt(
-            text, idManagerAlice.getTechnicalIdentity(), idManagerBob.getTechnicalIdentity()
+            text, idManagerAlice.getTechnicalIdentity(), idManagerBob.getTechnicalIdentity(),
+            idManagerAlice.getActivePrivateKey()
         )
-
         val decrypted = E2eeCryptoEngine.decrypt(
-            encrypted, ivInfo, idManagerAlice.getTechnicalIdentity(), idManagerBob.getTechnicalIdentity()
+            encrypted, ivInfo, idManagerAlice.getTechnicalIdentity(), idManagerBob.getTechnicalIdentity(),
+            idManagerBob.getActivePrivateKey()
         )
 
         assertEquals("Modo Permanente B deve permanecer intacto e funcional", text, decrypted)
