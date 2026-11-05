@@ -1081,15 +1081,7 @@ app.post('/api/connections/mark', async (req, res) => {
     if (targetWs && targetWs.readyState === WebSocket.OPEN) {
       targetWs.send(JSON.stringify(msgForTo));
     } else {
-      if (!pendingMessages.has(kTo)) pendingMessages.set(kTo, []);
-      pendingMessages.get(kTo).push({
-        type: 'E2EE_MESSAGE_RECEIVED',
-        senderHash: from,
-        senderAlias: myAlias,
-        ciphertextPayload: `[MARK_MUTUAL:${myAlias}]`,
-        ivNonce: '',
-        messageId: `mut_${Date.now()}`
-      });
+      // Contato offline: estado do vínculo só é recuperado via /connections/status assinado.
     }
 
     const callerWs = activeSockets.get(kFrom);
@@ -1112,15 +1104,7 @@ app.post('/api/connections/mark', async (req, res) => {
     if (targetWs && targetWs.readyState === WebSocket.OPEN) {
       targetWs.send(JSON.stringify(msgForTo));
     } else {
-      if (!pendingMessages.has(kTo)) pendingMessages.set(kTo, []);
-      pendingMessages.get(kTo).push({
-        type: 'E2EE_MESSAGE_RECEIVED',
-        senderHash: from,
-        senderAlias: myAlias,
-        ciphertextPayload: `[MARK_ON:${myAlias}]`,
-        ivNonce: '',
-        messageId: `mark_${Date.now()}`
-      });
+      // Contato offline: estado do vínculo só é recuperado via /connections/status assinado.
     }
   }
 
@@ -1185,15 +1169,7 @@ app.post('/api/connections/unmark', async (req, res) => {
   if (targetWs && targetWs.readyState === WebSocket.OPEN) {
     targetWs.send(JSON.stringify(msgForTo));
   } else {
-    if (!pendingMessages.has(kTo)) pendingMessages.set(kTo, []);
-    pendingMessages.get(kTo).push({
-      type: 'E2EE_MESSAGE_RECEIVED',
-      senderHash: from,
-      senderAlias: myAlias,
-      ciphertextPayload: `[MARK_OFF:${myAlias}]`,
-      ivNonce: '',
-      messageId: `unmark_${Date.now()}`
-    });
+    // Contato offline: estado do vínculo só é recuperado via /connections/status assinado.
   }
 
   res.json({
