@@ -2,15 +2,18 @@ package br.com.pessoasaqui.core.proximity
 
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import java.security.AlgorithmParameters
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
+import java.security.interfaces.ECPublicKey
 import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.SecureRandom
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
+import java.security.spec.ECParameterSpec
 import java.security.spec.X509EncodedKeySpec
 import java.util.Arrays
 import javax.crypto.Cipher
@@ -466,7 +469,16 @@ object BleCryptoHandshakeEngine {
      */
     fun decodePublicKey(encodedBytes: ByteArray): PublicKey {
         val kf = KeyFactory.getInstance("EC")
-        return kf.generatePublic(X509EncodedKeySpec(encodedBytes))
+        val key = kf.generatePublic(X509EncodedKeySpec(encodedBytes)) as? ECPublicKey
+            ?: throw SecurityException("Chave BLE não é uma chave pública EC")
+        val parameters = AlgorithmParameters.getInstance("EC")
+        parameters.init(ECGenParameterSpec("secp256r1"))
+        val p256 = parameters.getParameterSpec(ECParameterSpec::class.java)
+        require(key.params.curve == p256.curve && key.params.generator == p256.generator &&
+            key.params.order == p256.order && key.params.cofactor == p256.cofactor) {
+            "Apenas chaves P-256 são permitidas no handshake BLE"
+        }
+        return key
     }
 
     // =========================================================================
