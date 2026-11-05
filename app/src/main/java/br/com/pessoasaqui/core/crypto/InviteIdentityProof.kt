@@ -29,6 +29,11 @@ data class InviteIdentityProof(
             MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
                 .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
+        /** SHA-256 de campos com limites explícitos para evitar substituições. */
+        fun digestParts(vararg parts: String): String = tokenDigest(
+            parts.joinToString("|") { "${it.length}:${it}" }
+        )
+
         fun canonical(
             operation: String, identity: String, alias: String, inviteId: String,
             tokenHash: String, timestamp: Long, nonce: String
@@ -43,14 +48,14 @@ data class InviteIdentityProof(
         fun create(
             operation: String, identity: String, alias: String,
             publicKeyBase64: String, signChallenge: (ByteArray) -> String,
-            inviteId: String = "", token: String = ""
+            inviteId: String = "", token: String = "", signedHash: String? = null
         ): InviteIdentityProof {
             require(operation in setOf("CREATE", "REDEEM",
                 "RECOVERY_DELEGATE", "RECOVERY_ISSUE", "RECOVERY_CLAIM", "RECOVERY_REVOKE",
-                "OFFER_PUBLISH", "OFFER_DELETE", "CONNECTION_MARK", "CONNECTION_UNMARK", "IDENTITY_REGISTER"))
+                "OFFER_PUBLISH", "OFFER_DELETE", "CONNECTION_MARK", "CONNECTION_UNMARK", "IDENTITY_REGISTER", "MESSAGE_SEND", "MESSAGE_PENDING", "PRESENCE_HEARTBEAT"))
             val timestamp = System.currentTimeMillis()
             val nonce = UUID.randomUUID().toString()
-            val hash = if (operation in setOf("REDEEM",
+            val hash = signedHash ?: if (operation in setOf("REDEEM",
                     "RECOVERY_DELEGATE", "RECOVERY_CLAIM",
                     "OFFER_PUBLISH", "OFFER_DELETE")) tokenDigest(token) else ""
             val payload = canonical(

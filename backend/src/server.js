@@ -660,10 +660,38 @@ app.post(['/api/app/version-update', '/admin/api/app-version'], async (req, res)
 });
 
 
+// Comprovação assinada da identidade nas operações HTTP (independente da sessão WS).
+function digestHttpParts(parts) {
+  return crypto.createHash('sha256')
+    .update(parts.map(value=>String(value).length+':'+String(value)).join('|'),'utf8').digest('hex');
+}
+const httpNonceCache=new Map();
+async function verifySignedHttp(req,res,operation,identity,alias='',tokenHash=''){
+  if(!/^[A-F0-9]{16}$/.test(identity)){
+    res.status(400).json({error:'Identidade inválida.'});return false;
+  }
+  if(process.env.DATABASE_URL&&!isPostgres()){
+    res.status(503).json({error:'Autenticação indisponível.'});return false;
+  }
+  let valid=false;
+  try{valid=await verifyActiveInviteProof(operation,identity,alias,'',tokenHash,req.body?.identityProof);}
+  catch(_){res.status(503).json({error:'Banco de autenticação indisponível.'});return false;}
+  if(!valid){res.status(401).json({error:'Prova criptográfica inválida.'});return false;}
+  const key=identity+':'+operation+':'+req.body.identityProof.nonce,now=Date.now();
+  if(httpNonceCache.size>8000){
+    for(const [id,expires] of httpNonceCache){if(expires<=now)httpNonceCache.delete(id);}
+  }
+  if((httpNonceCache.get(key)||0)>now){
+    res.status(409).json({error:'Solicitação já utilizada.'});return false;
+  }
+  httpNonceCache.set(key,now+125000);
+  return true;
+}
+
 /**
  * Heartbeat de Presença (Dispositivos ativos no radar)
  */
-app.post('/api/presence/heartbeat', (req, res) => {
+app.post('/api/presence/heartbeat', async (req, res) => {
   const { identityHash, alias, intent } = req.body;
   if (!identityHash) {
     return res.status(400).json({ error: 'identityHash obrigatório.' });
@@ -671,7 +699,9 @@ app.post('/api/presence/heartbeat', (req, res) => {
 
   const cleanIdentity = cleanId(identityHash);
   const kId = keyId(cleanIdentity);
-  const cleanAlias = (alias || 'Usuário PessoasAqui').trim();
+  const cleanAlias = String(alias || 'Usuário PessoasAqui').trim().slice(0,64);
+  if(!await verifySignedHttp(req,res,'PRESENCE_HEARTBEAT',cleanIdentity,cleanAlias,
+      digestHttpParts([String(intent||'')])))return;
 
   // Remove qualquer presença fantasma com o mesmo apelido apenas se pertencer a outro ID
   for (const [idKey, peer] of activePresence.entries()) {
@@ -733,13 +763,17 @@ registerOfferRoutesV2(app,{query,withTransaction,isPostgres,activeOffers});
 /**
  * Envio de Mensagem Cifrada via HTTP (Fallback redundante para WebSockets)
  */
-app.post('/api/messages/send', (req, res) => {
+app.post('/api/messages/send', async (req, res) => {
   const { senderHash, recipientHash, ciphertextPayload, ivNonce, senderAlias, messageId } = req.body;
   if (!recipientHash || !ciphertextPayload) {
     return res.status(400).json({ error: 'recipientHash e ciphertextPayload são obrigatórios.' });
   }
 
   const cleanSender = cleanId(senderHash);
+  const digest=digestHttpParts([
+    String(senderHash||''),String(recipientHash||''),String(ciphertextPayload||''),
+    String(ivNonce||''),String(messageId||''),String(senderAlias||'')]);
+  if(!await verifySignedHttp(req,res,'MESSAGE_SEND',cleanSender,cleanId(recipientHash),digest))return;
   const isStream = String(ciphertextPayload).startsWith('[CALL_AUDIO_FRAME:') || String(ciphertextPayload).startsWith('[CALL_VIDEO_FRAME:');
   if (!checkRateLimit(cleanSender, isStream)) {
     return res.status(429).json({ error: 'Muitas requisições. Limite de envio por segundo excedido.' });
@@ -758,12 +792,14 @@ app.post('/api/messages/send', (req, res) => {
 /**
  * Consulta de Mensagens Pendentes via HTTP
  */
-app.get('/api/messages/pending', (req, res) => {
-  const rawId = req.query.identityHash;
+app.get('/api/messages/pending',(_req,res)=>res.status(401).json({error:'A leitura requer assinatura. Atualize o aplicativo.'}));
+app.post('/api/messages/pending', async (req, res) => {
+  const rawId = req.body?.identityHash;
   if (!rawId) {
     return res.status(400).json({ error: 'identityHash obrigatório.' });
   }
   const cleanKey = keyId(rawId);
+  if(!await verifySignedHttp(req,res,'MESSAGE_PENDING',cleanId(rawId)))return;
   const pending = pendingMessages.get(cleanKey) || [];
   pendingMessages.delete(cleanKey);
   res.json({ success: true, messages: pending });

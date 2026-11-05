@@ -83,6 +83,17 @@ open class PessoasAquiNetworkClient(
         }
     }
 
+    /** Provas de posse assinadas para operações HTTP sensíveis. */
+    private fun signedHttpProof(operation: String, identity: String, alias: String = "", hash: String = ""): JSONObject {
+        val signer = lastSignChallenge ?: throw SecurityException("Chave privada indisponível")
+        val pub = lastPublicKeyBase64?.takeIf { it.isNotBlank() }
+            ?: throw SecurityException("Chave pública indisponível")
+        return br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+            operation = operation, identity = identity, alias = alias,
+            publicKeyBase64 = pub, signChallenge = signer, signedHash = hash
+        ).toJson()
+    }
+
     /**
      * Registra a identidade técnica criptográfica no servidor
      */
@@ -549,8 +560,13 @@ open class PessoasAquiNetworkClient(
         try {
             val json = JSONObject().apply {
                 put("identityHash", identityHash)
-                put("alias", alias)
+                val cleanAlias = alias.trim().take(64).ifBlank { "Usuário PessoasAqui" }
+                put("alias", cleanAlias)
                 put("intent", intent)
+                put("identityProof", signedHttpProof(
+                    "PRESENCE_HEARTBEAT", identityHash, cleanAlias,
+                    br.com.pessoasaqui.core.crypto.InviteIdentityProof.digestParts(intent)
+                ))
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/presence/heartbeat")
@@ -621,8 +637,15 @@ open class PessoasAquiNetworkClient(
                 put("recipientHash", recipientHash)
                 put("ciphertextPayload", ciphertext)
                 put("senderAlias", senderAlias)
-                put("ivNonce", if (ivNonce.isNotBlank()) ivNonce else java.util.UUID.randomUUID().toString().take(12))
+                put("ivNonce", ivNonce)
                 put("messageId", messageId)
+                val digest = br.com.pessoasaqui.core.crypto.InviteIdentityProof.digestParts(
+                    senderHash, recipientHash, ciphertext, ivNonce, messageId, senderAlias
+                )
+                put("identityProof", signedHttpProof(
+                    "MESSAGE_SEND", senderHash,
+                    recipientHash.removePrefix("peer-").trim().uppercase(java.util.Locale.ROOT), digest
+                ))
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/messages/send")
@@ -642,9 +665,13 @@ open class PessoasAquiNetworkClient(
      */
     suspend fun fetchPendingMessages(identityHash: String): Result<List<PendingMessage>> = withContext(Dispatchers.IO) {
         try {
+            val json = JSONObject().apply {
+                put("identityHash", identityHash)
+                put("identityProof", signedHttpProof("MESSAGE_PENDING", identityHash))
+            }
             val request = Request.Builder()
-                .url("$baseUrl/api/messages/pending?identityHash=$identityHash")
-                .get()
+                .url("$baseUrl/api/messages/pending")
+                .post(json.toString().toRequestBody(jsonMediaType))
                 .build()
 
             client.newCall(request).execute().use { response ->

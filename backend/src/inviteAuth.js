@@ -21,7 +21,7 @@ function deriveInviteId(identity, nonce) {
 }
 function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHash, proof, now = Date.now(), activePublicKey = null) {
   try {
-    if (!['CREATE', 'REDEEM', 'RECOVERY_DELEGATE', 'RECOVERY_ISSUE', 'RECOVERY_CLAIM', 'RECOVERY_REVOKE', 'OFFER_PUBLISH', 'OFFER_DELETE', 'CONNECTION_MARK', 'CONNECTION_UNMARK', 'IDENTITY_REGISTER'].includes(operation) ||
+    if (!['CREATE', 'REDEEM', 'RECOVERY_DELEGATE', 'RECOVERY_ISSUE', 'RECOVERY_CLAIM', 'RECOVERY_REVOKE', 'OFFER_PUBLISH', 'OFFER_DELETE', 'CONNECTION_MARK', 'CONNECTION_UNMARK', 'IDENTITY_REGISTER', 'MESSAGE_SEND', 'MESSAGE_PENDING', 'PRESENCE_HEARTBEAT'].includes(operation) ||
         typeof identity !== 'string' || typeof alias !== 'string' ||
         typeof inviteId !== 'string' || typeof tokenHash !== 'string' ||
         !proof || proof.v !== 1) return false;
@@ -36,6 +36,8 @@ function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHa
           !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
         (operation === 'CREATE' && (inviteId !== '' || tokenHash !== '')) ||
         (operation === 'IDENTITY_REGISTER' && (inviteId !== '' || tokenHash !== '')) ||
+        (operation === 'MESSAGE_PENDING' && (alias !== '' || inviteId !== '' || tokenHash !== '')) ||
+        ((operation === 'MESSAGE_SEND' || operation === 'PRESENCE_HEARTBEAT') && (inviteId !== '' || !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
         ((operation === 'CONNECTION_MARK' || operation === 'CONNECTION_UNMARK') &&
           (inviteId !== '' || tokenHash !== '' || !/^[a-f0-9]{16}$/i.test(alias))) ||
         (operation.startsWith('OFFER_') && (inviteId !== '' || !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
