@@ -617,29 +617,39 @@ app.get('/api/app/version-check', async (req, res) => {
  * Atualização da Versão Oficial do App (Permite ao administrador ou CI/CD sincronizar a Play Store)
  */
 app.post(['/api/app/version-update', '/admin/api/app-version'], requireAdminAuth, async (req, res) => {
-  if (process.env.DATABASE_URL && !isPostgres()) return res.status(503).json({error:'Banco indisponível; configuração não alterada.'});
-  const { latestVersionCode, latestVersionName, minSupportedVersionCode, forceUpdate, playStoreUrl, releaseNotes } = req.body;
-  if (latestVersionCode !== undefined) appVersionConfig.latestVersionCode = parseInt(latestVersionCode, 10);
-  if (latestVersionName !== undefined) appVersionConfig.latestVersionName = String(latestVersionName);
-  if (minSupportedVersionCode !== undefined) appVersionConfig.minSupportedVersionCode = parseInt(minSupportedVersionCode, 10);
-  if (forceUpdate !== undefined) appVersionConfig.forceUpdate = Boolean(forceUpdate);
-  if (playStoreUrl !== undefined) appVersionConfig.playStoreUrl = String(playStoreUrl);
-  if (releaseNotes !== undefined) appVersionConfig.releaseNotes = String(releaseNotes);
+  if (process.env.DATABASE_URL && !isPostgres())
+    return res.status(503).json({error:'Banco indisponível; configuração não alterada.'});
+  const {
+    latestVersionCode,latestVersionName,minSupportedVersionCode,forceUpdate,
+    playStoreUrl,releaseNotes
+  }=req.body||{};
+  const proposed={...appVersionConfig};
+  if(latestVersionCode!==undefined)proposed.latestVersionCode=Number(latestVersionCode);
+  if(latestVersionName!==undefined)proposed.latestVersionName=String(latestVersionName).slice(0,32);
+  if(minSupportedVersionCode!==undefined)proposed.minSupportedVersionCode=Number(minSupportedVersionCode);
+  if(forceUpdate!==undefined)proposed.forceUpdate=forceUpdate===true;
+  if(playStoreUrl!==undefined)proposed.playStoreUrl=String(playStoreUrl).slice(0,400);
+  if(releaseNotes!==undefined)proposed.releaseNotes=String(releaseNotes).slice(0,3000);
+  if(!Number.isSafeInteger(proposed.latestVersionCode) ||
+     !Number.isSafeInteger(proposed.minSupportedVersionCode) ||
+     proposed.latestVersionCode<1 || proposed.minSupportedVersionCode<1 ||
+     proposed.minSupportedVersionCode>proposed.latestVersionCode ||
+     !/^https:\/\/play\.google\.com\//.test(proposed.playStoreUrl))
+    return res.status(400).json({error:'Configuração de versão inválida.'});
 
-  if (isPostgres()) {
-    try {
-      await query(`CREATE TABLE IF NOT EXISTS app_config (key VARCHAR(64) PRIMARY KEY, value TEXT)`);
-      await query(`INSERT INTO app_config (key, value) VALUES ('version_config', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [JSON.stringify(appVersionConfig)]);
-    } catch (e) {
-      console.warn('[Version] Aviso ao persistir config de versão no PostgreSQL:', e.message);
-      return res.status(503).json({error:'Não foi possível persistir configuração.'});
-    }
+  if(isPostgres()){
+    try{
+      await withTransaction(async run=>{
+        await run('CREATE TABLE IF NOT EXISTS app_config (key VARCHAR(64) PRIMARY KEY, value TEXT)');
+        await run(`INSERT INTO app_config (key,value) VALUES ('version_config',$1)
+                   ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`,
+          [JSON.stringify(proposed)]);
+      });
+    }catch(_){return res.status(503).json({error:'Não foi possível persistir configuração.'});}
   }
-
-  console.log(`[Version] Nova versão configurada com sucesso: v${appVersionConfig.latestVersionName} (code: ${appVersionConfig.latestVersionCode})`);
-  res.json({ success: true, appVersion: appVersionConfig });
+  appVersionConfig=proposed;
+  res.json({success:true,appVersion:proposed});
 });
-
 
 // Comprovação assinada da identidade nas operações HTTP (independente da sessão WS).
 function digestHttpParts(parts) {
