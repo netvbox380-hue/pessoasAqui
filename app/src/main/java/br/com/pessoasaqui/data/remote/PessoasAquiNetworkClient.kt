@@ -710,6 +710,43 @@ open class PessoasAquiNetworkClient(
     }
 
     /**
+     * Atualiza o pin persistente da chave ECDH de um contato usando a
+     * fonte de verdade autenticada do PostgreSQL. Nunca usar somente
+     * a chave não autenticada de um anúncio WS para aceitar rotação.
+     */
+    suspend fun refreshAuthenticatedPeerKey(
+        requesterIdentity: String, targetIdentity: String
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val payload = JSONObject().apply {
+                put("requesterIdentity", requesterIdentity)
+                put("targetIdentity", targetIdentity)
+                put("identityProof", signedHttpProof(
+                    "IDENTITY_KEY_LOOKUP", requesterIdentity, targetIdentity))
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/identities/key")
+                .post(payload.toString().toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful)
+                    return@withContext Result.failure(IOException("Consulta de chave: HTTP ${response.code}"))
+                val body = JSONObject(response.body?.string() ?: "{}")
+                val id = body.optString("identityHash").uppercase(java.util.Locale.ROOT)
+                val target = targetIdentity.removePrefix("peer-").trim().uppercase(java.util.Locale.ROOT)
+                val pub = body.optString("publicKey")
+                val generation = body.optLong("generation", 0L)
+                if (!body.optBoolean("success") || id != target ||
+                    !br.com.pessoasaqui.core.crypto.TrustedIdentityKeys
+                        .acceptAuthenticatedBinding(id, pub, generation))
+                    return@withContext Result.failure(SecurityException("Chave recebida rejeitada pelo pinning"))
+                br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.registerPeerPublicKey(id, pub)
+                Result.success(true)
+            }
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
+    /**
      * Consulta status das conexões (mútuas e marcações) diretamente da fonte da verdade
      */
     suspend fun fetchConnectionStatus(myIdentity: String): Result<ConnectionStatusResponse> = withContext(Dispatchers.IO) {
