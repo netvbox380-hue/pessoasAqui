@@ -3074,6 +3074,12 @@ class PessoasAquiRepository(
         // 1. Atualiza e persiste a identidade criptográfica neste aparelho
         cryptoIdentityManager.setRecoveredIdentity(cleanHash)
         bleTransportCoordinator.onLocalIdentityRecovered()
+        // A publicidade BLE também contém o ID; atualizar após rotação.
+        bleManager?.startAdvertising(
+            myIdentityHash = cleanHash,
+            myAlias = _currentAlias.value,
+            myIntent = _currentIntent.value
+        )
         deviceSessionManager.resetSession()
 
         // 2. Registra a nova identidade no backend (Render / Supabase)
