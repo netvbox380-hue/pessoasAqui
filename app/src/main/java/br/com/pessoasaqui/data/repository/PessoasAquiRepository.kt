@@ -3438,6 +3438,16 @@ class PessoasAquiRepository(
         }
 
         val content = restoreResult.getOrThrow()
+        // A restauração V3 migra também a configuração local do segredo,
+        // mas nunca a transmite ao familiar e não sobrescreve segredo existente.
+        if (bestVault.formatVersion == 3 && recoverySecret != null) {
+            val secured = try {
+                vaultSecretStore?.enable(getMyIdentity(), recoverySecret) == true
+            } catch (_: Exception) { false }
+            if (!secured) return Result.failure(SecurityException(
+                "Cofre decifrado, mas não foi possível proteger o segredo V3 no Keystore. Nenhum histórico foi gravado."
+            ))
+        }
         for ((peerId, msgs) in content.privateChats) {
             cp.savePrivateChat(peerId, msgs)
         }
@@ -3511,6 +3521,16 @@ class PessoasAquiRepository(
         }
 
         val content = restoreResult.getOrThrow()
+        if (vault.formatVersion == 3 && recoverySecret != null &&
+            vault.ownerIdentityHash.removePrefix("peer-").trim().equals(
+                getMyIdentity().removePrefix("peer-").trim(), ignoreCase = true)) {
+            val secured = try {
+                vaultSecretStore?.enable(getMyIdentity(), recoverySecret) == true
+            } catch (_: Exception) { false }
+            if (!secured) return Result.failure(SecurityException(
+                "Não foi possível salvar segredo V3 no Keystore; histórico preservado."
+            ))
+        }
         for ((peerId, msgs) in content.privateChats) {
             cp.savePrivateChat(peerId, msgs)
         }
