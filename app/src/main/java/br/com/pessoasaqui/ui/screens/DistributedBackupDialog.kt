@@ -508,7 +508,7 @@ fun DistributedBackupDialog(
                     Spacer(Modifier.height(12.dp))
                     Text(
                         newSecretForSetup?.let { secret ->
-                            secret.take(12) + "\\n" + secret.drop(12).chunked(16).joinToString("\\n")
+                            secret.take(12) + "\n" + secret.drop(12).chunked(16).joinToString("\n")
                         } ?: "",
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodySmall,
