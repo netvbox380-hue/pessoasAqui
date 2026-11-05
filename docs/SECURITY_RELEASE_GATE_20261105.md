@@ -113,3 +113,51 @@ uso de aparelhos, banco remoto, Render, geração de APK ou deploy nesta etapa.
 - Testes de regressão foram adicionados mas **não foram executados no Android**
   nesta sessão. Antigravity deve compilar, executar testes e validar o
   processo de migração/recuperação com Samsung S24 e Zenfone 9 antes de liberar.
+
+
+## Integração funcional adicional — Cofre V3 ativável (05/11/2026)
+
+- UI `DistributedBackupDialog`: botão de geração do segredo 256-bit, exibição,
+  confirmação obrigatória de cópia guardada **fora do telefone** antes da ativação.
+  Após ativação, backups manuais e automáticos utilizam V3.
+- Segredo local protegido por `LocalDiskCryptoManager` / Android Keystore,
+  vinculado à identidade. Falha de leitura do segredo bloqueia criação de
+  novo backup no aparelho, evitando regressão silenciosa para V2.
+- Família continua armazenando **somente** o arquivo de backup cifrado.
+  A tela **Entre na sua** permite restaurar o cofre da família com PIN + segredo
+  V3 que o titular guardou separadamente. Recuperação V1/V2 continua aceitando
+  somente PIN. Na restauração V3 válida, o segredo passa a ser armazenado no
+  Keystore do aparelho recuperado **antes** da gravação de conversas.
+- Importação local aceita segredo V3 adicional. Nunca enviar o segredo no
+  payload `[VAULT_STORE:]`, `[VAULT_QUERY:]`, `[VAULT_RESP:]`.
+- **Limitação explícita:** o familiar **não** consegue recuperar sozinho o
+  segredo V3 perdido. O mecanismo atual requer que o titular guarde
+  o segredo offline. Ainda não há compartilhamento limiar Shamir, envelopes
+  E2EE de recuperação ou rotação aprovada por vários familiares. A aprovação
+  familiar existente recupera a identidade, não substitui este segredo.
+- **Não é migração automática de cofres antigos já distribuídos:** V1/V2
+  permanecem legíveis, mas cópias antigas obtidas por terceiros permanecem
+  vulneráveis a ataques offline. Após confirmar V3, realizar um backup novo
+  e validar a substituição entre familiares.
+- Riscos de recuperação: perder PIN **ou** segredo V3 significa perda de acesso
+  ao cofre V3. Antes da produção, avaliar UX de exportação offline autenticada,
+  aviso de perda irreversível e política de rotação segura em caso de
+  comprometimento do segredo. Testar formatação, falta de Keystore e hardware.
+- Não houve compilação, execução de testes Android, aparelho físico, PostgreSQL,
+  Render ou Supabase nesta integração. **NÃO PUBLICAR sem Antigravity homologar.**
+
+### Homologação Antigravity adicional (crítica)
+
+1. Ativar V3, guardar segredo externamente, criar backup; garantir
+   `formatVersion=3` no JSON e ausência literal do segredo.
+2. Restaurar o cofre em outro aparelho, após transferência da identidade
+   autorizada, com PIN e segredo V3. Reiniciar aparelho e verificar
+   reativação do backup automático V3.
+3. Confirmar falhas com PIN correto + segredo errado, só PIN,
+   PIN errado + segredo correto, JSON alterado e versão reduzida.
+4. Confirmar que apagar/inutilizar chave Keystore **não** produz
+   backup V2 como fallback e não apaga histórico/identidade.
+5. Confirmar V1/V2 ainda restauráveis, e impossibilidade de
+   sobrescrever V3 armazenado por V1/V2, mesmo com versão maior.
+6. Repetir nos aparelhos Android 14 e 16; rodar compilação debug/release
+   e testes unitários em Antigravity, em branch/main com este commit.
