@@ -3073,6 +3073,7 @@ class PessoasAquiRepository(
 
         // 1. Atualiza e persiste a identidade criptográfica neste aparelho
         cryptoIdentityManager.setRecoveredIdentity(cleanHash)
+        bleTransportCoordinator.onLocalIdentityRecovered()
         deviceSessionManager.resetSession()
 
         // 2. Registra a nova identidade no backend (Render / Supabase)
