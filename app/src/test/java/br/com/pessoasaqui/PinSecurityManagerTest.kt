@@ -75,4 +75,11 @@ class PinSecurityManagerTest {
         assertFalse("Aparelho legítimo não deve ser bloqueado por erros em outro aparelho", stateB.isLocked)
         assertEquals(0, stateB.attemptCount)
     }
+
+    @Test
+    fun freshIdentityNeverAcceptsFactoryPin() {
+        val fresh = PinSecurityManager()
+        assertTrue(fresh.verifyPinForRecovery("fresh-device", "0000").isFailure)
+        assertNull(fresh.getUserPin())
+    }
 }

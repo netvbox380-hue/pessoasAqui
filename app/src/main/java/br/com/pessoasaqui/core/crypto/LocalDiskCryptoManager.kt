@@ -1,6 +1,11 @@
 package br.com.pessoasaqui.core.crypto
 
 import android.content.Context
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import java.security.KeyStore
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
 import android.util.Base64
 import android.util.Log
 import java.nio.charset.StandardCharsets
@@ -27,6 +32,8 @@ class LocalDiskCryptoManager(
         private const val TAG_LENGTH_BITS = 128
         private const val IV_LENGTH_BYTES = 12
         private const val PREFIX = "ENC_V1:"
+        private const val PREFIX_V2 = "ENC_V2:"
+        private const val KEYSTORE_ALIAS = "pessoasaqui_local_disk_aes_v2"
         private const val FALLBACK_SALT = "PESSOASAQUI_DISK_SALT_V1_STABLE_PEPPER_2026"
     }
 
@@ -60,6 +67,25 @@ class LocalDiskCryptoManager(
         return SecretKeySpec(keyBytes, "AES")
     }
 
+    /** V2: chave AES não exportável. V1 permanece apenas para leitura histórica. */
+    private fun keystoreKey(): SecretKey {
+        check(context != null) { "Android Keystore exige Context" }
+        val store = KeyStore.getInstance("AndroidKeyStore")
+        store.load(null)
+        val previous = store.getKey(KEYSTORE_ALIAS, null)
+        if (previous is SecretKey) return previous
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        val params = KeyGenParameterSpec.Builder(
+            KEYSTORE_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .setRandomizedEncryptionRequired(true)
+            .build()
+        generator.init(params)
+        return generator.generateKey()
+    }
+
     private fun base64Encode(bytes: ByteArray): String {
         return try {
             android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
@@ -85,18 +111,23 @@ class LocalDiskCryptoManager(
      */
     fun encrypt(plaintext: String): String {
         return try {
-            val iv = ByteArray(IV_LENGTH_BYTES)
-            SecureRandom().nextBytes(iv)
-
             val cipher = Cipher.getInstance(ALGORITHM)
-            val gcmSpec = GCMParameterSpec(TAG_LENGTH_BITS, iv)
-            cipher.init(Cipher.ENCRYPT_MODE, diskKey, gcmSpec)
+            val iv: ByteArray
+            if (context != null) {
+                // Android Keystore gera o IV internamente; não fornecer IV fixo.
+                cipher.init(Cipher.ENCRYPT_MODE, keystoreKey())
+                iv = cipher.iv
+            } else {
+                // Caminho isolado para testes sem Context (sem acesso ao Keystore).
+                iv = ByteArray(IV_LENGTH_BYTES).also { SecureRandom().nextBytes(it) }
+                cipher.init(Cipher.ENCRYPT_MODE,diskKey,GCMParameterSpec(TAG_LENGTH_BITS,iv))
+            }
 
             val ciphertext = cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
             val b64Iv = base64Encode(iv)
             val b64Cipher = base64Encode(ciphertext)
 
-            "$PREFIX$b64Iv:$b64Cipher"
+            "${if (context != null) PREFIX_V2 else PREFIX}$b64Iv:$b64Cipher"
         } catch (e: Exception) {
             Log.e(TAG, "Falha ao cifrar dados para repouso no disco: ${e.message}", e)
             throw IllegalStateException("Não foi possível criptografar dados para armazenamento", e)
@@ -108,13 +139,16 @@ class LocalDiskCryptoManager(
      */
     fun decrypt(storedData: String): String {
         val trimmed = storedData.trim()
-        if (!trimmed.startsWith(PREFIX)) {
-            // Dado legado em texto puro (migração transparente)
+        val isV2 = trimmed.startsWith(PREFIX_V2)
+        val isV1 = trimmed.startsWith(PREFIX)
+        if (!isV1 && !isV2) {
+            if (trimmed.startsWith("ENC_V")) throw SecurityException("Versão do envelope inválida")
+            // Somente leitura de dados históricos sem envelope; gravações novas usam V2.
             return trimmed
         }
 
         return try {
-            val payload = trimmed.removePrefix(PREFIX)
+            val payload = trimmed.removePrefix(if (isV2) PREFIX_V2 else PREFIX)
             val parts = payload.split(":", limit = 2)
             if (parts.size < 2) throw SecurityException("Envelope local cifrado inválido")
 
@@ -123,7 +157,7 @@ class LocalDiskCryptoManager(
 
             val cipher = Cipher.getInstance(ALGORITHM)
             val gcmSpec = GCMParameterSpec(TAG_LENGTH_BITS, iv)
-            cipher.init(Cipher.DECRYPT_MODE, diskKey, gcmSpec)
+            cipher.init(Cipher.DECRYPT_MODE, if (isV2) keystoreKey() else diskKey, gcmSpec)
 
             val decrypted = cipher.doFinal(ciphertext)
             String(decrypted, StandardCharsets.UTF_8)

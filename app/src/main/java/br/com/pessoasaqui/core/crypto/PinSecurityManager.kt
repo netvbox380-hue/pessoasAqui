@@ -3,6 +3,9 @@ package br.com.pessoasaqui.core.crypto
 import android.content.Context
 import br.com.pessoasaqui.domain.model.LockoutState
 import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 
 /**
  * Gerencia a segurança do PIN do usuário e a proteção estrita contra força bruta
@@ -18,8 +21,9 @@ class PinSecurityManager(
     private val recoveryAttempts = mutableMapOf<String, RecoveryAttemptTracker>()
     
     // Hash do PIN configurado pelo usuário para sua identidade (salgado e com SHA-256)
-    private var registeredPinHash: String = prefs?.getString("pin_hash", null) ?: hashPin("0000")
-    private var savedVaultPin: String? = prefs?.getString("vault_pin_encrypted", null)
+    private val diskCrypto = context?.let { LocalDiskCryptoManager(it) }
+    private var registeredPinHash: String = prefs?.getString("pin_hash", null) ?: ""
+    private var savedVaultPin: String? = null
 
     data class RecoveryAttemptTracker(
         var failedAttempts: Int = 0,
@@ -27,18 +31,57 @@ class PinSecurityManager(
         var isPermanentlyCancelled: Boolean = false
     )
 
+    /** V2: criptografa o PIN recuperável em repouso; nunca grava PIN em claro. */
     fun registerUserPin(pin: String) {
-        val clean = pin.trim()
-        registeredPinHash = hashPin(clean)
-        savedVaultPin = clean
-        prefs?.edit()
-            ?.putString("pin_hash", registeredPinHash)
-            ?.putString("vault_pin_encrypted", clean)
-            ?.apply()
+        val clean=pin.trim()
+        require(clean.length>=4) { "PIN muito curto" }
+        val encrypted=if(context!=null) diskCrypto!!.encrypt(clean) else null
+        val hash=strongPinHash(clean)
+        if(context!=null) {
+            val written=prefs?.edit()?.putString("pin_hash",hash)
+                ?.putString("vault_pin_encrypted",encrypted)?.commit() ?: false
+            if(!written) throw IllegalStateException("Não foi possível persistir PIN cifrado")
+        }
+        registeredPinHash=hash
+        savedVaultPin=clean
     }
 
     fun getUserPin(): String? {
-        return savedVaultPin ?: prefs?.getString("vault_pin_encrypted", null) ?: "0000"
+        savedVaultPin?.let { return it }
+        val stored=prefs?.getString("vault_pin_encrypted",null) ?: return null
+        return try {
+            val clear=if(stored.startsWith("ENC_V1:")||stored.startsWith("ENC_V2:")){
+                diskCrypto?.decrypt(stored) ?: return null
+            }else{
+                val encrypted=diskCrypto?.encrypt(stored) ?: return null
+                if(!prefs.edit().putString("vault_pin_encrypted",encrypted).commit())return null
+                stored
+            }
+            savedVaultPin=clear
+            clear
+        }catch(_:Exception){null}
+    }
+
+    private fun strongPinHash(pin:String):String {
+        val salt=ByteArray(16).also{SecureRandom().nextBytes(it)}
+        val spec=PBEKeySpec(pin.toCharArray(),salt,150_000,256)
+        val key=try{SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded}
+            finally{spec.clearPassword()}
+        fun hex(bytes:ByteArray)=bytes.joinToString(""){"%02x".format(it.toInt() and 0xff)}
+        return "pbkdf2v2$"+hex(salt)+"$"+hex(key)
+    }
+
+    private fun verifyStrongPin(pin:String,record:String):Boolean {
+        val parts=record.split('$')
+        if(parts.size!=3||parts[0]!="pbkdf2v2"||parts[1].length!=32||parts[2].length!=64)return false
+        return try{
+            val salt=parts[1].chunked(2).map{it.toInt(16).toByte()}.toByteArray()
+            val expected=parts[2].chunked(2).map{it.toInt(16).toByte()}.toByteArray()
+            val spec=PBEKeySpec(pin.toCharArray(),salt,150_000,256)
+            val found=try{SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded}
+                finally{spec.clearPassword()}
+            MessageDigest.isEqual(expected,found)
+        }catch(_:Exception){false}
     }
 
     fun hasCustomPin(): Boolean {
@@ -109,8 +152,12 @@ class PinSecurityManager(
             return Result.failure(IllegalStateException("Aguarde o término do bloqueio de segurança: ${remainingSec}s restantes."))
         }
 
-        val candidateHash = hashPin(candidatePin)
-        if (candidateHash == registeredPinHash) {
+        val accepted=if(registeredPinHash.startsWith("pbkdf2v2$")){
+            verifyStrongPin(candidatePin,registeredPinHash)
+        }else registeredPinHash.isNotBlank() &&
+            MessageDigest.isEqual(hashPin(candidatePin).toByteArray(),registeredPinHash.toByteArray())
+        if(accepted) {
+            if(!registeredPinHash.startsWith("pbkdf2v2$"))registerUserPin(candidatePin)
             // Sucesso! Limpa o rastreador dessa tentativa
             recoveryAttempts.remove(recoverySessionId)
             return Result.success(true)
