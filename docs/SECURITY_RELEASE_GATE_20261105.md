@@ -82,3 +82,34 @@ Checar também os testes no dispositivo **Samsung S24 Android 16** e **Zenfone 9
 
 **A implementação não equivale a homologação**. Não houve compilação Android,
 uso de aparelhos, banco remoto, Render, geração de APK ou deploy nesta etapa.
+
+
+## Atualização do cofre — 05/11/2026 (V3, **não ativada por padrão**)
+
+- Introduzido motor de cofre V3 com segredo independente de 256 bits aleatórios
+  (`P2PVaultManager.generateRecoverySecret()`) mais PIN do usuário. O segredo
+  **não** é salvo no pacote JSON nem derivado de identidade/contato/PIN.
+- Cofres V3 usam domínio criptográfico próprio e AAD autenticado. Sem PIN **e**
+  segredo correto, a restauração V3 falha; troca do campo `formatVersion`
+  também falha. Familiar pode armazenar o arquivo V3 sem conhecer seu segredo.
+- O código mantém escrita e leitura antigas V1/V2 para não quebrar fluxos
+  existentes. O repositório oferece entradas explícitas
+  `executeDistributedBackupWithSecret` e
+  `queryAndRestoreFromFamilyVaultWithSecret`; exportação/importação local
+  também aceitam segredo opcional.
+- **NÃO considerar a vulnerabilidade eliminada para usuários existentes:**
+  o fluxo automático e as telas de recuperação continuam gerando V2 enquanto
+  o usuário não tiver um segredo V3 independente provisionado e resgatável.
+  O aumento de PBKDF2 sozinho não resolve ataques offline a PIN curto.
+- **Bloqueador para ativação padrão:** disponibilizar o segredo por método de
+  recuperação independente e autenticado, como envelopes de transporte E2EE
+  com aprovação familiar (com resistência a perda/comprometimento de aparelho),
+  sem colocar segredo junto do backup. Implementar UI de recuperação, migração
+  explícita V2→V3, confirmação de recebimento do segredo e recuperação em
+  telefone novo; sem isso não ativar V3 automaticamente.
+- Cofre V3 já armazenado não pode ser substituído por V1/V2, mesmo com
+  versão anunciada maior. Ao habilitar V3 em produção, replicação silenciosa
+  deverá reutilizar segredo V3 autorizado para continuar gerando novos V3.
+- Testes de regressão foram adicionados mas **não foram executados no Android**
+  nesta sessão. Antigravity deve compilar, executar testes e validar o
+  processo de migração/recuperação com Samsung S24 e Zenfone 9 antes de liberar.
