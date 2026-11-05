@@ -773,40 +773,43 @@ app.get('/api/messages/pending', (req, res) => {
  * Registro / Inicialização da Identidade Técnica Criptográfica (Sem dados tradicionais)
  */
 app.post('/api/identities/register', async (req, res) => {
-  const { identityHash, publicKeyEd25519, publicKeyX25519, pin, alias } = req.body;
-
-  if (!identityHash || !publicKeyEd25519 || !pin) {
-    return res.status(400).json({ error: 'Parâmetros de identidade criptográfica incompletos.' });
+  const identity=cleanId(req.body?.identityHash);
+  const alias=String(req.body?.alias||'Eu').trim().slice(0,64);
+  if(!/^[A-F0-9]{16}$/.test(identity)||!alias){
+    return res.status(400).json({error:'Identidade ou apelido inválido.'});
   }
-
-  const cleanIdentity = cleanId(identityHash);
-  const pinHash = hashPin(pin);
-
-  // Sempre armazena no cache em memória local para velocidade e resiliência
-  localStore.identities.set(cleanIdentity, {
-    id: cleanIdentity,
-    publicKeyEd25519,
-    publicKeyX25519,
-    pinHash,
-    alias: alias || 'Eu'
-  });
-
-  if (isPostgres()) {
-    try {
-      await query(
-        `INSERT INTO identities (id, public_key_ed25519, public_key_x25519, pin_salted_hash, alias)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO UPDATE SET alias = EXCLUDED.alias, updated_at = NOW()`,
-        [cleanIdentity, publicKeyEd25519, publicKeyX25519 || '', pinHash, alias || 'Eu']
-      );
-    } catch (e) {
-      console.warn('[DB] Aviso ao gravar identidade no PostgreSQL (mantido em memória):', e.message);
+  if(process.env.DATABASE_URL && !isPostgres()){
+    return res.status(503).json({error:'Registro seguro exige banco disponível.'});
+  }
+  let verified=false;
+  try{verified=await verifyActiveInviteProof('IDENTITY_REGISTER',identity,alias,'','',req.body?.identityProof);}
+  catch(_){return res.status(503).json({error:'Autenticação indisponível.'});}
+  if(!verified)return res.status(401).json({error:'Assinatura da chave privada obrigatória.'});
+  const proof=req.body.identityProof;
+  // Campo de PIN legado: utilizar verificador aleatório, nunca o padrão fixo 0000.
+  // O usuário mantém seu próprio PIN no aparelho/cofre, separado deste cadastro.
+  const pinHash=hashPin(crypto.randomBytes(32).toString('hex'));
+  if(process.env.DATABASE_URL){
+    try{
+      await withTransaction(async run=>{
+        const nonce=await run(
+          'INSERT INTO recovery_proof_nonces(identity_id,operation,nonce) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING nonce',
+          [identity,'IDENTITY_REGISTER',proof.nonce]);
+        if(nonce.rowCount!==1)throw Object.assign(Error('Prova já utilizada'),{status:409});
+        await run(
+          `INSERT INTO identities (id,public_key_ed25519,public_key_x25519,pin_salted_hash,alias)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT(id) DO UPDATE SET alias=EXCLUDED.alias, updated_at=NOW()`,
+          [identity,proof.publicKey,'',pinHash,alias]);
+      });
+    }catch(err){
+      if(err.status===409)return res.status(409).json({error:'Prova já utilizada.'});
+      return res.status(503).json({error:'Registro não confirmado no banco.'});
     }
   }
-
-  res.json({ success: true, identityHash: cleanIdentity, message: 'Identidade técnica registrada com sucesso.' });
+  localStore.identities.set(identity,{id:identity,publicKeySpki:proof.publicKey,alias});
+  return res.json({success:true,identityHash:identity});
 });
-
 /**
  * Consulta de Status de Conexões (Mútuas e Marcações)
  * Isolamento Estrito: Retorna estritamente conexões onde o solicitante (myIdentity) seja participante.

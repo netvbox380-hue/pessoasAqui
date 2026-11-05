@@ -91,15 +91,17 @@ open class PessoasAquiNetworkClient(
         publicKeyEd25519: String,
         publicKeyX25519: String,
         pin: String,
-        alias: String
+        alias: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("identityHash", identityHash)
                 put("publicKeyEd25519", publicKeyEd25519)
                 put("publicKeyX25519", publicKeyX25519)
-                put("pin", pin)
+                // Nunca transmitir PIN pessoal neste endpoint.
                 put("alias", alias)
+                put("identityProof", identityProof.toJson())
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/identities/register")

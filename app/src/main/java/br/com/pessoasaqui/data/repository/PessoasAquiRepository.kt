@@ -1939,12 +1939,20 @@ class PessoasAquiRepository(
     private fun registerIdentityOnBackend() {
         scope.launch {
             try {
+                val alias = _currentAlias.value.trim().take(64).ifBlank { "Eu" }
+                val identity = cryptoIdentityManager.getTechnicalIdentity()
+                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation = "IDENTITY_REGISTER", identity = identity, alias = alias,
+                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge = cryptoIdentityManager::signChallenge
+                )
                 networkClient.registerIdentity(
-                    identityHash = cryptoIdentityManager.getTechnicalIdentity(),
+                    identityHash = identity,
                     publicKeyEd25519 = cryptoIdentityManager.getPublicKeyBase64(),
-                    publicKeyX25519 = cryptoIdentityManager.getPublicKeyBase64(),
-                    pin = "0000",
-                    alias = _currentAlias.value
+                    publicKeyX25519 = "",
+                    pin = "",
+                    alias = alias,
+                    identityProof = proof
                 )
                 networkClient.sendPresenceHeartbeat(
                     identityHash = cryptoIdentityManager.getTechnicalIdentity(),
