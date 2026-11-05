@@ -83,6 +83,18 @@ open class PessoasAquiNetworkClient(
         }
     }
 
+    /**
+     * Disponibiliza a chave de identidade antes do PRIMEIRO heartbeat HTTP.
+     * Não depende de abrir WebSocket: evita deadlock no bootstrap seguro.
+     */
+    fun configureIdentityCredentials(
+        publicKeyBase64: String, signChallenge: (ByteArray) -> String
+    ) {
+        require(publicKeyBase64.isNotBlank()) { "Chave pública inválida" }
+        lastPublicKeyBase64 = publicKeyBase64
+        lastSignChallenge = signChallenge
+    }
+
     /** Provas de posse assinadas para operações HTTP sensíveis. */
     private fun signedHttpProof(operation: String, identity: String, alias: String = "", hash: String = ""): JSONObject {
         val signer = lastSignChallenge ?: throw SecurityException("Chave privada indisponível")
@@ -339,8 +351,9 @@ open class PessoasAquiNetworkClient(
         lastIdentityHash = myIdentityHash
         lastAlias = myAlias
         lastIntent = myIntent
-        lastPublicKeyBase64 = myPublicKeyBase64
-        lastSignChallenge = signChallenge
+        // A abertura de WS não deve apagar credenciais HTTP já configuradas.
+        lastPublicKeyBase64 = myPublicKeyBase64 ?: lastPublicKeyBase64
+        lastSignChallenge = signChallenge ?: lastSignChallenge
         lastOnE2ee = onE2eeMessageReceived
         lastOnRevoked = onSessionRevoked
         lastOnPresenceSync = onPresenceSync
