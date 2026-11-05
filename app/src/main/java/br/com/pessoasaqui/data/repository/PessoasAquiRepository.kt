@@ -1541,6 +1541,9 @@ class PessoasAquiRepository(
                     val statusResult = networkClient.fetchConnectionStatus(myId)
                     statusResult.getOrNull()?.let { st ->
                         reconcileConnectionStatus(st.markedByMe, st.markingMe, st.mutual)
+                        // A chave autenticada deve ser renovada também para contatos
+                        // offline; presença WS não é requisito para troca segura de chave.
+                        st.mutual.forEach { refreshPeerBindingIfDue(it) }
                     }
 
                     // 3. Busca pessoas próximas registradas no backend
