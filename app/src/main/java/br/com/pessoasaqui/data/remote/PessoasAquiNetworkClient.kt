@@ -586,10 +586,15 @@ open class PessoasAquiNetworkClient(
      */
     suspend fun fetchNearbyPresence(myIdentity: String, myAlias: String = ""): Result<List<RemotePeer>> = withContext(Dispatchers.IO) {
         try {
-            val encodedAlias = java.net.URLEncoder.encode(myAlias, "UTF-8")
+            val cleanAlias = myAlias.trim().take(64)
+            val json = JSONObject().apply {
+                put("myIdentity",myIdentity)
+                put("myAlias",cleanAlias)
+                put("identityProof",signedHttpProof("PRESENCE_NEARBY",myIdentity,cleanAlias))
+            }
             val request = Request.Builder()
-                .url("$baseUrl/api/presence/nearby?myIdentity=$myIdentity&myAlias=$encodedAlias")
-                .get()
+                .url("$baseUrl/api/presence/nearby")
+                .post(json.toString().toRequestBody(jsonMediaType))
                 .build()
 
             client.newCall(request).execute().use { response ->
@@ -709,9 +714,13 @@ open class PessoasAquiNetworkClient(
      */
     suspend fun fetchConnectionStatus(myIdentity: String): Result<ConnectionStatusResponse> = withContext(Dispatchers.IO) {
         try {
+            val json = JSONObject().apply {
+                put("myIdentity",myIdentity)
+                put("identityProof",signedHttpProof("CONNECTION_STATUS",myIdentity))
+            }
             val request = Request.Builder()
-                .url("$baseUrl/api/connections/status?myIdentity=$myIdentity")
-                .get()
+                .url("$baseUrl/api/connections/status")
+                .post(json.toString().toRequestBody(jsonMediaType))
                 .build()
 
             client.newCall(request).execute().use { response ->

@@ -52,7 +52,7 @@ data class InviteIdentityProof(
         ): InviteIdentityProof {
             require(operation in setOf("CREATE", "REDEEM",
                 "RECOVERY_DELEGATE", "RECOVERY_ISSUE", "RECOVERY_CLAIM", "RECOVERY_REVOKE",
-                "OFFER_PUBLISH", "OFFER_DELETE", "CONNECTION_MARK", "CONNECTION_UNMARK", "IDENTITY_REGISTER", "MESSAGE_SEND", "MESSAGE_PENDING", "PRESENCE_HEARTBEAT"))
+                "OFFER_PUBLISH", "OFFER_DELETE", "CONNECTION_MARK", "CONNECTION_UNMARK", "IDENTITY_REGISTER", "MESSAGE_SEND", "MESSAGE_PENDING", "PRESENCE_HEARTBEAT", "CONNECTION_STATUS", "PRESENCE_NEARBY"))
             val timestamp = System.currentTimeMillis()
             val nonce = UUID.randomUUID().toString()
             val hash = signedHash ?: if (operation in setOf("REDEEM",

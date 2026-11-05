@@ -21,7 +21,7 @@ function fixture({postgres=false, databaseError=false} = {}) {
     query:async (sql,args)=> {dbOps.push({sql,args}); if(databaseError)throw Error('DB down');return {rows:[]}},
     cleanId, keyId:cleanId,
     activePresence:new Map(), activeSockets:new Map(), pendingMessages:new Map(),
-    WebSocket:{OPEN:1}, console, Date, process:{env:{}}};
+    WebSocket:{OPEN:1}, console, Date, process:{env:{}}, verifySignedHttp:async()=>true};
   vm.runInNewContext(handlerSection, context);
   async function call(method, route, body={}, query={}) {
     let code = 200, payload;
@@ -49,8 +49,8 @@ test('bilateral consent is needed; either side can revoke; old reciprocal mark d
   assert.equal(f.conns.size,2);
   r=await f.call('POST','/api/connections/unmark',{fromIdentity:'A',toIdentity:'B'});
   assert.equal(r.code,200);assert.equal(f.conns.size,0);
-  const statusA=await f.call('GET','/api/connections/status',{}, {myIdentity:'A'});
-  const statusB=await f.call('GET','/api/connections/status',{}, {myIdentity:'B'});
+  const statusA=await f.call('POST','/api/connections/status',{myIdentity:'A'});
+  const statusB=await f.call('POST','/api/connections/status',{myIdentity:'B'});
   assert.equal(statusA.payload.mutual.length,0);
   assert.equal(statusB.payload.mutual.length,0);
   r=await f.call('POST','/api/connections/mark',{fromIdentity:'A',toIdentity:'B'});
@@ -77,14 +77,14 @@ test('database failure does not acknowledge or locally apply a revocation',async
 
 test('database status failure is not mislabeled as empty authoritative snapshot',async()=>{
   const f=fixture({postgres:true,databaseError:true});
-  const res=await f.call('GET','/api/connections/status',{}, {myIdentity:'A'});
+  const res=await f.call('POST','/api/connections/status',{myIdentity:'A'});
   assert.equal(res.code,503);
 });
 
 test('com DATABASE_URL configurada e PostgreSQL desconectado, relações não são fabricadas no cache', async () => {
   const f=fixture();
   f.context.process.env.DATABASE_URL='postgres://disconnected';
-  const status=await f.call('GET','/api/connections/status',{}, {myIdentity:'A'});
+  const status=await f.call('POST','/api/connections/status',{myIdentity:'A'});
   const mark=await f.call('POST','/api/connections/mark',{fromIdentity:'A',toIdentity:'B'});
   const revoke=await f.call('POST','/api/connections/unmark',{fromIdentity:'A',toIdentity:'B'});
   assert.equal(status.code,503);

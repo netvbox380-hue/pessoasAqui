@@ -705,10 +705,13 @@ app.post('/api/presence/heartbeat', async (req, res) => {
 /**
  * Listagem de Pessoas Online no Radar de Proximidade
  */
-app.get('/api/presence/nearby', async (req, res) => {
-  const myHash = cleanId(req.query.myIdentity);
+app.get('/api/presence/nearby',(_req,res)=>res.status(401).json({error:'Consulta exige autenticação.'}));
+app.post('/api/presence/nearby', async (req, res) => {
+  const myHash = cleanId(req.body?.myIdentity);
+  const myAliasRaw = String(req.body?.myAlias || '').trim().slice(0,64);
+  if(!await verifySignedHttp(req,res,'PRESENCE_NEARBY',myHash,myAliasRaw))return;
   const kMyHash = keyId(myHash);
-  const myAlias = (req.query.myAlias || '').trim().toLowerCase();
+  const myAlias = myAliasRaw.toLowerCase();
   const now = Date.now();
   const peers = Array.from(activePresence.values())
     .filter(p => keyId(p.identityHash) !== kMyHash &&
@@ -829,11 +832,13 @@ app.post('/api/identities/register', async (req, res) => {
  * Consulta de Status de Conexões (Mútuas e Marcações)
  * Isolamento Estrito: Retorna estritamente conexões onde o solicitante (myIdentity) seja participante.
  */
-app.get('/api/connections/status', async (req, res) => {
-  const myId = cleanId(req.query.myIdentity);
+app.get('/api/connections/status',(_req,res)=>res.status(401).json({error:'Consulta exige autenticação.'}));
+app.post('/api/connections/status', async (req, res) => {
+  const myId = cleanId(req.body?.myIdentity);
   if (!myId) {
     return res.status(400).json({ error: 'myIdentity é obrigatório.' });
   }
+  if(!await verifySignedHttp(req,res,'CONNECTION_STATUS',myId))return;
 
   if (process.env.DATABASE_URL && !isPostgres()) {
     return res.status(503).json({success:false,error:'Banco de conexões indisponível.'});
