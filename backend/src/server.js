@@ -1663,6 +1663,9 @@ app.post('/api/tickets', async (req, res) => {
 
   const ticketId = 'tkt_' + Date.now().toString(36) + '_' + crypto.randomBytes(3).toString('hex');
   const cleanAuthor = cleanId(authorIdentity);
+  if(!await verifySignedHttp(req,res,'TICKET_CREATE',cleanAuthor,'',digestHttpParts([
+      String(authorIdentity||''),String(authorAlias||''),String(category||''),
+      String(subject||''),String(message||'')])))return;
   const cat = (category || 'GERAL').toUpperCase();
   const subj = (subject || 'Solicitação de Suporte').trim();
 
@@ -1705,12 +1708,14 @@ app.post('/api/tickets', async (req, res) => {
 /**
  * Consulta de Chamados do Usuário (Para o App exibir respostas)
  */
-app.get('/api/tickets/my', async (req, res) => {
-  const identity = cleanId(req.query.identity);
+app.get('/api/tickets/my', (_req,res)=>res.status(401).json({error:'Autenticação obrigatória.'}));
+app.post('/api/tickets/my', async (req, res) => {
+  const identity = cleanId(req.body?.identity);
   if (!identity) {
     return res.status(400).json({ error: 'identity é obrigatório.' });
   }
-
+  if(!await verifySignedHttp(req,res,'TICKET_READ',identity))return;
+  if(process.env.DATABASE_URL&&!isPostgres())return res.status(503).json({error:'Chamados indisponíveis.'});
   let tickets = localStore.supportTickets.filter(t => keyId(t.author_identity) === keyId(identity));
 
   if (isPostgres()) {
@@ -1722,7 +1727,9 @@ app.get('/api/tickets/my', async (req, res) => {
       if (dbRes.rows.length > 0) {
         tickets = dbRes.rows;
       }
-    } catch (_) {}
+    } catch (_) {
+      return res.status(503).json({error:'Não foi possível consultar chamados.'});
+    }
   }
 
   res.json({ success: true, tickets });

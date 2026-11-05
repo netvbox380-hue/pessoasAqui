@@ -1031,6 +1031,12 @@ open class PessoasAquiNetworkClient(
                 put("category", category)
                 put("subject", subject)
                 put("message", message)
+                put("identityProof", signedHttpProof(
+                    "TICKET_CREATE", authorIdentity, "",
+                    br.com.pessoasaqui.core.crypto.InviteIdentityProof.digestParts(
+                        authorIdentity, authorAlias, category, subject, message
+                    )
+                ))
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/tickets")
@@ -1055,9 +1061,13 @@ open class PessoasAquiNetworkClient(
     suspend fun fetchMySupportTickets(identityHash: String): Result<List<SupportTicketItem>> = withContext(Dispatchers.IO) {
         try {
             val clean = identityHash.trim()
+            val payload = JSONObject().apply {
+                put("identity",clean)
+                put("identityProof",signedHttpProof("TICKET_READ",clean))
+            }
             val request = Request.Builder()
-                .url("$baseUrl/api/tickets/my?identity=$clean")
-                .get()
+                .url("$baseUrl/api/tickets/my")
+                .post(payload.toString().toRequestBody(jsonMediaType))
                 .build()
 
             client.newCall(request).execute().use { response ->
