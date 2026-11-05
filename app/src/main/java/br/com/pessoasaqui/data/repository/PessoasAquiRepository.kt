@@ -3260,8 +3260,20 @@ class PessoasAquiRepository(
      */
     suspend fun executeDistributedBackup(
         pin: String,
-        recoverySecret: String? = null,
         onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> }
+    ): Result<Int> = executeDistributedBackupInternal(pin, null, onProgress)
+
+    /** V3 exige segredo de recuperação entregue por canal separado do cofre. */
+    suspend fun executeDistributedBackupWithSecret(
+        pin: String,
+        recoverySecret: String,
+        onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> }
+    ): Result<Int> = executeDistributedBackupInternal(pin, recoverySecret, onProgress)
+
+    private suspend fun executeDistributedBackupInternal(
+        pin: String,
+        recoverySecret: String?,
+        onProgress: (sent: Int, total: Int) -> Unit
     ): Result<Int> {
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
@@ -3335,8 +3347,20 @@ class PessoasAquiRepository(
      */
     suspend fun queryAndRestoreFromFamilyVault(
         pin: String,
-        recoverySecret: String? = null,
         onStatusUpdate: (String) -> Unit = {}
+    ): Result<Int> = queryAndRestoreFromFamilyVaultInternal(pin, null, onStatusUpdate)
+
+    /** Restaura cofre V3 fornecendo PIN e segredo independente do backup. */
+    suspend fun queryAndRestoreFromFamilyVaultWithSecret(
+        pin: String,
+        recoverySecret: String,
+        onStatusUpdate: (String) -> Unit = {}
+    ): Result<Int> = queryAndRestoreFromFamilyVaultInternal(pin, recoverySecret, onStatusUpdate)
+
+    private suspend fun queryAndRestoreFromFamilyVaultInternal(
+        pin: String,
+        recoverySecret: String?,
+        onStatusUpdate: (String) -> Unit
     ): Result<Int> {
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
