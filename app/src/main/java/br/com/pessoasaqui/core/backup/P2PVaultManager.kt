@@ -22,6 +22,7 @@ import java.security.SecureRandom
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 import javax.crypto.Cipher
+import javax.crypto.Mac
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
@@ -44,7 +45,7 @@ data class EncryptedVaultPackage(
     val encryptedPayloadBase64: String,
     val payloadSha256: String,
     val totalMessagesCount: Int,
-    // Formato 1 = histórico PBKDF2 10 mil iterações; formato 2 = versão autenticada.
+    // V1/V2: históricos legados protegidos somente por PIN; V3: PIN + segredo 256 bits.
     val formatVersion: Int = 1
 )
 
@@ -106,6 +107,15 @@ class P2PVaultManager(
         private const val GCM_IV_LENGTH_BYTES = 12
         private const val GCM_TAG_LENGTH_BITS = 128
         private const val MAX_ALLOWED_VAULT_BYTES = 10 * 1024 * 1024 // 10MB máximo por cofre
+
+        private const val RECOVERY_SECRET_PREFIX = "PA-VAULT-V3-"
+        private val RECOVERY_SECRET_PATTERN = Regex("^PA-VAULT-V3-[0-9A-F]{64}$")
+
+        /** Compartilhar o segredo APENAS por canal autenticado separado do backup. */
+        fun generateRecoverySecret(): String {
+            val secret = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            return RECOVERY_SECRET_PREFIX + secret.joinToString("") { "%02X".format(it.toInt() and 0xff) }
+        }
 
         val json = Json {
             ignoreUnknownKeys = true
@@ -213,7 +223,7 @@ class P2PVaultManager(
      * Deriva uma chave AES-256 a partir do PIN de 6 dígitos usando PBKDF2WithHmacSHA256.
      */
     private fun deriveKey(pin: String, salt: ByteArray, formatVersion: Int): SecretKeySpec {
-        require(formatVersion == 1 || formatVersion == 2) { "Formato de cofre desconhecido" }
+        require(formatVersion in 1..3) { "Formato de cofre desconhecido" }
         require(salt.size == 16) { "Sal do cofre inválido" }
         require(pin.isNotBlank()) { "PIN do cofre vazio" }
         val rounds = if (formatVersion == 1) PBKDF2_ITERATIONS_V1 else PBKDF2_ITERATIONS_V2
@@ -224,10 +234,36 @@ class P2PVaultManager(
         } finally { spec.clearPassword() }
     }
 
+    /**
+     * V3: derive a PIN-stretched key, then combine it with an independent
+     * 256-bit recovery secret. The secret is never serialized in the vault.
+     * The PIN alone must not be sufficient to decrypt an exported copy.
+     */
+    private fun vaultKey(pin: String, salt: ByteArray, format: Int, recoverySecret: String?): SecretKeySpec {
+        val base = deriveKey(pin, salt, format)
+        if (format != 3) return base
+        val candidate = recoverySecret ?: throw SecurityException("Segredo de recuperação V3 obrigatório")
+        require(RECOVERY_SECRET_PATTERN.matches(candidate)) { "Segredo de recuperação inválido" }
+        val bytes = ByteArray(32) { index ->
+            candidate.substring(RECOVERY_SECRET_PREFIX.length + index * 2,
+                RECOVERY_SECRET_PREFIX.length + index * 2 + 2).toInt(16).toByte()
+        }
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(bytes, "HmacSHA256"))
+        bytes.fill(0)
+        val derived = base.encoded
+        return try {
+            val domain = "PESSOASAQUI-VAULT-V3-KEY".toByteArray(Charsets.US_ASCII)
+            SecretKeySpec(mac.doFinal(domain + salt + derived), "AES")
+        } finally {
+            derived.fill(0)
+        }
+    }
+
     /** Autenticação GCM de metadados que antes podiam ser alterados externamente. */
     private fun associatedData(vault: EncryptedVaultPackage): ByteArray {
         val parts = listOf(
-            "PESSOASAQUI-VAULT-V2",
+            if (vault.formatVersion == 3) "PESSOASAQUI-VAULT-V3" else "PESSOASAQUI-VAULT-V2",
             vault.ownerIdentityHash,
             vault.ownerAlias,
             vault.version.toString(),
@@ -294,7 +330,8 @@ class P2PVaultManager(
         ownerAlias: String,
         privateChats: Map<String, List<ChatMessage>>,
         localMural: List<ChatMessage>,
-        contacts: List<VaultContact> = emptyList()
+        contacts: List<VaultContact> = emptyList(),
+        recoverySecret: String? = null
     ): EncryptedVaultPackage {
         val totalMsgs = privateChats.values.sumOf { it.size } + localMural.size
         val content = VaultContentData(
@@ -316,7 +353,8 @@ class P2PVaultManager(
         val iv = ByteArray(GCM_IV_LENGTH_BYTES)
         random.nextBytes(iv)
 
-        // 3. Somente os NOVOS cofres usam formato 2. Os antigos são somente leitura.
+        // V3 é criado com segredo independente. Sem segredo explícito, conservar V2
+        // para não tornar irrecuperáveis os backups dos clientes existentes.
         val meta = EncryptedVaultPackage(
             ownerIdentityHash = ownerIdentityHash.removePrefix("peer-").trim().lowercase(),
             ownerAlias = ownerAlias,
@@ -327,9 +365,9 @@ class P2PVaultManager(
             encryptedPayloadBase64 = "",
             payloadSha256 = "",
             totalMessagesCount = totalMsgs,
-            formatVersion = 2
+            formatVersion = if (recoverySecret != null) 3 else 2
         )
-        val key = deriveKey(pin, salt, meta.formatVersion)
+        val key = vaultKey(pin, salt, meta.formatVersion, recoverySecret)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         val gcmSpec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
         cipher.init(Cipher.ENCRYPT_MODE, key, gcmSpec)
@@ -347,10 +385,11 @@ class P2PVaultManager(
      */
     fun restoreFromVaultPackage(
         vault: EncryptedVaultPackage,
-        pin: String
+        pin: String,
+        recoverySecret: String? = null
     ): Result<VaultContentData> {
         return try {
-            require(vault.formatVersion in 1..2) { "Versão do cofre não suportada" }
+            require(vault.formatVersion in 1..3) { "Versão do cofre não suportada" }
             require(vault.encryptedPayloadBase64.length <= MAX_ALLOWED_VAULT_BYTES * 2) {
                 "Envelope de backup excessivo"
             }
@@ -368,12 +407,12 @@ class P2PVaultManager(
             require(salt.size == 16 && iv.size == GCM_IV_LENGTH_BYTES) {
                 "Sal ou IV do cofre inválido"
             }
-            val key = deriveKey(pin, salt, vault.formatVersion)
+            val key = vaultKey(pin, salt, vault.formatVersion, recoverySecret)
 
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             val gcmSpec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
             cipher.init(Cipher.DECRYPT_MODE, key, gcmSpec)
-            if (vault.formatVersion == 2) cipher.updateAAD(associatedData(vault))
+            if (vault.formatVersion >= 2) cipher.updateAAD(associatedData(vault))
 
             val decryptedCompressedBytes = cipher.doFinal(encryptedBytes)
             val decompressedBytes = decompressGzip(decryptedCompressedBytes)
@@ -407,7 +446,7 @@ class P2PVaultManager(
      */
     fun storePeerVault(vault: EncryptedVaultPackage): Boolean {
         val clean = cleanKey(vault.ownerIdentityHash)
-        if (clean.isBlank() || vault.formatVersion !in 1..2 ||
+        if (clean.isBlank() || vault.formatVersion !in 1..3 ||
             vault.encryptedPayloadBase64.length > MAX_ALLOWED_VAULT_BYTES * 2 ||
             vault.version < 1) return false
         val file = getVaultFile(clean) ?: return false
