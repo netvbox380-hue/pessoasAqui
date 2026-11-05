@@ -1861,6 +1861,7 @@ app.post('/admin/api/login', (req, res) => {
  * Estatísticas e Métricas em Tempo Real
  */
 app.get('/admin/api/stats', requireAdminAuth, async (req, res) => {
+  if(process.env.DATABASE_URL&&!isPostgres())return res.status(503).json({error:'Banco administrativo indisponível.'});
   let totalIdentities = localStore.identities.size;
   if (isPostgres()) {
     try {
@@ -1889,6 +1890,7 @@ app.get('/admin/api/stats', requireAdminAuth, async (req, res) => {
  * Fila de Denúncias
  */
 app.get('/admin/api/reports', requireAdminAuth, async (req, res) => {
+  if(process.env.DATABASE_URL&&!isPostgres())return res.status(503).json({error:'Banco administrativo indisponível.'});
   let reports = [...localStore.moderationReports];
 
   if (isPostgres()) {
@@ -1907,6 +1909,7 @@ app.get('/admin/api/reports', requireAdminAuth, async (req, res) => {
  * Ações de Moderação sobre Denúncias (BAN, STRIKE, DISMISS)
  */
 app.post('/admin/api/reports/:id/action', requireAdminAuth, async (req, res) => {
+  if(process.env.DATABASE_URL&&!isPostgres())return res.status(503).json({error:'Banco administrativo indisponível.'});
   const { id } = req.params;
   const { action, notes } = req.body;
 
@@ -1930,18 +1933,23 @@ app.post('/admin/api/reports/:id/action', requireAdminAuth, async (req, res) => 
   const kAccused = keyId(accused);
   let newStatus = 'REVIEWED';
 
+  if (isPostgres()) {
+    try {
+      await withTransaction(async run=>{
+        const result=await run('UPDATE moderation_reports SET status=$1,moderator_notes=$2,resolved_at=NOW() WHERE id=$3 RETURNING id',
+          [action==='BAN'?'BANNED':action==='STRIKE'?'STRIKE_ISSUED':'DISMISSED',notes||null,id]);
+        if(result.rowCount!==1)throw Object.assign(Error('Denúncia ausente'),{status:404});
+        if(action==='BAN'){
+          const banned=await run('UPDATE identities SET is_banned=TRUE WHERE LOWER(id)=LOWER($1) RETURNING id',[accused]);
+          if(banned.rowCount!==1)throw Object.assign(Error('Identidade ausente'),{status:404});
+          await run('UPDATE devices SET is_active=FALSE,revoked_at=NOW() WHERE LOWER(identity_id)=LOWER($1)',[accused]);
+        }
+      });
+    }catch(e){return res.status(e.status===404?404:503).json({error:'Moderação não confirmada no banco.'});}
+  }
   if (action === 'BAN') {
     newStatus = 'BANNED';
     bannedIdentities.add(kAccused);
-
-    if (isPostgres()) {
-      try {
-        await query(`UPDATE identities SET is_banned = TRUE WHERE LOWER(id) = LOWER($1)`, [accused]);
-        await query(`UPDATE devices SET is_active = FALSE, revoked_at = NOW() WHERE LOWER(identity_id) = LOWER($1)`, [accused]);
-      } catch (e) {
-        console.warn('[DB] Erro ao aplicar banimento no DB:', e.message);
-      }
-    }
 
     // Derruba conexão ativa WebSocket se houver
     const targetWs = activeSockets.get(kAccused);
@@ -1987,14 +1995,7 @@ app.post('/admin/api/reports/:id/action', requireAdminAuth, async (req, res) => 
         }));
       } catch (_) {}
     }
-    deliverMessageToTarget(
-      'moderacao-oficial',
-      'Moderação PessoasAqui',
-      accused,
-      `⚠️ [AVISO FORMAL DA MODERAÇÃO]\nSua conduta violou as Diretrizes da Comunidade PessoasAqui. A reincidência acarretará em suspensão temporária ou banimento permanente.`,
-      '',
-      `strike_${id}_${Date.now()}`
-    );
+    // Avisos administrativos são eventos autenticados; nunca texto disfarçado de E2EE.
   } else if (action === 'DISMISS') {
     newStatus = 'DISMISSED';
   }
@@ -2004,15 +2005,6 @@ app.post('/admin/api/reports/:id/action', requireAdminAuth, async (req, res) => 
     report.status = newStatus;
     report.moderator_notes = notes || null;
     report.resolved_at = resolvedAt;
-  }
-
-  if (isPostgres()) {
-    try {
-      await query(
-        `UPDATE moderation_reports SET status = $1, moderator_notes = $2, resolved_at = NOW() WHERE id = $3`,
-        [newStatus, notes || null, id]
-      );
-    } catch (_) {}
   }
 
   res.json({ success: true, status: newStatus, message: `Ação ${action} aplicada à denúncia ${id}.` });
@@ -2056,6 +2048,7 @@ app.delete('/admin/api/offers/:id', requireAdminAuth, async (req, res) => {
  * Fila de Petições / Suporte de Clientes
  */
 app.get('/admin/api/tickets', requireAdminAuth, async (req, res) => {
+  if(process.env.DATABASE_URL&&!isPostgres())return res.status(503).json({error:'Banco administrativo indisponível.'});
   let tickets = [...localStore.supportTickets];
 
   if (isPostgres()) {
@@ -2074,6 +2067,7 @@ app.get('/admin/api/tickets', requireAdminAuth, async (req, res) => {
  * Resposta do Moderador a uma Petição de Cliente
  */
 app.post('/admin/api/tickets/:id/reply', requireAdminAuth, async (req, res) => {
+  if(process.env.DATABASE_URL&&!isPostgres())return res.status(503).json({error:'Banco administrativo indisponível.'});
   const { id } = req.params;
   const { reply } = req.body;
 
@@ -2093,20 +2087,19 @@ app.post('/admin/api/tickets/:id/reply', requireAdminAuth, async (req, res) => {
     return res.status(404).json({ error: 'Petição/chamado não encontrado.' });
   }
 
+  if(isPostgres()){
+    try{
+      const updated=await query(
+        "UPDATE support_tickets SET status='ANSWERED',moderator_reply=$1,replied_at=NOW() WHERE id=$2 RETURNING id",
+        [reply.trim(),id]);
+      if(updated.rowCount!==1)return res.status(404).json({error:'Chamado não encontrado.'});
+    }catch(_){return res.status(503).json({error:'Resposta não persistida no banco.'});}
+  }
   const nowIso = new Date().toISOString();
   if (ticket) {
     ticket.status = 'ANSWERED';
     ticket.moderator_reply = reply.trim();
     ticket.replied_at = nowIso;
-  }
-
-  if (isPostgres()) {
-    try {
-      await query(
-        `UPDATE support_tickets SET status = 'ANSWERED', moderator_reply = $1, replied_at = NOW() WHERE id = $2`,
-        [reply.trim(), id]
-      );
-    } catch (_) {}
   }
 
   const authorKey = keyId(ticket.author_identity);
@@ -2126,15 +2119,7 @@ app.post('/admin/api/tickets/:id/reply', requireAdminAuth, async (req, res) => {
     } catch (_) {}
   }
 
-  // 2. Entrega também no canal de chat oficial em Conversas Privadas (online ou fila offline)
-  deliverMessageToTarget(
-    'suporte-oficial',
-    'Suporte PessoasAqui',
-    ticket.author_identity,
-    `📩 [RESPOSTA DE SUPORTE]\nChamado: ${ticket.subject}\n\n${reply.trim()}`,
-    '',
-    `tkt_reply_${id}_${Date.now()}`
-  );
+  // Nunca injetar avisos em texto puro no fluxo privado E2EE.
 
   console.log(`[SUPORTE] Resposta enviada ao chamado ${id} para ${ticket.author_identity}`);
   res.json({ success: true, message: 'Resposta enviada com sucesso ao cliente.' });
@@ -2144,6 +2129,7 @@ app.post('/admin/api/tickets/:id/reply', requireAdminAuth, async (req, res) => {
  * Consulta e Gestão de Usuários
  */
 app.get('/admin/api/users', requireAdminAuth, async (req, res) => {
+  if(process.env.DATABASE_URL&&!isPostgres())return res.status(503).json({error:'Banco administrativo indisponível.'});
   const usersList = [];
   for (const [id, idData] of localStore.identities.entries()) {
     const k = keyId(id);
@@ -2176,16 +2162,17 @@ app.get('/admin/api/users', requireAdminAuth, async (req, res) => {
  * Desbanir Usuário (Reverter Banimento)
  */
 app.post('/admin/api/users/:id/unban', requireAdminAuth, async (req, res) => {
+  if(process.env.DATABASE_URL&&!isPostgres())return res.status(503).json({error:'Banco administrativo indisponível.'});
   const id = cleanId(req.params.id);
   const kId = keyId(id);
 
-  bannedIdentities.delete(kId);
-
   if (isPostgres()) {
     try {
-      await query(`UPDATE identities SET is_banned = FALSE WHERE LOWER(id) = LOWER($1)`, [id]);
-    } catch (_) {}
+      const updated=await query('UPDATE identities SET is_banned=FALSE WHERE LOWER(id)=LOWER($1) RETURNING id',[id]);
+      if(updated.rowCount!==1)return res.status(404).json({error:'Identidade não encontrada.'});
+    } catch (_) {return res.status(503).json({error:'Reversão não confirmada no banco.'});}
   }
+  bannedIdentities.delete(kId);
 
   console.log(`[ADMIN] Banimento revertido para a identidade: ${id}`);
   res.json({ success: true, message: `A identidade ${id} foi desbanida com sucesso.` });
