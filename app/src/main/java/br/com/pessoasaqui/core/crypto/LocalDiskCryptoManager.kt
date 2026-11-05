@@ -99,7 +99,7 @@ class LocalDiskCryptoManager(
             "$PREFIX$b64Iv:$b64Cipher"
         } catch (e: Exception) {
             Log.e(TAG, "Falha ao cifrar dados para repouso no disco: ${e.message}", e)
-            plaintext // Fallback seguro
+            throw IllegalStateException("Não foi possível criptografar dados para armazenamento", e)
         }
     }
 
@@ -116,7 +116,7 @@ class LocalDiskCryptoManager(
         return try {
             val payload = trimmed.removePrefix(PREFIX)
             val parts = payload.split(":", limit = 2)
-            if (parts.size < 2) return trimmed
+            if (parts.size < 2) throw SecurityException("Envelope local cifrado inválido")
 
             val iv = base64Decode(parts[0])
             val ciphertext = base64Decode(parts[1])
@@ -129,7 +129,7 @@ class LocalDiskCryptoManager(
             String(decrypted, StandardCharsets.UTF_8)
         } catch (e: Exception) {
             Log.e(TAG, "Falha ao decifrar dados do disco: ${e.message}", e)
-            trimmed
+            throw SecurityException("Falha de integridade ao decifrar armazenamento local", e)
         }
     }
 }

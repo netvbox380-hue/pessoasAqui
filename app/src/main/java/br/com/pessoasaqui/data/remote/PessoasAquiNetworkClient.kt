@@ -496,19 +496,11 @@ open class PessoasAquiNetworkClient(
     }
 
     /**
-     * Sincroniza ativamente a lista de conexões mútuas pelo WebSocket para repovoar a memória do servidor
+     * O servidor e o PostgreSQL são a fonte autoritativa de vínculos.
+     * Este protocolo legado não deve mais permitir sincronização unilateral.
      */
-    fun sendMutualSyncMessage(mutualPeers: List<String>): Boolean {
-        if (!isWsConnected) return false
-        val ws = activeWebSocket ?: return false
-        val msg = JSONObject().apply {
-            put("type", "CLIENT_MUTUAL_SYNC")
-            val arr = JSONArray()
-            mutualPeers.forEach { arr.put(it) }
-            put("mutualPeers", arr)
-        }
-        return ws.send(msg.toString())
-    }
+    @Deprecated("Use o estado bilateral do servidor, não o cache unilateral")
+    fun sendMutualSyncMessage(@Suppress("UNUSED_PARAMETER") mutualPeers: List<String>): Boolean = false
 
     /**
      * Envia heartbeat de presença HTTP para o backend

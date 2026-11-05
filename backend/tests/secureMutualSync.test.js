@@ -1,0 +1,20 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const source = fs.readFileSync(path.join(__dirname, '../src/server.js'),'utf8');
+const start = source.indexOf("if (msg.type === 'CLIENT_MUTUAL_SYNC')");
+const end = source.indexOf('// Heartbeat periódico pelo WebSocket',start);
+assert.ok(start !== -1 && end > start);
+const body = source.slice(start,end);
+test('CLIENT_MUTUAL_SYNC não recria vínculo previamente revogado', () => {
+  const sent = [];
+  const msg = {type:'CLIENT_MUTUAL_SYNC',mutualPeers:['FAKE_PERSON']};
+  const ws = {send: value => sent.push(JSON.parse(value))};
+  vm.runInNewContext('(function(msg,ws){' + body + '})',{})(msg,ws);
+  assert.equal(sent.length,1);
+  assert.equal(sent[0].type,'CLIENT_MUTUAL_SYNC_REJECTED');
+  assert.doesNotMatch(body,/connections\.set|INSERT INTO connections|query\(/);
+});

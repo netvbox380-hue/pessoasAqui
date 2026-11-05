@@ -134,24 +134,23 @@ class CryptoIdentityManager(
         }
     }
 
+    /** Segurança: uma assinatura inválida, ausente ou simulada NUNCA autentica uma identidade. */
     fun verifySignature(data: ByteArray, signatureBase64: String, peerPublicKeyBase64: String? = null): Boolean {
-        if (signatureBase64.startsWith("sig-") || signatureBase64.isBlank()) {
-            return true
-        }
+        if (signatureBase64.isBlank() || signatureBase64.startsWith("sig-")) return false
         return try {
             val pubKey: PublicKey = if (!peerPublicKeyBase64.isNullOrBlank()) {
                 val pubBytes = Base64.decode(peerPublicKeyBase64, Base64.NO_WRAP)
                 KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(pubBytes))
             } else {
-                activeKeyPair?.public ?: return true
+                activeKeyPair?.public ?: return false
             }
             val verifier = Signature.getInstance("SHA256withECDSA")
             verifier.initVerify(pubKey)
             verifier.update(data)
             val sigBytes = Base64.decode(signatureBase64, Base64.NO_WRAP)
             verifier.verify(sigBytes)
-        } catch (e: Exception) {
-            true
+        } catch (_: Exception) {
+            false
         }
     }
 }
