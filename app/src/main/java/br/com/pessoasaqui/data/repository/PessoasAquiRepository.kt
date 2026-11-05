@@ -2382,24 +2382,35 @@ class PessoasAquiRepository(
     /**
      * Gera um link de convite criptografado de uso único para conexão mútua à distância
      */
+    // Compatibilidade com os chamadores legados: o convite só existe se o backend o registrar.
     fun createOneTimeInviteLink(onResult: (String?) -> Unit) {
+        createOneTimeInviteLinkDetailed { result -> onResult(result.getOrNull()) }
+    }
+
+    /**
+     * Preserva a causa da falha de criação para a UI, sem registrar link, token,
+     * assinatura ou chave privada em logs. Não cria convites offline fictícios.
+     */
+    fun createOneTimeInviteLinkDetailed(onResult: (Result<String>) -> Unit) {
         scope.launch {
-            val link = try {
-                // Convite válido só existe quando criado/assinado no backend.
-                // Nunca produzir um URL offline fictício nem expor token inventado.
+            val result = try {
+                val identity = getMyIdentity()
                 val alias = getMyAlias().trim().take(64).ifBlank { "Usuário" }
                 val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
-                    operation = "CREATE", identity = getMyIdentity(), alias = alias,
+                    operation = "CREATE", identity = identity, alias = alias,
                     publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
                     signChallenge = cryptoIdentityManager::signChallenge
                 )
-                networkClient.createOneTimeInvite(getMyIdentity(), alias, proof)
-                    .getOrNull()?.inviteUrl
+                networkClient.createOneTimeInvite(identity, alias, proof)
+                    .map { it.inviteUrl }
             } catch (e: Exception) {
-                Log.w("PessoasAqui", "Não foi possível criar convite seguro: ${e.message}")
-                null
+                Result.failure(e)
             }
-            onResult(link)
+            if (result.isFailure) {
+                // A mensagem HTTP completa é apresentada apenas no aparelho.
+                Log.w("PessoasAqui", "Criação de convite falhou (${result.exceptionOrNull()?.javaClass?.simpleName})")
+            }
+            onResult(result)
         }
     }
 
