@@ -1,6 +1,14 @@
 package br.com.pessoasaqui
 
 import br.com.pessoasaqui.core.backup.P2PVaultManager
+import br.com.pessoasaqui.core.backup.EncryptedVaultPackage
+import br.com.pessoasaqui.core.backup.VaultContentData
+import java.util.Base64
+import javax.crypto.Cipher
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 import br.com.pessoasaqui.domain.model.ChatMessage
 import br.com.pessoasaqui.domain.model.MessageType
 import org.junit.Assert.*
@@ -152,4 +160,74 @@ class P2PVaultManagerTest {
         assertTrue("Restauração deve falhar quando SHA256 foi adulterado", result.isFailure)
         assertTrue(result.exceptionOrNull()?.message?.contains("corrompido") == true)
     }
+    @Test
+    fun testV2BindsMetadataAndRejectsForgery() {
+        val vault = vaultManager.createVaultPackage(
+            pin = "987654", ownerIdentityHash = "abcdef1234567890", ownerAlias = "Alice",
+            privateChats = emptyMap(), localMural = emptyList()
+        )
+        assertEquals("Novos cofres devem usar formato v2", 2, vault.formatVersion)
+        assertTrue(vaultManager.restoreFromVaultPackage(vault, "987654").isSuccess)
+        assertTrue("Alias cifrado como metadado autenticado",
+            vaultManager.restoreFromVaultPackage(vault.copy(ownerAlias = "Mallory"), "987654").isFailure)
+        assertTrue("Não aceitar alteração de versão como downgrade",
+            vaultManager.restoreFromVaultPackage(vault.copy(version = vault.version + 1), "987654").isFailure)
+        assertTrue("Não aceitar adulteração do titular",
+            vaultManager.restoreFromVaultPackage(vault.copy(ownerIdentityHash = "ffffffffffffffff"), "987654").isFailure)
+        assertTrue("PIN incorreto rejeitado",
+            vaultManager.restoreFromVaultPackage(vault, "000000").isFailure)
+    }
+
+    @Test
+    fun testOlderV1CanStillBeRestoredWithoutDowngradeNewWrites() {
+        val original = VaultContentData(
+            privateChats = emptyMap(), localMural = emptyList()
+        )
+        val json = P2PVaultManager.json.encodeToString(VaultContentData.serializer(), original)
+        val zipped = vaultManager.compressGzip(json.toByteArray(Charsets.UTF_8))
+        val salt = ByteArray(16) { (it + 1).toByte() }
+        val iv = ByteArray(12) { (it + 40).toByte() }
+        val pin = "482916"
+        val spec = PBEKeySpec(pin.toCharArray(), salt, 10_000, 256)
+        val keyBytes = try {
+            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+        } finally { spec.clearPassword() }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, iv))
+        val encrypted = cipher.doFinal(zipped)
+        fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val historical = EncryptedVaultPackage(
+            ownerIdentityHash = "abcdef1234567890", ownerAlias = "Alice",
+            version = 1, timestampEpochMs = 1000L,
+            saltHex = hex(salt), ivHex = hex(iv),
+            encryptedPayloadBase64 = Base64.getEncoder().encodeToString(encrypted),
+            payloadSha256 = vaultManager.calculateSha256(encrypted),
+            totalMessagesCount = 0
+            // formatVersion omitido de propósito: arquivos legados usam 1.
+        )
+        val restored = vaultManager.restoreFromVaultPackage(historical, pin)
+        assertTrue("Backup V1 histórico permanece recuperável", restored.isSuccess)
+        assertEquals(original.privateChats, restored.getOrThrow().privateChats)
+    }
+
+    @Test
+    fun testBackupRejectsEqualVersionReplacementAndDecompressionBomb() {
+        val vault = vaultManager.createVaultPackage(
+            pin = "123456", ownerIdentityHash = "aabbccddeeff0011",
+            ownerAlias = "Titular", privateChats = emptyMap(), localMural = emptyList()
+        )
+        assertTrue(vaultManager.storePeerVault(vault))
+        assertFalse("Mesma versão não deve sobrescrever arquivo existente",
+            vaultManager.storePeerVault(vault.copy(ownerAlias = "Atacante")))
+        assertEquals("Titular", vaultManager.getStoredPeerVault("aabbccddeeff0011")?.ownerAlias)
+        val oversized = ByteArray(10 * 1024 * 1024 + 1) { 65 }
+        val compressed = vaultManager.compressGzip(oversized)
+        try {
+            vaultManager.decompressGzip(compressed)
+            fail("GZIP expandido acima do limite deve ser rejeitado")
+        } catch (_: SecurityException) {
+            // Limite seguro evita esgotamento de RAM por bomba de compressão.
+        }
+    }
+
 }
