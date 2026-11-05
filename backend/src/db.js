@@ -1,3 +1,5 @@
+'use strict';
+
 const dns = require('dns');
 if (typeof dns.setDefaultResultOrder === 'function') {
   dns.setDefaultResultOrder('ipv4first');
@@ -8,6 +10,9 @@ const { Pool } = require('pg');
 let pool = null;
 let isPostgres = false;
 let circuitBreakerTripped = false;
+let lastProbeTime = 0;
+const PROBE_COOLDOWN_MS = 10000;
+let isProbing = false;
 
 // Armazenamento em memória local (alta velocidade + fallback resiliente em nuvem)
 const localStore = {
@@ -40,27 +45,67 @@ function isFatalDbError(err) {
     msg.includes('ENETUNREACH') ||
     msg.includes('EHOSTUNREACH') ||
     msg.includes('ECONNREFUSED') ||
-    msg.includes('Connection terminated') ||
     msg.includes('password authentication failed') ||
-    msg.includes('Tenant or user not found') ||
-    msg.includes('timeout')
+    msg.includes('Tenant or user not found')
   );
 }
 
-function tripCircuitBreaker(err) {
-  if (circuitBreakerTripped) return;
-  circuitBreakerTripped = true;
-  isPostgres = false;
-  const reason = err ? (err.code || err.message) : 'Network unreachable';
-  console.warn(`[DB] Aviso: Banco externo inacessível no container (${reason}).`);
-  console.warn('[DB] Circuit Breaker ativado: operando 100% em Memória de Alta Velocidade sem interrupções.');
-  if (pool) {
-    const oldPool = pool;
-    pool = null;
-    try {
-      oldPool.end().catch(() => {});
-    } catch (_) {}
+function attachPoolErrorListener(p) {
+  p.on('error', (err) => {
+    // Erros em conexões ociosas (idle clients) são esperados em pools com PgBouncer/Supabase.
+    // O driver pg remove automaticamente o cliente inativo do pool.
+    // NÃO destruir o pool nem desativar permanentemente o banco de dados.
+    console.warn('[DB] Conexão ociosa reciclada pelo servidor de banco:', err.message);
+  });
+}
+
+function createPool(connectionString) {
+  if (!connectionString) return null;
+  const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
+  const p = new Pool({
+    connectionString,
+    connectionTimeoutMillis: 10000,
+    idleTimeoutMillis: 20000,
+    max: 10,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
+    ssl: isLocal ? false : { rejectUnauthorized: false }
+  });
+  attachPoolErrorListener(p);
+  return p;
+}
+
+async function checkDatabaseHealth() {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) return false;
+  if (isPostgres && pool) return true;
+
+  const now = Date.now();
+  if (now - lastProbeTime < PROBE_COOLDOWN_MS || isProbing) {
+    return isPostgres && pool !== null;
   }
+  lastProbeTime = now;
+  isProbing = true;
+
+  try {
+    if (!pool) {
+      pool = createPool(connectionString);
+    }
+    if (pool) {
+      await pool.query('SELECT 1');
+      isPostgres = true;
+      circuitBreakerTripped = false;
+      console.log('[DB] Conexão com PostgreSQL ativa e verificada.');
+      return true;
+    }
+  } catch (err) {
+    isPostgres = false;
+    circuitBreakerTripped = true;
+    console.warn(`[DB] Sonda de conexão ao PostgreSQL falhou (${err.code || err.message}). Operando em modo resiliente.`);
+  } finally {
+    isProbing = false;
+  }
+  return false;
 }
 
 function initDatabase() {
@@ -68,31 +113,30 @@ function initDatabase() {
 
   if (connectionString) {
     console.log('[DB] Verificando conexão com Banco Relacional PostgreSQL (Supabase / Render)...');
-    pool = new Pool({
-      connectionString,
-      connectionTimeoutMillis: 4000,
-      idleTimeoutMillis: 30000,
-      ssl: connectionString.includes('supabase') ? { rejectUnauthorized: false } : false
-    });
-    pool.on('error', (err) => {
-      if (isFatalDbError(err)) {
-        tripCircuitBreaker(err);
-      }
-    });
-
-    // Inicia como false até que a sonda confirme conectividade real (evita ENETUNREACH nas requisições iniciais)
+    pool = createPool(connectionString);
     isPostgres = false;
 
     pool.query('SELECT 1')
       .then(() => {
-        if (!circuitBreakerTripped) {
-          isPostgres = true;
-          console.log('[DB] Conexão com PostgreSQL verificada e ativa.');
-        }
+        isPostgres = true;
+        circuitBreakerTripped = false;
+        console.log('[DB] Conexão com PostgreSQL verificada e ativa.');
       })
       .catch((err) => {
-        tripCircuitBreaker(err);
+        isPostgres = false;
+        circuitBreakerTripped = true;
+        console.warn(`[DB] Aviso: Conexão inicial com PostgreSQL falhou (${err.code || err.message}). Sonda periódica tentará restabelecer.`);
       });
+
+    // Inicia sonda periódica em segundo plano para autorrecuperação automática
+    const probeTimer = setInterval(() => {
+      if (!isPostgres || !pool) {
+        checkDatabaseHealth().catch(() => {});
+      }
+    }, 20000);
+    if (typeof probeTimer.unref === 'function') {
+      probeTimer.unref();
+    }
   } else {
     console.log('[DB] DATABASE_URL não configurada. Operando em modo de Desenvolvimento Local em Memória.');
     console.log('[DB] (Para conectar ao Supabase, defina DATABASE_URL no arquivo .env)');
@@ -101,12 +145,22 @@ function initDatabase() {
 }
 
 async function query(sql, params = []) {
-  if (isPostgres && pool && !circuitBreakerTripped) {
+  if (!process.env.DATABASE_URL) {
+    return { rows: [], rowCount: 0 };
+  }
+
+  if (!isPostgres || !pool) {
+    await checkDatabaseHealth();
+  }
+
+  if (isPostgres && pool) {
     try {
       return await pool.query(sql, params);
     } catch (err) {
       if (isFatalDbError(err)) {
-        tripCircuitBreaker(err);
+        isPostgres = false;
+        circuitBreakerTripped = true;
+        console.warn(`[DB] Erro de rede na consulta (${err.code || err.message}). Ativando modo resiliente.`);
         return { rows: [], rowCount: 0 };
       }
       throw err;
@@ -116,7 +170,13 @@ async function query(sql, params = []) {
 }
 
 async function withTransaction(work) {
-  if (!isPostgres || !pool || circuitBreakerTripped) {
+  if (!process.env.DATABASE_URL) {
+    throw new Error('PostgreSQL transacional indisponível');
+  }
+  if (!isPostgres || !pool) {
+    await checkDatabaseHealth();
+  }
+  if (!isPostgres || !pool) {
     throw new Error('PostgreSQL transacional indisponível');
   }
   const client = await pool.connect();
@@ -138,6 +198,6 @@ module.exports = {
   query,
   withTransaction,
   localStore,
+  checkDatabaseHealth,
   isPostgres: () => isPostgres && !circuitBreakerTripped
 };
-

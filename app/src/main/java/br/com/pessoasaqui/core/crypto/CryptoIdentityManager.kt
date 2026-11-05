@@ -118,6 +118,14 @@ class CryptoIdentityManager(
             ?: technicalIdentityHash
     }
 
+    fun isIdentitySelfCertified(): Boolean {
+        val pubBytes = activeKeyPair?.public?.encoded ?: return false
+        val digest = MessageDigest.getInstance("SHA-256")
+        val hashBytes = digest.digest(pubBytes)
+        val calculated = hashBytes.take(8).joinToString("") { "%02X".format(it) }
+        return technicalIdentityHash.equals(calculated, ignoreCase = true)
+    }
+
     fun getActiveKeyPair(): KeyPair? = activeKeyPair
     fun getActivePrivateKey(): PrivateKey? = activeKeyPair?.private
     fun getActivePublicKey(): PublicKey? = activeKeyPair?.public

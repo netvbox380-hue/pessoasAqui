@@ -45,6 +45,9 @@ function fixture({postgres=false,failDb=false,shared=null}={}) {
     if(sql.includes('SELECT public_key_spki FROM identity_key_bindings')) {
       return {rowCount:0,rows:[]};
     }
+    if(sql.includes('INSERT INTO identities')) {
+      return {rowCount:1,rows:[]};
+    }
     if(sql.includes('INSERT INTO invites')) {
       const [id,token,s,alias,signature,expiresAt]=args;
       if(store.invites.has(id))return {rowCount:0,rows:[]};

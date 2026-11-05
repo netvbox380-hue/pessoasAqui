@@ -1936,6 +1936,21 @@ class PessoasAquiRepository(
         setDemoMode(false)
     }
 
+    suspend fun ensureIdentityRegistered(): Boolean {
+        return try {
+            val res = networkClient.registerIdentity(
+                identityHash = cryptoIdentityManager.getTechnicalIdentity(),
+                publicKeyEd25519 = cryptoIdentityManager.getPublicKeyBase64(),
+                publicKeyX25519 = cryptoIdentityManager.getPublicKeyBase64(),
+                pin = "0000",
+                alias = _currentAlias.value
+            )
+            res.isSuccess
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun registerIdentityOnBackend() {
         scope.launch {
             try {
@@ -2394,6 +2409,7 @@ class PessoasAquiRepository(
     fun createOneTimeInviteLinkDetailed(onResult: (Result<String>) -> Unit) {
         scope.launch {
             val result = try {
+                ensureIdentityRegistered()
                 val identity = getMyIdentity()
                 val alias = getMyAlias().trim().take(64).ifBlank { "Usuário" }
                 val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
