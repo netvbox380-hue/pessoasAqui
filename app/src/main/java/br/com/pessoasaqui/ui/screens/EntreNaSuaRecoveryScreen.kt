@@ -40,7 +40,7 @@ fun EntreNaSuaRecoveryScreen(
     pinSecurityManager: PinSecurityManager,
     onFindAuthorization: (String) -> RecoveryAuthorization?,
     onClaimRecovery: (suspend (recoveryKey: String, pin: String) -> Result<String>)? = null,
-    onRestoreConversations: (suspend (pin: String) -> Result<Int>)? = null,
+    onRestoreConversations: (suspend (pin: String, recoverySecret: String?) -> Result<Int>)? = null,
     onRecoverySuccess: (String) -> Unit,
     onBack: () -> Unit
 ) {
@@ -60,6 +60,7 @@ fun EntreNaSuaRecoveryScreen(
     var recoveryKeyInput by remember { mutableStateOf("") }
     var validatedAuth by remember { mutableStateOf<RecoveryAuthorization?>(null) }
     var pinInput by remember { mutableStateOf("") }
+    var vaultRecoverySecret by remember { mutableStateOf("") }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var isSuccess by remember { mutableStateOf(false) }
@@ -422,6 +423,17 @@ fun EntreNaSuaRecoveryScreen(
                             text = "O cofre silencioso criptografado pode ser resgatado dos seus familiares de confiança agora.",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
+                        Text(
+                            text = "Cofres V3 exigem, além do PIN, o segredo de recuperação que você guardou separadamente. Familiares armazenam o cofre cifrado, não esse segredo. Cofres V1/V2 continuam aceitando só PIN.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        )
+                        OutlinedTextField(
+                            value = vaultRecoverySecret,
+                            onValueChange = { if (it.length <= 76) vaultRecoverySecret = it.trim().uppercase(java.util.Locale.ROOT) },
+                            label = { Text("Segredo V3 (apenas para cofres novos)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                         if (vaultStatus != null) {
                             Text(
                                 text = vaultStatus ?: "",
@@ -432,7 +444,7 @@ fun EntreNaSuaRecoveryScreen(
                             onClick = {
                                 isRestoringVault = true
                                 coroutineScope.launch {
-                                    val res = onRestoreConversations(pinInput)
+                                    val res = onRestoreConversations(pinInput, vaultRecoverySecret.ifBlank { null })
                                     isRestoringVault = false
                                     if (res.isSuccess) {
                                         val count = res.getOrNull() ?: 0
