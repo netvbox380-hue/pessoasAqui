@@ -2,9 +2,12 @@ package br.com.pessoasaqui.core.crypto
 
 import android.content.Context
 import android.content.SharedPreferences
+import java.security.AlgorithmParameters
 import java.security.KeyFactory
 import java.security.MessageDigest
 import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
+import java.security.spec.ECParameterSpec
 import java.security.spec.X509EncodedKeySpec
 import java.util.concurrent.ConcurrentHashMap
 
@@ -33,6 +36,8 @@ object TrustedIdentityKeys {
             val generation = value.substring(0, separator).toLongOrNull() ?: return@forEach
             if (generation > 0) loaded[id] = Pin(generation, value.substring(separator + 1))
         }
+        // Não manter pins de outro perfil/contexto ao reinicializar o cache.
+        pins.clear()
         pins.putAll(loaded)
         prefs = storage
     }
@@ -44,7 +49,11 @@ object TrustedIdentityKeys {
         val key = KeyFactory.getInstance("EC")
             .generatePublic(X509EncodedKeySpec(keyBytes)) as ECPublicKey
         // P-256 é a única curva suportada no protocolo de identidade.
-        key.params.curve.field.fieldSize == 256 && key.params.order.bitLength() == 256
+        val params = AlgorithmParameters.getInstance("EC")
+        params.init(ECGenParameterSpec("secp256r1"))
+        val p256 = params.getParameterSpec(ECParameterSpec::class.java)
+        key.params.curve == p256.curve && key.params.generator == p256.generator &&
+            key.params.order == p256.order && key.params.cofactor == p256.cofactor
     } catch (_: Exception) { false }
 
     fun isSelfCertified(identity: String, keyBytes: ByteArray): Boolean {
