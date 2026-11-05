@@ -56,7 +56,16 @@ class CryptoIdentityManager(
             } catch (_: Exception) {}
         }
 
-        // 2. Se a chave não existia ou o app veio de versão anterior onde a chave privada foi perdida
+        // Chave cifrada perdida/Keystore inválido: não substituir silenciosamente
+        // a chave privada mantendo o mesmo identificador público.
+        if (!savedPrivEnc.isNullOrBlank() || !savedHash.isNullOrBlank()) {
+            technicalIdentityHash = savedHash.orEmpty()
+            savedPublicKeyBase64 = savedPubKey
+            activeKeyPair = null
+            return
+        }
+
+        // Primeiro uso sem identidade anterior: gerar chave e identidade novas.
         try {
             val keyGen = KeyPairGenerator.getInstance("EC")
             keyGen.initialize(256)
@@ -79,14 +88,19 @@ class CryptoIdentityManager(
             val privB64 = Base64.encodeToString(kp.private.encoded, Base64.NO_WRAP)
             val encPrivKey = localDiskCrypto.encrypt(privB64)
 
-            prefs?.edit()
-                ?.putString("tech_id_hash", technicalIdentityHash)
-                ?.putString("tech_pub_key", savedPublicKeyBase64)
-                ?.putString("tech_priv_key_enc", encPrivKey)
-                ?.apply()
+            if (prefs != null && !prefs.edit()
+                    .putString("tech_id_hash", technicalIdentityHash)
+                    .putString("tech_pub_key", savedPublicKeyBase64)
+                    .putString("tech_priv_key_enc", encPrivKey)
+                    .commit()) {
+                activeKeyPair = null
+                throw IllegalStateException("Identidade criptográfica não foi persistida")
+            }
         } catch (e: Exception) {
-            technicalIdentityHash = savedHash?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString().take(8).uppercase()
-            savedPublicKeyBase64 = technicalIdentityHash
+            // Sem chave persistente utilizável, a autenticação fica bloqueada.
+            activeKeyPair = null
+            technicalIdentityHash = savedHash.orEmpty()
+            savedPublicKeyBase64 = savedPubKey
         }
     }
 
@@ -100,22 +114,25 @@ class CryptoIdentityManager(
      */
     fun setRecoveredIdentity(newIdentityHash: String, newPublicKeyBase64: String? = null) {
         val clean = newIdentityHash.removePrefix("peer-").trim().uppercase()
-        if (clean.isBlank()) return
-        technicalIdentityHash = clean
-        if (!newPublicKeyBase64.isNullOrBlank()) {
-            savedPublicKeyBase64 = newPublicKeyBase64
-        }
+        require(Regex("^[A-F0-9]{16}$").matches(clean)) { "Identidade recuperada inválida" }
+        val active = activeKeyPair?.public?.encoded
+            ?: throw SecurityException("Recuperação exige chave privada íntegra no novo aparelho")
+        val activePublic = Base64.encodeToString(active, Base64.NO_WRAP)
+        if (!newPublicKeyBase64.isNullOrBlank() && newPublicKeyBase64 != activePublic)
+            throw SecurityException("A chave da recuperação não corresponde ao aparelho")
         val prefs = context?.getSharedPreferences("pessoasaqui_crypto_prefs", Context.MODE_PRIVATE)
-        prefs?.edit()
-            ?.putString("tech_id_hash", technicalIdentityHash)
-            ?.putString("tech_pub_key", savedPublicKeyBase64 ?: technicalIdentityHash)
-            ?.apply()
+        if (prefs != null && !prefs.edit()
+                .putString("tech_id_hash", clean)
+                .putString("tech_pub_key", activePublic)
+                .commit()) throw IllegalStateException("Identidade recuperada não persistida")
+        technicalIdentityHash = clean
+        savedPublicKeyBase64 = activePublic
     }
 
     fun getPublicKeyBase64(): String {
         return activeKeyPair?.public?.encoded?.let { Base64.encodeToString(it, Base64.NO_WRAP) }
             ?: savedPublicKeyBase64
-            ?: technicalIdentityHash
+            ?: ""
     }
 
     fun getActiveKeyPair(): KeyPair? = activeKeyPair
@@ -124,13 +141,13 @@ class CryptoIdentityManager(
 
     fun signChallenge(data: ByteArray): String {
         return try {
-            val privateKey = activeKeyPair?.private ?: return "sig-fallback"
+            val privateKey = activeKeyPair?.private ?: throw SecurityException("Chave privada indisponível")
             val signer = Signature.getInstance("SHA256withECDSA")
             signer.initSign(privateKey)
             signer.update(data)
             Base64.encodeToString(signer.sign(), Base64.NO_WRAP)
         } catch (e: Exception) {
-            "sig-${System.currentTimeMillis()}"
+            throw SecurityException("Não foi possível assinar desafio criptográfico", e)
         }
     }
 
