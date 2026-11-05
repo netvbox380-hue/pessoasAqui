@@ -3260,8 +3260,8 @@ class PessoasAquiRepository(
      */
     suspend fun executeDistributedBackup(
         pin: String,
-        onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> },
-        recoverySecret: String? = null
+        recoverySecret: String? = null,
+        onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> }
     ): Result<Int> {
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
@@ -3335,8 +3335,8 @@ class PessoasAquiRepository(
      */
     suspend fun queryAndRestoreFromFamilyVault(
         pin: String,
-        onStatusUpdate: (String) -> Unit = {},
-        recoverySecret: String? = null
+        recoverySecret: String? = null,
+        onStatusUpdate: (String) -> Unit = {}
     ): Result<Int> {
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
