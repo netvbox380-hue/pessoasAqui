@@ -87,8 +87,6 @@ class PessoasAquiRepository(
     @Volatile private var offersScreenOpen = false
     private var radarIdlePauseJob: Job? = null
     private val radarPauseLock = Any()
-    private val RADAR_TAB_IDLE_MS = 30_000L
-    private val RADAR_BACKGROUND_IDLE_MS = 60_000L
 
     val diskCrypto = LocalDiskCryptoManager(context)
     private val vaultSecretStore = context?.let { VaultRecoverySecretStore(it) }
@@ -2119,14 +2117,18 @@ class PessoasAquiRepository(
         radarIdlePauseJob?.cancel()
         radarIdlePauseJob = null
         if (!radarRequested || _radarPausedForBattery.value) return
-        if (bleChatScreenOpen || (uiForeground && (radarTabVisible || offersScreenOpen))) return
+        if (br.com.pessoasaqui.core.proximity.RadarIdlePolicy.requiresDiscovery(
+            uiForeground, radarTabVisible, bleChatScreenOpen, offersScreenOpen
+        )) return
         // A comunicação existente continua disponível durante o prazo de tolerância.
-        val delayMs = if (!uiForeground) RADAR_BACKGROUND_IDLE_MS else RADAR_TAB_IDLE_MS
+        val delayMs = br.com.pessoasaqui.core.proximity.RadarIdlePolicy.suspendAfterMs(uiForeground)
         radarIdlePauseJob = scope.launch {
             delay(delayMs)
             synchronized(radarPauseLock) {
                 if (!radarRequested || _radarPausedForBattery.value) return@synchronized
-                if (bleChatScreenOpen || (uiForeground && (radarTabVisible || offersScreenOpen))) return@synchronized
+                if (br.com.pessoasaqui.core.proximity.RadarIdlePolicy.requiresDiscovery(
+                    uiForeground, radarTabVisible, bleChatScreenOpen, offersScreenOpen
+                )) return@synchronized
                 radarRequested = false
                 _radarPausedForBattery.value = true
                 bleManager?.setDiscoverySuspended(true)
