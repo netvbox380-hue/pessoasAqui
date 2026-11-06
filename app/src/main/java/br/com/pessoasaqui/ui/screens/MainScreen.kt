@@ -65,6 +65,9 @@ fun MainScreen(
     val clipboardManager = LocalClipboardManager.current
     var showSupportDialog by remember { mutableStateOf(false) }
     var showSecondFamilyApprovalDialog by remember { mutableStateOf(false) }
+    var showContestRecoveryDialog by remember { mutableStateOf(false) }
+    var contestNotice by remember { mutableStateOf<String?>(null) }
+    var isContestingRecovery by remember { mutableStateOf(false) }
 
     val people by repository.discoveredPeople.collectAsState()
     val scope = rememberCoroutineScope()
@@ -342,6 +345,16 @@ fun MainScreen(
                                     onClick = {
                                         showTopMenu = false
                                         showSecondFamilyApprovalDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("🚨 Contestar recuperação da minha conta", color = WarningAmber) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Report, contentDescription = null, tint = WarningAmber)
+                                    },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showContestRecoveryDialog = true
                                     }
                                 )
                                 DropdownMenuItem(
@@ -911,6 +924,46 @@ fun MainScreen(
                         repository.approveSecondFamilyRecovery(identity, key)
                     },
                     onDismiss = { showSecondFamilyApprovalDialog = false }
+                )
+            }
+
+            if (showContestRecoveryDialog) {
+                AlertDialog(
+                    onDismissRequest = { if (!isContestingRecovery) showContestRecoveryDialog = false },
+                    title = { Text("Contestar recuperação suspeita") },
+                    text = { Text("Esta ação cancela os códigos de recuperação pendentes e bloqueia novas recuperações por 24 horas. Sua identidade e conversas não serão apagadas. Use somente se reconhecer uma tentativa indevida.") },
+                    confirmButton = {
+                        Button(
+                            enabled = !isContestingRecovery,
+                            onClick = {
+                                isContestingRecovery = true
+                                scope.launch {
+                                    val result = repository.contestSuspiciousRecovery()
+                                    isContestingRecovery = false
+                                    contestNotice = if (result.isSuccess)
+                                        "Solicitações canceladas e recuperação suspensa por 24 horas."
+                                    else result.exceptionOrNull()?.message ?: "Contestação não confirmada."
+                                    showContestRecoveryDialog = false
+                                }
+                            }
+                        ) { Text(if (isContestingRecovery) "Protegendo..." else "Confirmar contestação") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showContestRecoveryDialog = false },
+                            enabled = !isContestingRecovery) { Text("Cancelar") }
+                    },
+                    containerColor = DarkSurface
+                )
+            }
+            contestNotice?.let { text ->
+                AlertDialog(
+                    onDismissRequest = { contestNotice = null },
+                    title = { Text("Segurança da identidade") },
+                    text = { Text(text) },
+                    confirmButton = {
+                        TextButton(onClick = { contestNotice = null }) { Text("Entendi") }
+                    },
+                    containerColor = DarkSurface
                 )
             }
 
