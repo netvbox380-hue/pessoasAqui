@@ -2,6 +2,7 @@ package br.com.pessoasaqui.core.backup
 
 import android.content.Context
 import br.com.pessoasaqui.core.crypto.LocalDiskCryptoManager
+import br.com.pessoasaqui.core.crypto.E2eeCryptoEngine
 
 /** Registro local de parte Shamir no aparelho autorizado; nunca usar storage em claro. */
 class FamilyRecoveryShareStore(context: Context) {
@@ -11,6 +12,8 @@ class FamilyRecoveryShareStore(context: Context) {
     fun store(owner: String, version: Long, payload: String): Boolean {
         require(owner.matches(Regex("^[A-F0-9]{16}$")))
         require(version > 0)
+        val part = E2eeCryptoEngine.Base64Helper.decode(payload)
+        require(part.size == RecoveryThresholdCodec.SHARE_SIZE)
         val old = prefs.getString(owner, null)
         if (old != null) {
             val previous = try { crypto.decrypt(old) } catch (_: Exception) { return false }
