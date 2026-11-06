@@ -3030,6 +3030,23 @@ class PessoasAquiRepository(
         return proximitySimulator.generateFamilyRecoveryAuthorization(targetIdentityHash, familyName)
     }
 
+    /** Inicializa o pedido sem requerer PIN nem tentar transferir identidade. */
+    suspend fun beginFamilyRecovery(recoveryKey: String): Result<Boolean> {
+        val code=recoveryKey.trim().uppercase(java.util.Locale.ROOT)
+        if(!Regex("^PA-REC-[A-F0-9]{64}$").matches(code))
+            return Result.failure(IllegalArgumentException("Código de recuperação inválido."))
+        return try {
+            val identity=getMyIdentity()
+            val proof=br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation="RECOVERY_PREPARE",
+                identity=identity,alias="",token=code,
+                publicKeyBase64=cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge=cryptoIdentityManager::signChallenge
+            )
+            networkClient.prepareFamilyRecovery(code,identity,proof)
+        }catch(e:Exception){Result.failure(e)}
+    }
+
     suspend fun claimRecovery(recoveryKey: String, pin: String): Result<String> {
         // Sem fallback via simulador: recuperação sem autorização persistente
         // permitiria assumir identidades com dados fornecidos localmente.
@@ -3039,22 +3056,10 @@ class PessoasAquiRepository(
         }
         return try {
             val deviceId = cryptoIdentityManager.getTechnicalIdentity()
-            // O aparelho inicia uma sessão assinada, à qual o segundo familiar
-            // vinculará sua autorização independente antes da transferência.
-            val preparationProof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
-                operation = "RECOVERY_PREPARE",
-                identity = deviceId,
-                alias = "",
-                token = cleanKey,
-                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
-                signChallenge = cryptoIdentityManager::signChallenge
-            )
-            val prepared = networkClient.prepareFamilyRecovery(
-                recoveryKey = cleanKey,
-                newDeviceIdentity = deviceId,
-                identityProof = preparationProof
-            )
-            if (prepared.isFailure) return Result.failure(
+            // Preparação idempotente: ainda exige comprovação de posse da
+            // mesma chave, e nunca autoriza a rotação de identidade isoladamente.
+            val prepared=beginFamilyRecovery(cleanKey)
+            if(prepared.isFailure)return Result.failure(
                 prepared.exceptionOrNull() ?: SecurityException("Sessão não preparada.")
             )
             val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
