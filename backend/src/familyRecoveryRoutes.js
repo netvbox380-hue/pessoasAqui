@@ -10,7 +10,7 @@
 const crypto = require('node:crypto');
 const {verifyInviteIdentityProof} = require('./inviteAuth');
 const {eligibility, MIN_FAMILIES, canClaim} = require('./recoveryPolicy');
-const {validateShareRelease} = require('./recoverySharePolicy');
+const {validateShareRelease, MIN_SECRET_RECOVERY_FAMILIES} = require('./recoverySharePolicy');
 const VALID_ID = /^[a-f0-9]{16}$/i;
 const VALID_SECRET = /^PA-REC-[A-F0-9]{64}$/;
 const TTL_MS = 15 * 60 * 1000; // QR
@@ -78,6 +78,8 @@ function registerFamilyRecoveryRoutes(app, deps) {
       });
       return res.json({success:true,authorizedFamilyCount:result,
         minimumRequired:MIN_FAMILIES,identityRecoveryReady:result>=MIN_FAMILIES,
+        secretRecoveryMinimum:MIN_SECRET_RECOVERY_FAMILIES,
+        secretRecoveryReady:result>=MIN_SECRET_RECOVERY_FAMILIES,
         notice:result<MIN_FAMILIES
           ?'Cadastre e autorize mais familiares de confiança antes de ativar a recuperação distribuída.'
           :'Autorizações familiares encontradas. A proteção dos cofres também requer cópias confirmadas.'});
