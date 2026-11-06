@@ -223,6 +223,29 @@ open class PessoasAquiNetworkClient(
         }
     }
 
+    /** Verificação persistente de dois familiares autorizados, assinada pelo titular. */
+    suspend fun fetchFamilyRecoveryReadiness(
+        ownerIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val json=JSONObject().apply {
+                put("targetIdentity",ownerIdentity)
+                put("identityProof",identityProof.toJson())
+            }
+            val request=Request.Builder().url("$baseUrl/api/family/recovery/readiness")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val obj=JSONObject(response.body?.string()?:"{}")
+                if(response.isSuccessful&&obj.optBoolean("success")) {
+                    Result.success(obj.getInt("authorizedFamilyCount"))
+                } else {
+                    Result.failure(IOException(obj.optString("error","Rede familiar indisponível.")))
+                }
+            }
+        }catch(e:Exception){Result.failure(e)}
+    }
+
     /**
      * Credenciamento assinado: proprietário autoriza uma chave familiar.
      * Requer PostgreSQL e prova ECDSA válida da identidade titular.
