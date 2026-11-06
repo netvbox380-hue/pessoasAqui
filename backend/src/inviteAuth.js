@@ -21,7 +21,7 @@ function deriveInviteId(identity, nonce) {
 }
 function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHash, proof, now = Date.now(), activePublicKey = null) {
   try {
-    if (!['CREATE', 'REDEEM', 'RECOVERY_DELEGATE', 'RECOVERY_ISSUE', 'RECOVERY_ISSUE_LINK', 'RECOVERY_CLAIM', 'RECOVERY_REVOKE', 'RECOVERY_APPROVE', 'RECOVERY_STATUS', 'OFFER_PUBLISH', 'OFFER_DELETE', 'CONNECTION_MARK', 'CONNECTION_UNMARK', 'IDENTITY_REGISTER', 'MESSAGE_SEND', 'MESSAGE_PENDING', 'PRESENCE_HEARTBEAT', 'CONNECTION_STATUS', 'PRESENCE_NEARBY', 'TICKET_READ', 'TICKET_CREATE', 'REPORT_CREATE', 'IDENTITY_KEY_LOOKUP'].includes(operation) ||
+    if (!['CREATE', 'REDEEM', 'RECOVERY_DELEGATE', 'RECOVERY_ISSUE', 'RECOVERY_ISSUE_LINK', 'RECOVERY_CLAIM', 'RECOVERY_REVOKE', 'RECOVERY_APPROVE', 'RECOVERY_STATUS', 'FAMILY_INCIDENT', 'OFFER_PUBLISH', 'OFFER_DELETE', 'CONNECTION_MARK', 'CONNECTION_UNMARK', 'IDENTITY_REGISTER', 'MESSAGE_SEND', 'MESSAGE_PENDING', 'PRESENCE_HEARTBEAT', 'CONNECTION_STATUS', 'PRESENCE_NEARBY', 'TICKET_READ', 'TICKET_CREATE', 'REPORT_CREATE', 'IDENTITY_KEY_LOOKUP'].includes(operation) ||
         typeof identity !== 'string' || typeof alias !== 'string' ||
         typeof inviteId !== 'string' || typeof tokenHash !== 'string' ||
         !proof || proof.v !== 1) return false;
@@ -40,6 +40,8 @@ function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHa
         ((operation === 'MESSAGE_SEND' || operation === 'PRESENCE_HEARTBEAT' || operation === 'TICKET_CREATE' || operation === 'REPORT_CREATE') && (inviteId !== '' || !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
         (operation === 'IDENTITY_KEY_LOOKUP' &&
           (inviteId !== '' || tokenHash !== '' || !/^[a-f0-9]{16}$/i.test(alias))) ||
+        ((operation === 'FAMILY_INCIDENT') &&
+          (inviteId !== '' || !/^[a-f0-9]{16}$/i.test(alias) || !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
         (operation === 'REPORT_CREATE' &&
           (inviteId !== '' || !/^[a-f0-9]{16}$/i.test(alias) || !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
         ((operation === 'RECOVERY_APPROVE') && !/^[a-f0-9]{16}$/i.test(alias)) ||
