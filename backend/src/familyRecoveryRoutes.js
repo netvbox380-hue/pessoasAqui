@@ -573,6 +573,65 @@ function registerFamilyRecoveryRoutes(app, deps) {
   });
 
   /**
+   * Descoberta de guardiões APÓS CLAIM, acessível somente à nova chave ativa
+   * da identidade recuperada. Não revela PIN nem partes.
+   */
+  app.post('/api/family/recovery/guardians', async(req,res)=>{
+    if(!ready())return dbUnavailable(res);
+    const target=normalizeId(req.body?.targetIdentity);
+    const code=String(req.body?.recoveryKey||'').trim().toUpperCase();
+    if(!VALID_ID.test(target)||!VALID_SECRET.test(code))
+      return res.status(400).json({error:'Identidade ou sessão inválida.'});
+    try {
+      const proof=req.body?.identityProof,hash=hexSha(code);
+      if(!await authenticated('RECOVERY_GUARDIANS',target,'',hash,proof))
+        return res.status(401).json({error:'Nova identidade não autenticada.'});
+      const guardians=await withTransaction(async run=>{
+        const grant=(await run(
+          `SELECT id,target_identity,family_identity,request_public_key,used_at
+            FROM recovery_grants WHERE token_hash=$1`,[hash])).rows[0];
+        if(!grant||grant.target_identity!==target||!grant.used_at||
+          new Date(grant.used_at).getTime()+15*60*1000<=Date.now())
+          throw Object.assign(Error('Sessão V3 encerrada.'),{status:410});
+        const currentKey=(await run(
+          'SELECT public_key_spki FROM identity_key_bindings WHERE identity_id=$1',
+          [target])).rows[0]?.public_key_spki;
+        if(!currentKey||currentKey!==grant.request_public_key||
+          currentKey!==proof.publicKey)
+          throw Object.assign(Error('Chave do novo aparelho inválida.'),{status:403});
+        const recovered=(await run(
+          `SELECT id FROM recovery_security_events
+            WHERE target_identity=$1 AND request_id=$2
+              AND event_type='IDENTITY_RECOVERED' LIMIT 1`,
+          [target,grant.id])).rowCount===1;
+        if(!recovered)throw Object.assign(Error('Recuperação não concluída.'),{status:409});
+        const hold=await run(
+          'SELECT target_identity FROM account_recovery_holds WHERE target_identity=$1 AND blocked_until>NOW()',
+          [target]);
+        if(hold.rowCount>0)throw Object.assign(Error('Recuperação suspensa.'),{status:423});
+        const delegates=(await run(
+          `SELECT family_identity FROM recovery_delegations
+            WHERE target_identity=$1 AND is_active=TRUE ORDER BY family_identity`,
+          [target])).rows.map(x=>x.family_identity);
+        if(new Set(delegates).size<3||!delegates.includes(grant.family_identity))
+          throw Object.assign(Error('Três familiares autorizados são obrigatórios.'),{status:409});
+        const nonce=await run(
+          `INSERT INTO recovery_proof_nonces(identity_id,operation,nonce)
+            VALUES($1,'RECOVERY_GUARDIANS',$2)
+            ON CONFLICT DO NOTHING RETURNING nonce`,
+          [target,proof.nonce]);
+        if(nonce.rowCount!==1)
+          throw Object.assign(Error('Prova reutilizada.'),{status:409});
+        return delegates.filter(id=>id!==grant.family_identity);
+      });
+      return res.json({success:true,guardianIdentities:guardians});
+    }catch(e){
+      if([403,409,410,423].includes(e.status))return res.status(e.status).json({error:e.message});
+      return dbUnavailable(res);
+    }
+  });
+
+  /**
    * Autorização individual de liberação de UMA parte V3 já depositada no
    * aparelho do familiar. Somente DEPOIS de CLAIM da identidade, e por no
    * máximo dois guardiões distintos do emissor do QR/LINK. Nunca envia partes,
