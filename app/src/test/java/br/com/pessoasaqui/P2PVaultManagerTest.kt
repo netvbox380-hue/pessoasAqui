@@ -290,4 +290,85 @@ class P2PVaultManagerTest {
         assertEquals(3,vaultManager.getStoredPeerVault("0011223344556677")?.formatVersion)
     }
 
+    @Test
+    fun testMigrationV2ToV3PreservesPrivateChatsMuralAndFamilyContactMetadata() {
+        val originalPin = "482916"
+        val secret = P2PVaultManager.generateRecoverySecret()
+        val contacts = listOf(
+            br.com.pessoasaqui.core.backup.VaultContact(
+                id = "AABBCCDDEEFF0011", alias = "Maria", isMutual = true,
+                isFamily = true, familyRole = "IRMA"
+            ),
+            br.com.pessoasaqui.core.backup.VaultContact(
+                id = "1122334455667788", alias = "Pedro", isMutual = true, isFamily = false
+            )
+        )
+        val chats = mapOf(
+            "AABBCCDDEEFF0011" to listOf(
+                ChatMessage(senderId = "me", senderAlias = "João",
+                    text = "Mensagem importante antiga", isFromMe = true),
+                ChatMessage(senderId = "AABBCCDDEEFF0011", senderAlias = "Maria",
+                    text = "Mensagem recebida", isFromMe = false)
+            )
+        )
+        val mural = listOf(ChatMessage(senderId = "me", senderAlias = "João",
+            text = "Histórico local antigo", isLocalOnly = true))
+        val oldVault = vaultManager.createVaultPackage(
+            pin = originalPin, ownerIdentityHash = "AABBCCDDEEFF0099",
+            ownerAlias = "João", privateChats = chats, localMural = mural,
+            contacts = contacts
+        )
+        assertEquals(2, oldVault.formatVersion)
+        val oldDecoded = vaultManager.restoreFromVaultPackage(oldVault, originalPin).getOrThrow()
+
+        // Recriptografar os MESMOS dados no aparelho do titular; sem exclusão
+        // nem conversão destrutiva do arquivo V2 original.
+        val migratedVault = vaultManager.createVaultPackage(
+            pin = originalPin, ownerIdentityHash = oldVault.ownerIdentityHash,
+            ownerAlias = oldVault.ownerAlias,
+            privateChats = oldDecoded.privateChats,
+            localMural = oldDecoded.localMural,
+            contacts = oldDecoded.contacts,
+            recoverySecret = secret
+        )
+        assertEquals(3, migratedVault.formatVersion)
+        val restored = vaultManager.restoreFromVaultPackage(migratedVault, originalPin, secret)
+            .getOrThrow()
+        assertEquals(oldDecoded.privateChats, restored.privateChats)
+        assertEquals(oldDecoded.localMural, restored.localMural)
+        assertEquals(oldDecoded.contacts, restored.contacts)
+        assertEquals(oldDecoded.privateChats.values.sumOf { it.size } +
+            oldDecoded.localMural.size, migratedVault.totalMessagesCount)
+        assertFalse(vaultManager.serializeVaultToJson(migratedVault).contains(secret))
+
+        // A migração nunca deve inutilizar a antiga cópia antes de o novo
+        // cofre estar seguramente armazenado/confirmado em outro aparelho.
+        assertTrue(vaultManager.restoreFromVaultPackage(oldVault, originalPin).isSuccess)
+        assertTrue(vaultManager.restoreFromVaultPackage(migratedVault, originalPin).isFailure)
+        assertTrue(vaultManager.restoreFromVaultPackage(migratedVault, "000000", secret).isFailure)
+    }
+
+    @Test
+    fun testFailedV3CreationDoesNotDestroyExistingV2Backup() {
+        val oldVault = vaultManager.createVaultPackage(
+            pin = "123456", ownerIdentityHash = "00112233445566AA",
+            ownerAlias = "Titular", privateChats = mapOf(
+                "peer" to listOf(ChatMessage(senderId = "me",
+                    senderAlias = "Titular", text = "Preservar!", isFromMe = true))
+            ), localMural = emptyList()
+        )
+        assertTrue(vaultManager.storePeerVault(oldVault))
+        assertThrows(IllegalArgumentException::class.java) {
+            vaultManager.createVaultPackage(
+                pin = "123456", ownerIdentityHash = oldVault.ownerIdentityHash,
+                ownerAlias = oldVault.ownerAlias,
+                privateChats = emptyMap(), localMural = emptyList(),
+                recoverySecret = "segredo-invalido"
+            )
+        }
+        assertEquals(oldVault, vaultManager.getStoredPeerVault(oldVault.ownerIdentityHash))
+        assertEquals("Preservar!", vaultManager.restoreFromVaultPackage(
+            oldVault, "123456").getOrThrow().privateChats["peer"]?.first()?.text)
+    }
+
 }
