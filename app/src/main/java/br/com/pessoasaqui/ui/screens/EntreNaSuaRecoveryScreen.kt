@@ -44,6 +44,7 @@ fun EntreNaSuaRecoveryScreen(
     onClaimRecovery: (suspend (recoveryKey: String, pin: String) -> Result<String>)? = null,
     onCheckRecoveryStatus: (suspend (recoveryKey: String) -> Result<String>)? = null,
     onRestoreConversations: (suspend (pin: String, recoverySecret: String?) -> Result<Int>)? = null,
+    onRecoverVaultMaterial: (suspend () -> Result<br.com.pessoasaqui.core.backup.RecoveryThresholdCodec.RecoveryMaterial>)? = null,
     onRecoverySuccess: (String) -> Unit,
     onBack: () -> Unit
 ) {
@@ -72,6 +73,7 @@ fun EntreNaSuaRecoveryScreen(
     var isLoading by remember { mutableStateOf(false) }
     var isSuccess by remember { mutableStateOf(false) }
     var isReadingQr by remember { mutableStateOf(false) }
+    var isRecoveringVaultMaterial by remember { mutableStateOf(false) }
 
     val lockoutState = pinSecurityManager.getLockoutState(recoverySessionId)
 
@@ -315,7 +317,7 @@ fun EntreNaSuaRecoveryScreen(
                         }
 
                         Text(
-                            text = "Passo 2: Digite seu PIN Pessoal",
+                            text = "Passo 2: Transferir identidade (PIN opcional)",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = TextPrimary
@@ -330,8 +332,9 @@ fun EntreNaSuaRecoveryScreen(
                         OutlinedTextField(
                             value = pinInput,
                             onValueChange = { pinInput = it },
-                            label = { Text("PIN do backup criptografado") },
+                            label = { Text("PIN do backup, se lembrar") },
                             singleLine = true,
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                             enabled = !lockoutState.isLocked,
                             modifier = Modifier.fillMaxWidth(),
                             colors = OutlinedTextFieldDefaults.colors(
@@ -406,7 +409,7 @@ fun EntreNaSuaRecoveryScreen(
                                     statusMessage = "Recuperação local insegura desativada. Atualize o aplicativo."
                                 }
                             },
-                            enabled = pinInput.isNotBlank() && !lockoutState.isLocked && !isLoading,
+                            enabled = !lockoutState.isLocked && !isLoading,
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -479,11 +482,42 @@ fun EntreNaSuaRecoveryScreen(
                             text = "Cofres V3 exigem, além do PIN, o segredo de recuperação que você guardou separadamente. Familiares armazenam o cofre cifrado, não esse segredo. Cofres V1/V2 continuam aceitando só PIN.",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
+                        if (onRecoverVaultMaterial != null) {
+                            Text(
+                                text = "Esqueceu o PIN ou perdeu o segredo V3? Dois guardiões diferentes do familiar que criou o QR/LINK precisam autorizar a entrega de suas partes. O servidor não recebe seus segredos.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                            OutlinedButton(
+                                enabled = !isRecoveringVaultMaterial,
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    isRecoveringVaultMaterial = true
+                                    coroutineScope.launch {
+                                        val result = onRecoverVaultMaterial()
+                                        isRecoveringVaultMaterial = false
+                                        if (result.isSuccess) {
+                                            val recovered = result.getOrThrow()
+                                            pinInput = recovered.pin
+                                            vaultRecoverySecret = recovered.recoverySecret
+                                            vaultStatus = "PIN e segredo V3 recuperados com autorizações familiares. Agora restaure o cofre."
+                                        } else {
+                                            vaultStatus = result.exceptionOrNull()?.message
+                                                ?: "Aguardando dois guardiões distintos."
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text(if (isRecoveringVaultMaterial) "Aguardando guardiões..." else
+                                    "Recuperar PIN e segredo V3 com familiares")
+                            }
+                        }
                         OutlinedTextField(
                             value = vaultRecoverySecret,
                             onValueChange = { if (it.length <= 76) vaultRecoverySecret = it.trim().uppercase(java.util.Locale.ROOT) },
                             label = { Text("Segredo V3 (apenas para cofres novos)") },
                             singleLine = true,
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                             modifier = Modifier.fillMaxWidth()
                         )
                         if (vaultStatus != null) {
