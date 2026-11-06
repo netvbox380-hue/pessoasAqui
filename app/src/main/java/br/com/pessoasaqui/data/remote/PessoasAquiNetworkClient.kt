@@ -443,6 +443,27 @@ open class PessoasAquiNetworkClient(
         } catch (e: Exception) { Result.failure(e) }
     }
 
+    suspend fun listV3RecoveryGuardians(
+        targetIdentity: String, recoveryKey: String,
+        proof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<List<String>> = withContext(Dispatchers.IO) {
+        try {
+            val body=JSONObject().put("targetIdentity",targetIdentity)
+                .put("recoveryKey",recoveryKey).put("identityProof",proof.toJson())
+            val req=Request.Builder().url("$baseUrl/api/family/recovery/guardians")
+                .post(body.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(req).execute().use { response ->
+                val json=JSONObject(response.body?.string()?:"{}")
+                if(!response.isSuccessful || !json.optBoolean("success"))
+                    Result.failure(SecurityException(json.optString("error","Sem guardiões")))
+                else {
+                    val arr=json.getJSONArray("guardianIdentities")
+                    Result.success((0 until arr.length()).map { arr.getString(it) })
+                }
+            }
+        } catch(e:Exception){Result.failure(e)}
+    }
+
     suspend fun authorizeV3ShareRelease(
         targetIdentity: String,
         familyIdentity: String,
