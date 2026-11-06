@@ -3575,6 +3575,8 @@ class PessoasAquiRepository(
             if(guardians.size<2) return Result.failure(SecurityException(
                 "É necessário ter dois guardiões distintos do emissor do QR/LINK."
             ))
+            val active=networkClient.fetchConnectionStatus(owner).getOrThrow()
+            reconcileConnectionStatus(active.markedByMe,active.markingMe,active.mutual)
             expectedV3Guardians.clear()
             expectedV3Guardians.addAll(guardians)
             val request="[VAULT_SHARE_REQUEST_V1:${session.recoveryCode}:${session.originalDeviceId}]"
