@@ -143,6 +143,11 @@ function registerFamilyRecoveryRoutes(app, deps) {
       const operation=method==='LINK'?'RECOVERY_ISSUE_LINK':'RECOVERY_ISSUE';
       if(!await authenticated(operation,family,target,'',proof))
         return res.status(401).json({error:'Assinatura do familiar inválida.'});
+      const hold=await query(
+        'SELECT blocked_until FROM account_recovery_holds WHERE target_identity=$1 AND blocked_until>NOW()',
+        [target]);
+      if(hold.rowCount>0)return res.status(423).json({
+        error:'Recuperação temporariamente protegida após alerta de segurança. Procure o suporte.'});
       const delegated=await query(
         `SELECT family_public_key FROM recovery_delegations
            WHERE target_identity=$1 AND family_identity=$2 AND is_active=TRUE`,
@@ -237,7 +242,7 @@ function registerFamilyRecoveryRoutes(app, deps) {
       return res.json({success:true,requestId:result,
         message:'Aprovação registrada. A transferência depende das demais provas e do prazo aplicável.'});
     }catch(e){
-      if([403,409,410].includes(e.status))return res.status(e.status).json({error:e.message});
+      if([403,409,410,423].includes(e.status))return res.status(e.status).json({error:e.message});
       return dbUnavailable(res);
     }
   });
@@ -264,6 +269,11 @@ function registerFamilyRecoveryRoutes(app, deps) {
         const grant=found.rows[0];
         if(!grant || grant.used_at || new Date(grant.expires_at).getTime()<=Date.now())
           throw Object.assign(Error('Chave inválida, expirada ou utilizada'),{status:410});
+        const hold=await run(
+          'SELECT blocked_until FROM account_recovery_holds WHERE target_identity=$1 AND blocked_until>NOW() FOR SHARE',
+          [grant.target_identity]);
+        if(hold.rowCount>0)
+          throw Object.assign(Error('Recuperação suspensa por incidente de segurança.'),{status:423});
         // Lock serial por identidade: duas autorizações concorrentes para o
         // mesmo usuário não podem efetivar duas rotações.
         const owner=await run('SELECT id FROM identities WHERE UPPER(id)=UPPER($1) FOR UPDATE',
