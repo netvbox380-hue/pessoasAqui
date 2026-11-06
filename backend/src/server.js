@@ -159,6 +159,16 @@ setTimeout(async () => {
       )`);
       await query(`CREATE INDEX IF NOT EXISTS idx_recovery_approvals_family
         ON recovery_approvals(family_identity)`);
+      // Consentimento explícito para liberar partes criptografadas V3.
+      // O banco só guarda IDs e eventos; jamais PIN, segredo ou partes Shamir.
+      await query(`CREATE TABLE IF NOT EXISTS recovery_share_releases (
+        grant_id VARCHAR(64) NOT NULL REFERENCES recovery_grants(id) ON DELETE CASCADE,
+        family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        released_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY(grant_id, family_identity)
+      )`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_recovery_share_releases_family
+        ON recovery_share_releases(family_identity)`);
       await query(`CREATE TABLE IF NOT EXISTS recovery_security_events (
         id BIGSERIAL PRIMARY KEY,
         target_identity VARCHAR(64) NOT NULL,
