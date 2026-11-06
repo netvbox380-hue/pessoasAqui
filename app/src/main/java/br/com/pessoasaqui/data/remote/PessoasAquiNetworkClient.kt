@@ -55,6 +55,7 @@ open class PessoasAquiNetworkClient(
     var onOfferPublished: ((OfferItem) -> Unit)? = null
     var onOfferDeleted: ((String) -> Unit)? = null
     var onSupportTicketReplied: ((ticketId: String, subject: String, reply: String, timestamp: Long) -> Unit)? = null
+    var onRecoverySecurityAlert: ((method: String, eligibleAtEpochMs: Long) -> Unit)? = null
     var onModerationWarning: ((message: String) -> Unit)? = null
     var onAccountBanned: ((message: String) -> Unit)? = null
 
@@ -595,6 +596,11 @@ open class PessoasAquiNetworkClient(
                             if (id.isNotBlank()) {
                                 onOfferDeleted?.invoke(id)
                             }
+                        }
+                        "RECOVERY_ALERT" -> {
+                            val method = obj.optString("method", "QR")
+                            val eligibleAt = obj.optLong("eligibleAtEpochMs", 0L)
+                            onRecoverySecurityAlert?.invoke(method, eligibleAt)
                         }
                         "SUPPORT_TICKET_REPLIED" -> {
                             val tId = obj.optString("ticketId")
