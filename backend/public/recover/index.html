@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Recuperação segura • PessoasAqui</title>
+  <style>
+    body{font:16px system-ui,sans-serif;background:#0b151a;color:#ecfbfc;margin:0;
+      min-height:100vh;display:grid;place-items:center;padding:20px;box-sizing:border-box}
+    main{width:100%;max-width:430px;background:#14232b;border:1px solid #32646b;
+      border-radius:18px;padding:24px;box-sizing:border-box}
+    h1{font-size:1.45rem;margin:0 0 16px}p{line-height:1.55;color:#bfd3d7}
+    button{border:0;background:#40dfcf;color:#062328;border-radius:10px;
+      padding:13px 18px;font-weight:700;cursor:pointer;width:100%;margin:8px 0}
+    button.secondary{background:#243942;color:#efffff;border:1px solid #628186}
+    .small{font-size:.85rem}.notice{border-left:3px solid #40dfcf;padding-left:12px}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>🔐 Recuperação familiar PessoasAqui</h1>
+    <p id="notice" class="notice">Verificando código recebido...</p>
+    <button id="open" type="button" disabled>Abrir no PessoasAqui</button>
+    <button id="copy" type="button" class="secondary" disabled>Copiar código para o aplicativo</button>
+    <p class="small">O LINK remoto exige uma hora de proteção e autorização criptográfica
+      de um segundo familiar distinto. Não forneça PINs nem códigos a desconhecidos.
+      A posse deste LINK não comprova a identidade do solicitante.</p>
+  </main>
+  <script>
+    (function(){
+      'use strict';
+      const notice=document.getElementById('notice');
+      const open=document.getElementById('open');
+      const copy=document.getElementById('copy');
+      const params=new URLSearchParams(window.location.hash.slice(1));
+      const code=(params.get('key')||'').trim().toUpperCase();
+      if(!/^PA-REC-[A-F0-9]{64}$/.test(code)){
+        notice.textContent='Este LINK não contém um código de recuperação válido.';
+        return;
+      }
+      notice.textContent='Código reconhecido. O aplicativo verificará assinaturas, familiares e prazo antes de transferir a identidade.';
+      open.disabled=false;
+      copy.disabled=false;
+      open.addEventListener('click',function(){
+        window.location.href='pessoasaqui://recover?key='+encodeURIComponent(code);
+      });
+      copy.addEventListener('click',async function(){
+        try { await navigator.clipboard.writeText(code); notice.textContent='Código copiado. Cole em Entre na sua no aplicativo.'; }
+        catch(_){ notice.textContent='Não foi possível copiar; utilize Abrir no PessoasAqui.'; }
+      });
+    })();
+  </script>
+</body>
+</html>
