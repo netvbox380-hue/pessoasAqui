@@ -32,9 +32,56 @@ A revogação assinada elimina autorização no servidor e solicita a exclusão 
 - Compilar Android debug e release, executar **todos** os testes Kotlin/JUnit.
 - Executar `cd backend && node --test tests/*.test.js`, especialmente `recoverySharePolicy.test.js` e `recoveryShareAuth.test.js`.
 - Testar endpoints com PostgreSQL isolado, transações concorrentes, replay, falsificação de assinatura, exclusão de emissor, revogações, sessão expirada, identidade rotacionada, guardian offline e duplicação de partes.
-- Teste real com **quatro aparelhos**: titular original, substituto e três familiares (pelo menos cinco aparelhos contando todos), versão antiga/atual, LINK com espera, QR imediato, restauro com PIN correto, esquecimento de PIN, perda de segredo, ambos perdidos e atualização de familiares.
+- Teste real com **cinco aparelhos distintos**: titular original, substituto e três familiares, versão antiga/atual, LINK com espera, QR imediato, restauro com PIN correto, esquecimento de PIN, perda de segredo, ambos perdidos e atualização de familiares.
 - Inspecionar preservação dos cofres V2, AAD/autenticidade, falhas de Keystore, material de recuperação não exposto em UI/backup/log, não persistência de mensagens BLE do Modo A.
 - Análise criptográfica independente do protocolo, incluindo armazenamento de partes, ratchet/autenticidade E2EE, envio/recebimento de respostas, limpeza de RAM, corrida de revogação e confiabilidade da confirmação de réplica.
 - **O servidor foi modificado no Git, mas não atualizado no Render.** Backend anterior não suporta estes endpoints; um APK novo precisa de backend compatível e migrações aditivas para funcionar. Deploy apenas com autorização explícita do proprietário.
 
 **Não considerar funcionalidade homologada nem publicação Google Play aprovada sem resultados reais dos testes.**
+
+
+## Errata técnica — relatório Antigravity 06/11/2026
+
+A seção 7 do relatório de homologação externa incluiu a alternativa `F1 + F3`
+para reconstruir as partes, apesar de declarar F1 como emissor do QR/LINK.
+**A alternativa é INCORRETA e não deve ser executada.** A política vigente
+`backend/src/recoverySharePolicy.js` veda `releaser === issuer`.
+
+Papéis do teste de cinco aparelhos:
+
+| Aparelho | Papel | Pode autorizar/liberar parte V3? |
+| --- | --- | --- |
+| A | Titular original: provisiona V3 e distribui partes; desligado após o backup | Não participa da liberação |
+| B | Substituto: prepara, reivindica a identidade e restaura o cofre | Recebe e reconstrói |
+| F1 | Emissor do QR/LINK | **Não pode** liberar parte nessa sessão |
+| F2 | Segundo aprovador independente | **Pode** liberar sua parte após autorização assinada |
+| F3 | Guardião independente | **Pode** liberar sua parte após autorização assinada |
+
+Após o CLAIM, **somente F2 + F3** devem reconstruir o PIN e o segredo V3
+no cenário exato de três familiares (F1 emissor). Nenhum familiar deve
+receber o PIN ou segredo completo por mensagem. Uma tentativa de liberar
+parte com F1 deve resultar em negação, sem envio da parte.
+
+### Evidências mínimas de teste físico
+
+1. Usar **identidades e PIN/segredo exclusivamente de teste**; não formatar
+   nem apagar dados reais. Confirmar que A tem backup V3 íntegro e ACK de
+   três partes em F1/F2/F3, e que V2/histórico anterior foi preservado.
+2. Desligar A; B recupera a identidade por QR de F1 com aprovação F2.
+   Repetir numa sessão de teste separada para LINK remoto com a espera exigida.
+3. B pede partes. F1 tenta liberar: **403/rejeição**. F2 e F3
+   autorizam individualmente: sessão e assinaturas válidas.
+4. B recebe apenas envelopes `ENC_ECDH:` com origem/identidade
+   autenticadas; combina partes da mesma distribuição/versão.
+5. Com PIN e segredo reconstruídos, restaurar backup V3, comparar
+   contagem/amostras de mensagens e contatos, e verificar que A está revogado.
+6. Repetir com F3 offline, delegação revogada, partes adulteradas, replay,
+   QR/LINK expirado, rotação de chave e reboot intermediário: cada
+   cenário deve falhar fechado ou permitir repetição segura prevista,
+   **sem perda, vazamento nem substituição de dados**.
+7. Registrar logs com códigos/resultados sem tokens, PIN, segredo,
+   parte Shamir nem dados privados. Enviar somente relatório sanitizado.
+
+**Importante:** testes unitários aprovados não provam essas propriedades
+nos cinco dispositivos reais. Não publicar AAB antes da prova física e
+da compatibilidade com backend em ambiente isolado.
