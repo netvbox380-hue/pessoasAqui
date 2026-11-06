@@ -276,6 +276,9 @@ fun PeopleRadarTab(
             }
         }
 
+        // Evitar ocupar espaço com o painel de busca quando pausado:
+        // o botão de retomada precisa permanecer visível em telas pequenas.
+        if (!radarPausedForBattery) {
         // Card de Status do Radar & Seletor de Intenção
         Card(
             shape = RoundedCornerShape(18.dp),
@@ -411,8 +414,12 @@ fun PeopleRadarTab(
             }
         }
 
+        }
+
         // Lista de Pessoas ou Estado Vazio
-        if (visibleRadarPeople.isEmpty()) {
+        if (radarPausedForBattery) {
+            Spacer(modifier = Modifier.weight(1f))
+        } else if (visibleRadarPeople.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
