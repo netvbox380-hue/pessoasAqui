@@ -297,15 +297,15 @@ fun DistributedBackupDialog(
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            text = "É necessário autorizar pelo menos dois familiares no servidor. Guarde o segredo V3 em local separado do telefone; nenhum familiar isolado poderá autorizar a transferência da identidade.",
+                            text = "A recuperação da identidade exige dois familiares. Para recuperar também PIN esquecido ou segredo V3 perdido, autorize três familiares distintos: um emissor do QR/LINK e dois guardiões de partes cifradas. Preserve também a cópia offline do segredo.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
                             text = recoveryFamilyCount?.let { count ->
-                                if(count>=2) "🟢 $count familiares autorizados no servidor (mínimo: 2)."
-                                else "🟡 $count de 2 familiares autorizados. Adicione e autorize pelo menos mais um."
+                                if(count>=3) "🟢 $count familiares autorizados; três necessários para recuperar PIN e segredo V3."
+                                else "🟡 $count de 3 familiares autorizados para recuperação completa; identidade exige dois."
                             } ?: "Verificando familiares autorizados no servidor...",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
@@ -525,8 +525,9 @@ fun DistributedBackupDialog(
             text = {
                 Column {
                     Text(
-                        "Se o aparelho for formatado, você precisará deste segredo E do PIN para abrir o cofre. " +
-                            "Não salve o segredo junto com o arquivo .backup e não o envie para grupos ou contatos."
+                        "Guarde este segredo fora do telefone. Na perda do PIN ou segredo, três familiares autorizados podem ajudar: " +
+                            "um inicia o QR/LINK e dois guardiões distintos liberam partes cifradas após a transferência. " +
+                            "Não envie o segredo completo para grupos ou contatos."
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
