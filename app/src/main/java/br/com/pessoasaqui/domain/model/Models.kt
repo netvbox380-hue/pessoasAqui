@@ -156,7 +156,9 @@ data class RecoveryAuthorization(
     val authorizedByFamilyName: String,
     val recoveryKey: String, // Chave alfanumérica ou payload do QR Code
     val expiresAtEpochMs: Long,
-    val isUsed: Boolean = false
+    val isUsed: Boolean = false,
+    val method: String = "QR",
+    val eligibleAtEpochMs: Long = 0L
 )
 
 /**
