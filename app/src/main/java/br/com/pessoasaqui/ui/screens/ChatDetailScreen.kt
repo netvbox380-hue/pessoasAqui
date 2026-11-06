@@ -338,7 +338,7 @@ fun ChatDetailScreen(
     onToggleMarkPerson: (NearbyPerson) -> Unit = { _ -> },
     onAcceptMutualConnection: (NearbyPerson) -> Unit = { _ -> },
     onRequestFamilyRole: (NearbyPerson, FamilyRole) -> Unit = { _, _ -> },
-    onGenerateFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
+    onGenerateFamilyRecovery: (NearbyPerson, String) -> Unit = { _, _ -> },
     onAuthorizeFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
     onRevokeFamilyRecovery: (NearbyPerson) -> Unit = { _ -> },
     onBlockUser: (String) -> Unit = { _ -> },
@@ -2572,12 +2572,18 @@ fun ChatDetailScreen(
             AlertDialog(
                 onDismissRequest = { showFamilyRecoveryIssueConfirm = false },
                 title = { Text("Emitir recuperação de identidade") },
-                text = { Text("Confirme pessoalmente que ${person.alias} solicitou a recuperação. Qualquer pessoa que receba o QR ou a chave temporária pode tentar transferir esta identidade. Não compartilhe com terceiros.") },
+                text = { Text("Escolha QR presencial ou LINK remoto (prazo de proteção de 1 hora). São necessários dois familiares autorizados, com assinaturas independentes. Nem o QR nem o LINK contêm PIN.") },
                 confirmButton = {
-                    TextButton(onClick = {
-                        showFamilyRecoveryIssueConfirm = false
-                        onGenerateFamilyRecovery(person)
-                    }) { Text("Emitir chave de uso único") }
+                    Row {
+                        TextButton(onClick = {
+                            showFamilyRecoveryIssueConfirm = false
+                            onGenerateFamilyRecovery(person, "QR")
+                        }) { Text("QR presencial") }
+                        TextButton(onClick = {
+                            showFamilyRecoveryIssueConfirm = false
+                            onGenerateFamilyRecovery(person, "LINK")
+                        }) { Text("LINK (1 hora)") }
+                    }
                 },
                 dismissButton = {
                     TextButton(onClick = { showFamilyRecoveryIssueConfirm = false }) {
