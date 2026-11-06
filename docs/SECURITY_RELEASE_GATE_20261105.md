@@ -414,3 +414,28 @@ avalie restauração V2→V3 e faça testes físicos de BLE e recuperação
 com cinco aparelhos distintos em ambiente isolado. As 265/64 aprovações
 anteriores não se estendem às novas alterações. O deploy Render/Supabase
 e a publicação AAB continuam NÃO autorizados.
+
+
+## Errata de homologação / autorização de testes físicos — 06/11/2026
+
+O relatório Antigravity registrou por engano o SHA
+`7e9462ddcf0706222f77839358fc5427dcfd73ba`.
+A versão de código efetivamente encontrada no GitHub é
+`7e9462df48ccd2c74dc9113de12a7db61535ac9a`.
+A versão documental atual da `main` passou desse commit; nunca afirmar
+que APK/AAB foram reconstruídos após alterações que não constam do binário.
+
+O roteiro correto exige **cinco aparelhos**: A (original), B (substituto),
+F1 (emissor QR/LINK, **proibido de liberar parte**), F2 (aprovador e
+primeiro liberador), F3 (segundo liberador). F2+F3 reconstroem Shamir.
+F1+F3 é inválido para essa sessão; a tentativa F1 deve ser NEGADA.
+
+Os hashes APK/AAB constam no relatório anexado pelo proprietário,
+mas **não foram revalidados com acesso aos binários**. Comandos,
+manifesto e critérios da homologação em
+`docs/HOMOLOGACAO_FISICA_RELEASE_20261106.md`.
+
+**O gate de produção continua fechado** até demonstração de recuperação
+familiar, BLE físico, regressão de Modo B, hashes/assinaturas e
+compatibilidade backend. Deploy Render/Supabase de produção e publicação
+Google Play requerem autorização separada após evidências.
