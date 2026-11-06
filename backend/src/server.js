@@ -1828,7 +1828,7 @@ app.post('/api/family/support/report',async(req,res)=>{
     return res.status(400).json({error:'Dados inválidos para denúncia familiar.'});
   if(!await verifySignedHttp(req,res,'FAMILY_INCIDENT',author,affected,
     digestHttpParts([String(req.body?.authorIdentity||''),
-      String(req.body?.affectedIdentity||''),category,reason])))return;
+      String(req.body?.affectedIdentity||''),String(req.body?.authorAlias||''),category,reason])))return;
   if(!isPostgres())return res.status(503).json({error:'Consulta familiar indisponível.'});
   try{
     const verified=await query(
