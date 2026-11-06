@@ -122,6 +122,10 @@
           <span>Petições & Suporte</span>
           <span id="badge-tickets" class="hidden px-1.5 py-0.2 bg-amber-500 text-black text-[10px] font-bold rounded-full">0</span>
         </button>
+        <button onclick="switchTab('security')" id="nav-security" class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium text-gray-400 hover:text-white flex items-center space-x-2">
+          <i class="fa-solid fa-user-shield text-xs"></i>
+          <span>Segurança</span>
+        </button>
         <button onclick="switchTab('users')" id="nav-users" class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium text-gray-400 hover:text-white flex items-center space-x-2">
           <i class="fa-solid fa-users text-xs"></i>
           <span>Usuários</span>
@@ -151,6 +155,7 @@
       <button onclick="switchTab('offers')" class="px-3 py-1 text-xs rounded-lg bg-brand-surface text-gray-300 shrink-0">Ofertas</button>
       <button onclick="switchTab('tickets')" class="px-3 py-1 text-xs rounded-lg bg-brand-surface text-gray-300 shrink-0">Petições</button>
       <button onclick="switchTab('users')" class="px-3 py-1 text-xs rounded-lg bg-brand-surface text-gray-300 shrink-0">Usuários</button>
+      <button onclick="switchTab('security')" class="px-3 py-1 text-xs rounded-lg bg-brand-surface text-gray-300 shrink-0">Segurança</button>
     </div>
 
     <!-- Conteúdo Dinâmico -->
@@ -397,6 +402,19 @@
         </div>
       </section>
 
+      <!-- Ferramentas restritas de incidentes e recuperação (não descriptografam contas) -->
+      <section id="view-security" class="hidden space-y-5">
+        <div class="bg-brand-card border border-brand-border rounded-2xl p-6 space-y-4">
+          <h2 class="text-xl font-bold text-white"><i class="fa-solid fa-user-shield text-emerald-400 mr-2"></i>Proteção e Recuperação Familiar</h2>
+          <p class="text-xs text-gray-400">Investigue eventos, familiares autorizados e dispositivos. Nenhuma ferramenta concede PIN, segredo V3 ou posse de identidade.</p>
+          <div class="flex flex-wrap items-center gap-3">
+            <input id="security-identity" maxlength="16" placeholder="ID criptográfico de 16 caracteres" class="flex-1 min-w-[180px] p-3 rounded-xl bg-brand-surface border border-brand-border text-white font-mono text-xs" />
+            <button onclick="loadSecurityCase()" class="px-4 py-2 rounded-xl bg-emerald-600 text-black text-xs font-semibold">Investigar identidade</button>
+          </div>
+          <div id="security-case-result" class="space-y-4 text-xs text-gray-300">Informe a identidade do usuário prejudicado.</div>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -514,7 +532,7 @@
         activeBtn.classList.add('text-emerald-400', 'bg-brand-card', 'shadow');
       }
 
-      ['dashboard', 'reports', 'offers', 'tickets', 'users'].forEach(t => {
+      ['dashboard', 'reports', 'offers', 'tickets', 'users', 'security'].forEach(t => {
         const sec = document.getElementById(`view-${t}`);
         if (sec) sec.classList.toggle('hidden', t !== tabId);
       });
@@ -523,6 +541,7 @@
       if (tabId === 'offers') loadOffers();
       if (tabId === 'tickets') loadTickets();
       if (tabId === 'users') loadUsers();
+      if (tabId === 'security' && document.getElementById('security-identity').value.trim()) loadSecurityCase();
     }
 
     async function apiRequest(endpoint, options = {}) {
@@ -962,6 +981,80 @@
       } catch (err) {
         alert('Erro: ' + err.message);
       }
+    }
+
+
+    // ================= INCIDENTES FAMILIARES / SEGURANÇA =================
+    function securityId() {
+      const id = document.getElementById('security-identity').value.trim().toUpperCase();
+      if (!/^[A-F0-9]{16}$/.test(id)) throw new Error('Informe o ID técnico de 16 caracteres.');
+      return id;
+    }
+    function securityRows(rows, label, fields) {
+      const items = Array.isArray(rows) ? rows : [];
+      return '<div class="p-3 bg-brand-surface border border-brand-border rounded-xl">' +
+        '<h4 class="font-bold text-emerald-400 mb-2">'+escapeHtml(label)+
+        ' ('+items.length+')</h4><div class="space-y-2 max-h-64 overflow-y-auto">'+
+        (items.length ? items.map(row=>
+          '<div class="border-b border-brand-border pb-2">'+
+          fields.map(f=>'<div><span class="text-gray-400">'+escapeHtml(f)+': </span>'+
+            escapeHtml(row[f]==null?'—':typeof row[f]==='object'?JSON.stringify(row[f]):String(row[f]))+
+            '</div>').join('')+'</div>').join('') : '<p>Sem registros.</p>')+
+        '</div></div>';
+    }
+    async function loadSecurityCase() {
+      const box=document.getElementById('security-case-result');
+      try {
+        const id=securityId();
+        box.textContent='Consultando auditoria autenticada...';
+        const data=await apiRequest('/admin/api/security/'+encodeURIComponent(id));
+        if(!data.success) throw new Error(data.error||'Falha na auditoria.');
+        const account=data.identity||{};
+        let html='<div class="rounded-xl bg-brand-surface p-4 border border-brand-border">'+
+          '<div class="font-bold text-white">'+escapeHtml(account.alias||'Sem apelido')+
+          ' — '+escapeHtml(id)+'</div>'+
+          '<div class="text-gray-400">Banida: '+(account.is_banned?'Sim':'Não')+
+          ' • Bloqueio de recuperação: '+(data.recoveryHold
+             ? escapeHtml(String(data.recoveryHold.blocked_until)):'Não')+'</div></div>';
+        html+=securityRows(data.families,'Familiares autorizados',
+          ['family_identity','is_active','updated_at']);
+        html+=securityRows(data.recoverySessions,'Sessões de recuperação',
+          ['id','family_identity','method','eligible_at','expires_at','used_at']);
+        html+=securityRows(data.securityEvents,'Eventos auditados',
+          ['event_type','actor_identity','request_id','created_at','details']);
+        html+=securityRows(data.familyTickets,'Incidentes relatados por familiares',
+          ['id','author_identity','category','status','created_at']);
+        html+=securityRows(data.deviceStatus,'Status de dispositivos',
+          ['is_active','revoked_at']);
+        html+='<div class="flex flex-wrap gap-2">'+
+          '<button onclick="securityAction(\'hold\')" class="p-2 bg-amber-700 rounded-lg font-semibold text-white">Suspender recuperação (até 48 h)</button>'+
+          '<button onclick="securityAction(\'release\')" class="p-2 bg-emerald-700 rounded-lg font-semibold text-white">Liberar recuperação</button>'+
+          '<button onclick="securityAction(\'cancel-recoveries\')" class="p-2 bg-red-800 rounded-lg font-semibold text-white">Cancelar sessões pendentes</button>'+
+          '</div>';
+        box.innerHTML=html;
+      } catch(e){box.textContent='Erro: '+e.message;}
+    }
+    async function securityAction(action) {
+      const id=securityId();
+      const names={'hold':'suspender temporariamente a recuperação',
+        'release':'liberar a recuperação','cancel-recoveries':'cancelar solicitações pendentes'};
+      if(!Object.hasOwn(names,action))return;
+      const reason=prompt('Justificativa obrigatória (mínimo 12 caracteres) para '+names[action]+':');
+      if(!reason||reason.trim().length<12){alert('Ação cancelada ou motivo insuficiente.');return;}
+      let hours=24;
+      if(action==='hold'){
+        hours=Number(prompt('Duração do bloqueio, em horas (1 a 48):','24'));
+        if(!Number.isInteger(hours)||hours<1||hours>48){alert('Prazo inválido.');return;}
+      }
+      if(!confirm('Confirmar ação auditável para a conta '+id+'?'))return;
+      try{
+        const result=await apiRequest('/admin/api/security/'+encodeURIComponent(id)+'/'+action,{
+          method:'POST', body:JSON.stringify({reason:reason.trim(),hours})
+        });
+        if(!result.success)throw new Error(result.error||'Ação rejeitada.');
+        await loadSecurityCase();
+        alert('Ação confirmada e registrada no banco.');
+      }catch(e){alert('Erro: '+e.message);}
     }
 
     function escapeHtml(text) {
