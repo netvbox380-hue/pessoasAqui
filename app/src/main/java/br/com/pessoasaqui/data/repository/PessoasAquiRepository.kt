@@ -2090,6 +2090,14 @@ class PessoasAquiRepository(
             radarTabVisible = radarVisible
             bleChatScreenOpen = chatOpen
             offersScreenOpen = offersVisible
+            // Abrir explicitamente uma conversa temporária também é intenção
+            // válida de comunicação BLE; uma conversa permanente não reativa rádio.
+            if (chatOpen && uiForeground && !radarRequested && _hasGrantedPermissions.value) {
+                radarRequested = true
+                _radarPausedForBattery.value = false
+                bleManager?.setDiscoverySuspended(false)
+                startNativeBleHardware()
+            }
             scheduleRadarIdlePauseLocked()
         }
     }
