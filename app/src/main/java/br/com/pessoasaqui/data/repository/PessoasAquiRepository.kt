@@ -3517,6 +3517,20 @@ class PessoasAquiRepository(
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
 
+        // Um segredo V3 fornecido explicitamente não pode sobrescrever o segredo
+        // local já vinculado à identidade: isso produziria backups aparentemente
+        // válidos, porém impossíveis de abrir com o segredo anteriormente guardado.
+        // A indisponibilidade do Keystore também deve falhar sem fallback V2.
+        val configuredSecret = try { currentVaultSecret() }
+            catch (e: Exception) { return Result.failure(e) }
+        if (configuredSecret != null && recoverySecret != null &&
+            recoverySecret != configuredSecret) {
+            return Result.failure(SecurityException(
+                "O segredo V3 informado não corresponde ao cofre configurado. " +
+                "Nenhum backup foi substituído."
+            ))
+        }
+
         if (pinSecurityManager.hasCustomPin() &&
             !pinSecurityManager.matchesConfiguredPin(pin)) {
             return Result.failure(SecurityException(
