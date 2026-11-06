@@ -93,6 +93,24 @@ class PessoasAquiRepository(
     private val familyShareStore = context?.let { br.com.pessoasaqui.core.backup.FamilyRecoveryShareStore(it) }
     private val recoveredSessionStore = context?.let { br.com.pessoasaqui.core.backup.VaultRecoverySessionStore(it) }
 
+    data class PendingFamilyShareRelease(
+        val targetIdentity: String,
+        val recoveryKey: String,
+        val originalNewDeviceId: String
+    )
+    private val _pendingFamilyShareRelease =
+        MutableStateFlow<PendingFamilyShareRelease?>(null)
+    val pendingFamilyShareRelease: StateFlow<PendingFamilyShareRelease?> =
+        _pendingFamilyShareRelease.asStateFlow()
+
+    private data class IncomingV3Part(
+        val sender: String, val version: Long, val bytes: ByteArray
+    )
+    private val _incomingV3Parts = MutableStateFlow<List<IncomingV3Part>>(emptyList())
+    private val expectedV3Guardians = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun rejectFamilyShareRelease() { _pendingFamilyShareRelease.value = null }
+
     fun isVaultV3Enabled(): Boolean = vaultSecretStore?.hasConfiguredSecret() == true
 
     fun createVaultV3RecoverySecret(): String =
