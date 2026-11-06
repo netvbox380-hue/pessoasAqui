@@ -218,6 +218,7 @@ class BleManager(
     enum class DiscoveryState { STOPPED, STARTING, SCANNING, FAILED, RADIO_OFF }
     @Volatile private var discoveryState = DiscoveryState.STOPPED
     @Volatile private var foreground = true
+    @Volatile private var discoverySuspended = false
     @Volatile private var scanningActive = false
     @Volatile private var advertisingActive = false
     @Volatile private var lastRecoveryAttemptMs = 0L
@@ -249,12 +250,12 @@ class BleManager(
 
     private fun scheduleScanRecovery() {
         cancelScanRetry()
-        if (!isBluetoothEnabled) return
+        if (!isBluetoothEnabled || discoverySuspended) return
         val cb = lastScanCallback ?: return
         val delayMs = backoffMs(++scanFailureCount)
         val task = Runnable {
             scanRetryTask = null
-            if (isBluetoothEnabled && discoveryState == DiscoveryState.FAILED) startScanning(cb)
+            if (isBluetoothEnabled && !discoverySuspended && discoveryState == DiscoveryState.FAILED) startScanning(cb)
         }
         scanRetryTask = task
         recoveryHandler?.postDelayed(task, delayMs)
@@ -262,12 +263,12 @@ class BleManager(
 
     private fun scheduleAdvertisingRecovery() {
         cancelAdvertisingRetry()
-        if (!isBluetoothEnabled) return
+        if (!isBluetoothEnabled || discoverySuspended) return
         val id = lastIdentityHash ?: return
         val delayMs = backoffMs(++advertisingFailureCount)
         val task = Runnable {
             advertisingRetryTask = null
-            if (isBluetoothEnabled && !advertisingActive) {
+            if (isBluetoothEnabled && !discoverySuspended && !advertisingActive) {
                 startAdvertising(id, lastAlias ?: "", lastIntent ?: UserIntent.QUERO_CONVERSAR)
             }
         }
@@ -288,6 +289,26 @@ class BleManager(
 
     internal val isScanningActive: Boolean get() = scanningActive
     internal val isAdvertisingActive: Boolean get() = advertisingActive
+    val isDiscoverySuspended: Boolean get() = discoverySuspended
+
+    /**
+     * Apenas discovery (scan + advertising) é pausada. A infraestrutura
+     * GATT e conexões existentes são responsabilidade do coordenador.
+     * Bloqueia também recuperações automáticas por callbacks antigos.
+     */
+    @Synchronized
+    fun setDiscoverySuspended(suspended: Boolean) {
+        if (discoverySuspended == suspended) return
+        discoverySuspended = suspended
+        if (suspended) {
+            cancelScanRetry()
+            cancelAdvertisingRetry()
+            stopScanning()
+            stopAdvertising()
+            _realDiscoveredPeers.value = emptyMap()
+        }
+        // Retomar exige chamada explícita do repositório com identidade válida.
+    }
 
     /**
      * Recuperação de estados com falha observada, não por reinícios periódicos.
@@ -295,7 +316,7 @@ class BleManager(
      */
     @Synchronized
     fun ensureDiscoveryContinuity(nowMs: Long = System.currentTimeMillis()) {
-        if (!isBluetoothEnabled) return
+        if (!isBluetoothEnabled || discoverySuspended) return
         if (lastIdentityHash != null && !advertisingActive &&
             (lastRecoveryAttemptMs == 0L || nowMs - lastRecoveryAttemptMs >= RECOVERY_MIN_INTERVAL_MS)) {
             lastRecoveryAttemptMs = nowMs
@@ -316,7 +337,7 @@ class BleManager(
     fun setAppForeground(isForeground: Boolean) {
         if (foreground == isForeground) return
         foreground = isForeground
-        if (!isBluetoothEnabled) return
+        if (!isBluetoothEnabled || discoverySuspended) return
         lastScanCallback?.let { startScanning(it) }
         if (!advertisingActive) ensureDiscoveryContinuity()
     }
@@ -366,6 +387,7 @@ class BleManager(
                                 if (listener != null) {
                                     listener(true)
                                 } else {
+                                    if (discoverySuspended) return
                                     lastIdentityHash?.let { hash ->
                                         startAdvertising(hash, lastAlias ?: "", lastIntent ?: UserIntent.QUERO_CONVERSAR)
                                     }
@@ -394,7 +416,7 @@ class BleManager(
         lastIdentityHash = myIdentityHash
         lastAlias = myAlias
         lastIntent = myIntent
-        if (!isBluetoothEnabled) return
+        if (!isBluetoothEnabled || discoverySuspended) return
 
         stopAdvertising()
         val generation = advertisingGeneration.get()
@@ -488,6 +510,7 @@ class BleManager(
     @Synchronized
     fun startScanning(onPeerDiscovered: (NearbyPerson) -> Unit) {
         lastScanCallback = onPeerDiscovered
+        if (discoverySuspended) return
         if (!isBluetoothEnabled) {
             discoveryState = DiscoveryState.RADIO_OFF
             return
