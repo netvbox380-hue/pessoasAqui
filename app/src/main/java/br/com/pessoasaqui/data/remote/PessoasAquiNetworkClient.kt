@@ -1153,7 +1153,7 @@ open class PessoasAquiNetworkClient(
                 put("identityProof", signedHttpProof(
                     "FAMILY_INCIDENT", authorIdentity, affectedIdentity,
                     br.com.pessoasaqui.core.crypto.InviteIdentityProof.digestParts(
-                        authorIdentity, affectedIdentity, category, message
+                        authorIdentity, affectedIdentity, authorAlias, category, message
                     )
                 ))
             }
