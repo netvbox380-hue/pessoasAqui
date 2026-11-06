@@ -2111,14 +2111,14 @@ class PessoasAquiRepository(
         radarIdlePauseJob?.cancel()
         radarIdlePauseJob = null
         if (!radarRequested || _radarPausedForBattery.value) return
-        if (uiForeground && (radarTabVisible || bleChatScreenOpen || offersScreenOpen)) return
+        if (bleChatScreenOpen || (uiForeground && (radarTabVisible || offersScreenOpen))) return
         // A comunicação existente continua disponível durante o prazo de tolerância.
         val delayMs = if (!uiForeground) RADAR_BACKGROUND_IDLE_MS else RADAR_TAB_IDLE_MS
         radarIdlePauseJob = scope.launch {
             delay(delayMs)
             synchronized(radarPauseLock) {
                 if (!radarRequested || _radarPausedForBattery.value) return@synchronized
-                if (uiForeground && (radarTabVisible || bleChatScreenOpen || offersScreenOpen)) return@synchronized
+                if (bleChatScreenOpen || (uiForeground && (radarTabVisible || offersScreenOpen))) return@synchronized
                 radarRequested = false
                 _radarPausedForBattery.value = true
                 bleManager?.setDiscoverySuspended(true)
