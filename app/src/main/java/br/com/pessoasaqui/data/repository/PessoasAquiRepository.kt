@@ -1284,11 +1284,16 @@ class PessoasAquiRepository(
             Log.w("PessoasAqui", "Mensagem de rede sem envelope ECDH autenticado descartada")
             return
         }
-        if (iv.isBlank()) {
-            Log.w("PessoasAqui", "Mensagem de rede sem IV descartada")
+        if (iv.isBlank() || iv.length > 128 ||
+            rawPayload.length > 24 * 1024 * 1024) {
+            Log.w("PessoasAqui", "Envelope E2EE inválido ou acima do limite; descartado")
             return
         }
         val cleanSender = cleanId(senderHash)
+        if (!Regex("^[A-Fa-f0-9]{16}$").matches(cleanSender)) {
+            Log.w("PessoasAqui", "Remetente de rede sem identidade válida")
+            return
+        }
         val payload = try {
             E2eeCryptoEngine.decrypt(
                 rawPayload, iv, cleanSender,
