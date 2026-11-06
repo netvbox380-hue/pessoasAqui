@@ -270,6 +270,31 @@ open class PessoasAquiNetworkClient(
         }catch(e:Exception){Result.failure(e)}
     }
 
+    /** As partes V3 somente podem ir aos familiares com delegação
+     * ativa confirmada pela fonte autoritativa PostgreSQL. */
+    suspend fun fetchAuthorizedFamilyGuardians(
+        ownerIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<List<String>> = withContext(Dispatchers.IO) {
+        try {
+            val payload=JSONObject().put("targetIdentity",ownerIdentity)
+                .put("identityProof",identityProof.toJson())
+            val req=Request.Builder().url("$baseUrl/api/family/recovery/delegates")
+                .post(payload.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(req).execute().use { response ->
+                val json=JSONObject(response.body?.string() ?: "{}")
+                if(!response.isSuccessful || !json.optBoolean("success"))
+                    Result.failure(SecurityException(
+                        json.optString("error","Delegações familiares indisponíveis.")
+                    ))
+                else {
+                    val active=json.getJSONArray("authorizedFamilyIdentities")
+                    Result.success((0 until active.length()).map { active.getString(it) })
+                }
+            }
+        } catch(e:Exception){Result.failure(e)}
+    }
+
     /**
      * Credenciamento assinado: proprietário autoriza uma chave familiar.
      * Requer PostgreSQL e prova ECDSA válida da identidade titular.
