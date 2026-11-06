@@ -409,16 +409,16 @@ function registerFamilyRecoveryRoutes(app, deps) {
         if(grant.request_device_identity!==newId ||
            grant.request_public_key!==proof.publicKey || !grant.prepared_at)
           throw Object.assign(Error('Recuperação exige solicitação assinada por este aparelho.'),{status:403});
-        const hold=await run(
-          'SELECT blocked_until FROM account_recovery_holds WHERE target_identity=$1 AND blocked_until>NOW() FOR SHARE',
-          [grant.target_identity]);
-        if(hold.rowCount>0)
-          throw Object.assign(Error('Recuperação suspensa por incidente de segurança.'),{status:423});
         // Lock serial por identidade: duas autorizações concorrentes para o
         // mesmo usuário não podem efetivar duas rotações.
         const owner=await run('SELECT id FROM identities WHERE UPPER(id)=UPPER($1) FOR UPDATE',
           [grant.target_identity]);
         if(owner.rowCount!==1)throw Object.assign(Error('Identidade indisponível'),{status:410});
+        const hold=await run(
+          'SELECT blocked_until FROM account_recovery_holds WHERE target_identity=$1 AND blocked_until>NOW() FOR SHARE',
+          [grant.target_identity]);
+        if(hold.rowCount>0)
+          throw Object.assign(Error('Recuperação suspensa por incidente de segurança.'),{status:423});
 
         const delegates=await run(
           `SELECT family_identity FROM recovery_delegations
