@@ -38,7 +38,21 @@ class NetworkE2eeBoundaryTest {
         repo.setMarkPerson(peer,mark=true)
         repo.confirmMutualConnectionFromServer(peer)
         val original=repo.proximitySimulator.privateChats.value[peer].orEmpty().toList()
-        repo.processIncomingPayload(peer,"Contato","ENC:ABCD","AAAA","legacy")
+        // Produz um ENC legado com tag AES-GCM VÁLIDA usando a chave
+        // determinística pública; mesmo assim ele jamais pode comandar a rede.
+        val key=E2eeCryptoEngine.deriveSharedKey(
+            peer,repo.cryptoIdentityManager.getTechnicalIdentity()
+        )
+        val iv=ByteArray(12) { (it+1).toByte() }
+        val cipher=javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE,
+            javax.crypto.spec.SecretKeySpec(key,"AES"),
+            javax.crypto.spec.GCMParameterSpec(128,iv))
+        val encrypted=java.util.Base64.getEncoder().encodeToString(
+            cipher.doFinal("[CALL_INIT:false:Contato]".toByteArray(Charsets.UTF_8))
+        )
+        val ivBase64=java.util.Base64.getEncoder().encodeToString(iv)
+        repo.processIncomingPayload(peer,"Contato","ENC:$encrypted",ivBase64,"legacy")
         assertEquals(original,repo.proximitySimulator.privateChats.value[peer].orEmpty())
         assertNull(repo.activeCallState.value)
     }
