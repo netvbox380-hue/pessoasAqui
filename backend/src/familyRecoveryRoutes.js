@@ -10,6 +10,7 @@
 const crypto = require('node:crypto');
 const {verifyInviteIdentityProof} = require('./inviteAuth');
 const {eligibility, MIN_FAMILIES, canClaim} = require('./recoveryPolicy');
+const {validateShareRelease} = require('./recoverySharePolicy');
 const VALID_ID = /^[a-f0-9]{16}$/i;
 const VALID_SECRET = /^PA-REC-[A-F0-9]{64}$/;
 const TTL_MS = 15 * 60 * 1000; // QR
@@ -570,6 +571,113 @@ function registerFamilyRecoveryRoutes(app, deps) {
     return res.json({success:true,targetIdentity:target,
       message:'Identidade recuperada com nova chave autorizada.'});
   });
+
+  /**
+   * Autorização individual de liberação de UMA parte V3 já depositada no
+   * aparelho do familiar. Somente DEPOIS de CLAIM da identidade, e por no
+   * máximo dois guardiões distintos do emissor do QR/LINK. Nunca envia partes,
+   * PIN ou segredo V3 ao backend. O cliente precisa transmitir o envelope
+   * cifrado para a nova chave do titular por canal autenticado separado.
+   */
+  app.post('/api/family/recovery/share-release', async (req, res) => {
+    if (!ready()) return dbUnavailable(res);
+    const target=normalizeId(req.body?.targetIdentity);
+    const family=normalizeId(req.body?.familyIdentity);
+    const code=String(req.body?.recoveryKey || '').trim().toUpperCase();
+    if (!VALID_ID.test(target) || !VALID_ID.test(family) || target===family ||
+        !VALID_SECRET.test(code))
+      return res.status(400).json({error:'Sessão ou familiar inválido.'});
+    try {
+      const proof=req.body?.identityProof;
+      const tokenHash=hexSha(code);
+      if (!await authenticated('RECOVERY_SHARE_RELEASE',family,target,tokenHash,proof))
+        return res.status(401).json({error:'Familiar não autenticado.'});
+      const result=await withTransaction(async run=>{
+        const grant=(await run(
+          `SELECT id,target_identity,family_identity,request_device_identity,
+              request_public_key,prepared_at,used_at,expires_at,eligible_at
+           FROM recovery_grants WHERE token_hash=$1 FOR UPDATE`,
+          [tokenHash])).rows[0];
+        if (!grant || grant.target_identity!==target || !grant.prepared_at ||
+            !grant.request_device_identity || !grant.request_public_key ||
+            !grant.used_at || !grant.eligible_at)
+          throw Object.assign(Error('Recuperação da identidade ainda não concluída.'),{status:409});
+        const activeKey=(await run(
+          'SELECT public_key_spki FROM identity_key_bindings WHERE identity_id=$1',
+          [target])).rows[0]?.public_key_spki;
+        if (activeKey!==grant.request_public_key)
+          throw Object.assign(Error('Chave da sessão não corresponde ao aparelho recuperado.'),{status:403});
+        const originalRecovery=(await run(
+          `SELECT id FROM recovery_security_events
+           WHERE target_identity=$1 AND request_id=$2
+             AND event_type='IDENTITY_RECOVERED' LIMIT 1`,
+          [target,grant.id])).rows[0];
+        if (!originalRecovery)
+          throw Object.assign(Error('Sessão não concluiu a troca de identidade.'),{status:409});
+        const delegates=(await run(
+          `SELECT family_identity,family_public_key FROM recovery_delegations
+           WHERE target_identity=$1 AND is_active=TRUE FOR SHARE`,
+          [target])).rows;
+        const releaser=delegates.find(d=>d.family_identity===family);
+        if (!releaser || releaser.family_public_key!==proof.publicKey)
+          throw Object.assign(Error('Familiar não autorizado ou revogado.'),{status:403});
+        const approved=(await run(
+          `SELECT family_identity FROM recovery_approvals
+           WHERE grant_id=$1 AND family_identity<>$2`,
+          [grant.id,grant.family_identity])).rows;
+        const validApprover=approved.map(d=>d.family_identity).find(
+          id=>delegates.some(d=>d.family_identity===id));
+        const alreadyReleased=(await run(
+          'SELECT family_identity FROM recovery_share_releases WHERE grant_id=$1',
+          [grant.id])).rows.map(d=>d.family_identity);
+        const held=await run(
+          'SELECT target_identity FROM account_recovery_holds WHERE target_identity=$1 AND blocked_until>NOW()',
+          [target]);
+        if (held.rowCount>0)
+          throw Object.assign(Error('Recuperação suspensa por incidente.'),{status:423});
+        if (!validateShareRelease({
+          issuer:grant.family_identity,
+          approver:validApprover,
+          releaser:family,
+          activeDelegates:delegates.map(d=>d.family_identity),
+          alreadyReleasedBy:alreadyReleased,
+          preparedDeviceIdentity:grant.request_device_identity,
+          claimantIdentity:normalizeId(req.body?.newDeviceIdentity),
+          issuedAt:new Date(grant.prepared_at).getTime(),
+          expiresAt:new Date(grant.expires_at).getTime(),
+          now:Date.now()
+        }) || normalizeId(req.body?.newDeviceIdentity)!==target) {
+          throw Object.assign(Error('Liberação não autorizada, duplicada ou expirada.'),{status:403});
+        }
+        const nonce=await run(
+          `INSERT INTO recovery_proof_nonces(identity_id,operation,nonce)
+           VALUES($1,'RECOVERY_SHARE_RELEASE',$2)
+           ON CONFLICT DO NOTHING RETURNING nonce`,
+          [family,proof.nonce]);
+        if(nonce.rowCount!==1)
+          throw Object.assign(Error('Prova de liberação reutilizada.'),{status:409});
+        const inserted=await run(
+          `INSERT INTO recovery_share_releases(grant_id,family_identity)
+           VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING family_identity`,
+          [grant.id,family]);
+        if(inserted.rowCount!==1)
+          throw Object.assign(Error('Familiar já liberou sua parte nesta recuperação.'),{status:409});
+        await run(
+          `INSERT INTO recovery_security_events
+           (target_identity,actor_identity,event_type,request_id)
+           VALUES($1,$2,'V3_SHARE_RELEASE_AUTHORIZED',$3)`,
+          [target,family,grant.id]);
+        return {authorized:true,releaseIndex:alreadyReleased.length+1};
+      });
+      return res.json({success:true,...result,
+        notice:'Autorização registrada. Libere SOMENTE sua parte cifrada para a chave ativa da identidade recuperada.'});
+    }catch(e) {
+      if ([403,409,423].includes(e.status))
+        return res.status(e.status).json({error:e.message});
+      return dbUnavailable(res);
+    }
+  });
+
 }
 
 module.exports={registerFamilyRecoveryRoutes,publicKeyIdentity,TTL_MS};
