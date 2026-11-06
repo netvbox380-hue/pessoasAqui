@@ -2242,6 +2242,14 @@ class PessoasAquiRepository(
     fun setBleAppForeground(visible: Boolean) {
         synchronized(radarPauseLock) {
             uiForeground = visible
+            // Um deep link de chat temporário pode chegar antes do onStart.
+            // Ao exibir o chat pela primeira vez, retomar seu canal BLE.
+            if (visible && bleChatScreenOpen && !radarRequested && _hasGrantedPermissions.value) {
+                radarRequested = true
+                _radarPausedForBattery.value = false
+                bleManager?.setDiscoverySuspended(false)
+                startNativeBleHardware()
+            }
             scheduleRadarIdlePauseLocked()
         }
         if (!_hasGrantedPermissions.value) return
