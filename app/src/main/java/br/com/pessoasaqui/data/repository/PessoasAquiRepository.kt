@@ -1144,6 +1144,16 @@ class PessoasAquiRepository(
         networkClient.onSupportTicketReplied = { ticketId, subject, reply, timestamp ->
             scope.launch { handleSupportTicketReplied(ticketId, subject, reply, timestamp) }
         }
+        networkClient.onAuthenticatedKeyRotation = { target ->
+            // A notificação WS é apenas um gatilho: a autoridade é o binding
+            // assinado consultado no backend com a identidade atual.
+            scope.launch {
+                val owner=getMyIdentity().uppercase()
+                if (target!=owner && isPeerPermanent(target)) {
+                    networkClient.refreshAuthenticatedPeerKey(owner,target)
+                }
+            }
+        }
         networkClient.onRecoverySecurityAlert = { method, _ ->
             scope.launch {
                 _recoverySecurityAlert.value =
