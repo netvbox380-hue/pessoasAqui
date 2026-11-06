@@ -612,7 +612,6 @@ fun DistributedBackupDialog(
                             return@Button
                         }
                         showPinPromptForBackup = false
-                        repository.pinSecurityManager.registerUserPin(pinInput)
                         isBackingUp = true
                         scope.launch {
                             val result = repository.executeDistributedBackup(pinInput)
@@ -676,7 +675,6 @@ fun DistributedBackupDialog(
                             return@Button
                         }
                         showPinPromptForExport = false
-                        repository.pinSecurityManager.registerUserPin(pinInput)
                         val exportRes = repository.exportLocalBackupJson(pinInput)
                         if (exportRes.isSuccess) {
                             val jsonStr = exportRes.getOrNull() ?: ""
