@@ -11,8 +11,8 @@ conversas, impedir Modo B ou desconectar sessões GATT existentes.
 | Abertura do aplicativo | Aba **Conversas**. Descoberta BLE inicialmente pausada. |
 | Usuário entra na aba **Pessoas** | Banner com motivo da pausa e botão **Ativar Radar novamente**. |
 | Usuário ativa Radar | Scanner filtrado + advertising conectável retomam; GATT existente não é encerrado. |
-| Usuário sai do Radar para Conversas | Tolerância de 30 segundos; depois suspendem scanner + advertising. |
-| Usuário muda para Ofertas | Mantém discovery enquanto a aba Ofertas está visível (ofertas próximas dependem de BLE). |
+| Usuário sai do Radar para Conversas | Durante a tolerância de 30 segundos o scanner passa para BALANCED; depois suspendem scanner + advertising. |
+| Usuário muda para Ofertas | Mantém discovery em **SCAN_MODE_BALANCED** enquanto Ofertas está visível (ofertas próximas dependem de BLE). |
 | Usuário minimiza sem chat temporário aberto | Tolerância de 60 segundos; depois suspende discovery. |
 | Usuário retorna antes da suspensão | Cancela o timer, caso tenha voltado ao Radar; não reinicia o rádio desnecessariamente. |
 | Usuário retorna após suspensão | Permanece pausado até reativação explícita; sem reativação silenciosa. |
@@ -54,7 +54,7 @@ burla da expiração das conversas temporárias.
    ativo; entrar em Pessoas, ativar; verificar discovery bilateral e nome correto.
 2. Pessoas → Conversas: scanner e advertising continuam 29 s e param após 30 s;
    retorno em 20 s cancela o timer; retorno após 35 s exige botão.
-3. Radar ativo → minimizar: suspender após 60 s, reabrir e exibir estado pausado;
+3. Radar ativo → minimizar: scanner passa para BALANCED e suspende após 60 s; reabrir e exibir estado pausado;
    conferir que fones/relógios Bluetooth continuam funcionando.
 4. Durante chat **Modo A** aberto: minimizar, retornar e enviar/receber com
    GATT direto; confirmar que não foi exigido convite e nenhuma mensagem
