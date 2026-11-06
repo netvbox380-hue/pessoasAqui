@@ -99,6 +99,7 @@ fun MainScreen(
     val subscriptionTier by (repository.subscriptionManager?.currentTier ?: MutableStateFlow(SubscriptionTier.FREE)).collectAsState()
     val mySupportTickets by repository.mySupportTickets.collectAsState()
     val moderationWarning by repository.moderationWarningAlert.collectAsState()
+    val recoveryAlert by repository.recoverySecurityAlert.collectAsState()
     val accountBanned by repository.accountBannedAlert.collectAsState()
     val contactTags by repository.contactTags.collectAsState()
     val contactTagAssignments by repository.contactTagAssignments.collectAsState()
@@ -980,6 +981,26 @@ fun MainScreen(
                     onReportFamilyIncident = { affected, category, message ->
                         repository.openFamilySecurityIncident(affected, category, message)
                     }
+                )
+            }
+
+            recoveryAlert?.let { alert ->
+                AlertDialog(
+                    onDismissRequest = { repository.dismissRecoverySecurityAlert() },
+                    title = { Text("🚨 Alerta de recuperação da conta") },
+                    text = { Text(alert) },
+                    confirmButton = {
+                        Button(onClick = {
+                            repository.dismissRecoverySecurityAlert()
+                            showContestRecoveryDialog = true
+                        }) { Text("Contestar recuperação") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { repository.dismissRecoverySecurityAlert() }) {
+                            Text("Reconheço a solicitação")
+                        }
+                    },
+                    containerColor = DarkSurface
                 )
             }
 
