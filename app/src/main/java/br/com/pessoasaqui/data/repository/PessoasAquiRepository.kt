@@ -3409,6 +3409,7 @@ class PessoasAquiRepository(
             if (result.isSuccess) {
                 recoveryEnrollmentConfirmed.remove(id)
                 recoveryEnrollmentApproved.remove(id)
+                sendPrivateMessage(id, "[VAULT_SHARE_REVOKE_V1]")
             }
             result
         } catch (e: Exception) { Result.failure(e) }
