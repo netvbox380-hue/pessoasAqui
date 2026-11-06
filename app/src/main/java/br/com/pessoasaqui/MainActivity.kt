@@ -281,15 +281,17 @@ fun PessoasAquiNavHost(
 
     // Navegação é a fonte de verdade para manter ou suspender discovery BLE.
     // O coordenador GATT continua separado, preservando sessões já abertas.
-    LaunchedEffect(currentScreen, currentMainTab) {
+    // Reavaliar apenas quando o estado temporário/permanente mudar,
+    // não em cada pacote do scanner (isso reiniciaria timers de economia).
+    val temporaryChatOpen = (currentScreen as? Screen.Chat)?.person?.let { person ->
+        val current = repository.getLivePerson(person)
+        !current.isMutualConnection && !current.isFamily
+    } == true
+    LaunchedEffect(currentScreen, currentMainTab, temporaryChatOpen) {
         val onMain = currentScreen is Screen.Main
         repository.onRadioUiChanged(
             radarVisible = onMain && currentMainTab == 0,
-            // Só conversa temporária exige continuidade de discovery BLE.
-            // Conexões mútuas/família seguem pela internet (Modo B).
-            chatOpen = (currentScreen as? Screen.Chat)?.person?.let {
-                !it.isMutualConnection && !it.isFamily
-            } == true,
+            chatOpen = temporaryChatOpen,
             offersVisible = onMain && currentMainTab == 2
         )
     }
