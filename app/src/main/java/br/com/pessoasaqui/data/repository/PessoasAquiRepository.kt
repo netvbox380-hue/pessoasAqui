@@ -117,13 +117,14 @@ class PessoasAquiRepository(
         } catch(e: Exception){ Result.failure(e) }
     }
 
-    /** Bloqueia ativação V3 antes de 2 credenciamentos familiares no backend. */
+    /** V3 com recuperação de PIN/segredo exige 3 guardiões; identidade exige só 2. */
     suspend fun enableVaultV3Verified(secret: String): Result<Boolean> {
         return try {
             val count = getFamilyRecoveryReadiness().getOrElse { return Result.failure(it) }
-            if (count < 2) return Result.failure(SecurityException(
-                "Adicione e autorize pelo menos dois familiares de confiança para ativar a recuperação distribuída. " +
-                "Atualmente: $count de 2."
+            if (count < 3) return Result.failure(SecurityException(
+                "A identidade pode ser recuperada por dois familiares, mas o PIN e o segredo V3 " +
+                "exigem três familiares distintos: um emissor do QR/LINK e dois guardiões. " +
+                "Atualmente: $count de 3. Nenhuma proteção antiga foi alterada."
             ))
             val enabled = vaultSecretStore?.enable(getMyIdentity(), secret) == true
             if (!enabled) Result.failure(SecurityException(
@@ -3710,6 +3711,16 @@ class PessoasAquiRepository(
             .sortedByDescending { if (it.isFamily) 1 else 0 }
             .take(3)
 
+        if (vault.formatVersion == 3) {
+            val authorizedCount = getFamilyRecoveryReadiness().getOrElse {
+                return Result.failure(SecurityException(
+                    "Delegações V3 não verificadas no servidor; nenhum cofre anterior foi substituído."
+                ))
+            }
+            if (authorizedCount < 3) return Result.failure(SecurityException(
+                "Distribuição V3 exige três familiares autorizados no backend; encontrados $authorizedCount."
+            ))
+        }
         val minimumReplicas = if (vault.formatVersion == 3) 3 else 1
         if (targetPeers.size < minimumReplicas) {
             return Result.failure(Exception(
