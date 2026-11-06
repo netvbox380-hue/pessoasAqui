@@ -27,6 +27,7 @@ class VaultRecoverySessionStore(context: Context) {
 
     fun load(targetIdentity: String): Session? {
         val encrypted=prefs.getString("wrapped",null) ?: return null
+        if (!encrypted.startsWith("ENC_V2:")) return null
         return try {
             val r=JSONObject(crypto.decrypt(encrypted))
             val session=Session(r.getString("code"),r.getString("device"),
