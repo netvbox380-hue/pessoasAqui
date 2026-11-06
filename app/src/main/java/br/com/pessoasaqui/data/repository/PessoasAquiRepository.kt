@@ -2653,7 +2653,8 @@ class PessoasAquiRepository(
         val cleanRecipient = matchedPeer?.technicalIdentityHash?.let { cleanId(it) }?.takeIf { it.isNotBlank() } ?: rawClean
 
         val isSignaling = text.startsWith("[PA_REAL_PHOTO_V1:") ||
-                          text.startsWith("[CALL_") || text.startsWith("[FAMILY_") || text.startsWith("[MARK_") ||
+                          text.startsWith("[CALL_") || text.startsWith("[FAMILY_") ||
+                          text.startsWith("[VAULT_") || text.startsWith("[MARK_") ||
                           text == "[READ_ACK]" || text.startsWith("[MSG_EDIT:") || text.startsWith("[MSG_DELETE:")
         val isAudio = text.startsWith("[AUDIO:")
         val isImage = text.startsWith("[IMAGE:")
@@ -2663,6 +2664,12 @@ class PessoasAquiRepository(
         val isPermanent = isPeerPermanent(cleanRecipient)
 
         if (!isPermanent) {
+            if (text.startsWith("[VAULT_")) {
+                return ContentModerationManager.ModerationResult(
+                    isAllowed = false,
+                    reason = "Operações de cofre exigem vínculo permanente autenticado."
+                )
+            }
             // O Modo A permite SOMENTE texto; mídia/chamadas são recursos permanentes.
             // Nunca adiciona mídia à RAM nem tenta encaminhá-la ao BLE (máx. 4096 B).
             if (isAudio || isImage || isDoc || text.startsWith("[CALL_")) {
