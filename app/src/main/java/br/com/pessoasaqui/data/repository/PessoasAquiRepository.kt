@@ -3970,7 +3970,7 @@ class PessoasAquiRepository(
                     ))
                 }
             }
-            vm.recordBackupSuccess(vault.version, confirmed, vault.totalMessagesCount)
+            vm.recordBackupSuccess(vault.version, confirmed, vault.totalMessagesCount, vault.formatVersion)
             return Result.success(confirmed)
         } finally {
             vaultReplicationAcks.end(vault.version)
