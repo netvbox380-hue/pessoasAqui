@@ -3470,8 +3470,14 @@ class PessoasAquiRepository(
         val vm = p2pVaultManager ?: return Result.failure(Exception("Gerenciador de cofre indisponível."))
         val cp = chatPersistence ?: return Result.failure(Exception("Persistência de mensagens indisponível."))
 
-        if (pin.isNotBlank()) {
-            pinSecurityManager.registerUserPin(pin)
+        if (pinSecurityManager.hasCustomPin() &&
+            !pinSecurityManager.matchesConfiguredPin(pin)) {
+            return Result.failure(SecurityException(
+                "PIN diferente do cadastrado. A migração V2 → V3 não pode trocar o PIN silenciosamente."
+            ))
+        }
+        if (pin.length < 4 || pin.length > 8 || !pin.all { it.isDigit() }) {
+            return Result.failure(IllegalArgumentException("Informe um PIN numérico de 4 a 8 dígitos."))
         }
 
         val privateChats = cp.loadAllPrivateChats()
@@ -3547,6 +3553,15 @@ class PessoasAquiRepository(
                     "Backup enviado, mas somente $confirmed de $minimumReplicas confirmações " +
                     "criptografadas foram recebidas. Tente novamente; nada foi apagado."
                 ))
+            }
+            if (!pinSecurityManager.hasCustomPin()) {
+                try {
+                    pinSecurityManager.registerUserPin(pin)
+                } catch (e: Exception) {
+                    return Result.failure(IllegalStateException(
+                        "Backup confirmado, mas não foi possível proteger o PIN local: ${e.message}"
+                    ))
+                }
             }
             vm.recordBackupSuccess(vault.version, confirmed, vault.totalMessagesCount)
             return Result.success(confirmed)
@@ -3663,9 +3678,14 @@ class PessoasAquiRepository(
         val secret = try { recoverySecret ?: currentVaultSecret() }
             catch (e: Exception) { return Result.failure(e) }
 
-        if (pin.isNotBlank()) {
-            pinSecurityManager.registerUserPin(pin)
+        if (pinSecurityManager.hasCustomPin() &&
+            !pinSecurityManager.matchesConfiguredPin(pin)) {
+            return Result.failure(SecurityException(
+                "PIN incorreto para exportação. Nenhum PIN existente foi substituído."
+            ))
         }
+        if (pin.length !in 4..8 || !pin.all { it.isDigit() })
+            return Result.failure(IllegalArgumentException("PIN numérico de 4 a 8 dígitos obrigatório."))
 
         val privateChats = cp.loadAllPrivateChats()
         val localMural = cp.loadLocalMural()
@@ -3693,6 +3713,13 @@ class PessoasAquiRepository(
         )
 
         val jsonStr = vm.serializeVaultToJson(vault)
+        if (!pinSecurityManager.hasCustomPin()) {
+            try {
+                pinSecurityManager.registerUserPin(pin)
+            } catch (error: Exception) {
+                return Result.failure(error)
+            }
+        }
         return Result.success(jsonStr)
     }
 
