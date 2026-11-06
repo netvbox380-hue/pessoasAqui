@@ -157,6 +157,13 @@ setTimeout(async () => {
       )`);
       await query(`CREATE INDEX IF NOT EXISTS idx_recovery_security_events_target
         ON recovery_security_events(target_identity,created_at DESC)`);
+      await query(`CREATE TABLE IF NOT EXISTS account_recovery_holds (
+        target_identity VARCHAR(64) PRIMARY KEY REFERENCES identities(id) ON DELETE CASCADE,
+        blocked_until TIMESTAMPTZ NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+
 
       await query(`CREATE TABLE IF NOT EXISTS offers_secure (
         id VARCHAR(64) PRIMARY KEY,
@@ -2189,13 +2196,79 @@ app.post('/admin/api/tickets/:id/reply', requireAdminAuth, async (req, res) => {
  * Consulta e Gestão de Usuários
  */
 
+
+/**
+ * Controles preventivos: não transferem propriedade, não revelam segredos.
+ * Requerem autenticação admin, motivo, persistência e trilha de auditoria.
+ */
+app.post('/admin/api/security/:id/hold',requireAdminAuth,async(req,res)=>{
+  const id=cleanId(req.params.id);
+  const reason=String(req.body?.reason||'').trim();
+  const hours=Number(req.body?.hours||24);
+  if(!/^[A-F0-9]{16}$/.test(id)||reason.length<12||reason.length>1000||
+     !Number.isSafeInteger(hours)||hours<1||hours>48)
+    return res.status(400).json({error:'Identidade, motivo detalhado e prazo de 1–48 horas obrigatórios.'});
+  if(!isPostgres())return res.status(503).json({error:'Ação exige PostgreSQL.'});
+  try{
+    await withTransaction(async run=>{
+      const owner=await run('SELECT id FROM identities WHERE id=$1 FOR UPDATE',[id]);
+      if(owner.rowCount!==1)throw Object.assign(Error('Conta inexistente'),{status:404});
+      await run(`INSERT INTO account_recovery_holds(target_identity,blocked_until,reason)
+          VALUES($1,NOW()+($2::int*INTERVAL '1 hour'),$3)
+          ON CONFLICT(target_identity) DO UPDATE SET
+          blocked_until=EXCLUDED.blocked_until,reason=EXCLUDED.reason,created_at=NOW()`,
+        [id,hours,reason]);
+      await run(`INSERT INTO recovery_security_events
+        (target_identity,actor_identity,event_type,details)
+        VALUES($1,$2,'ADMIN_RECOVERY_HOLD',$3::jsonb)`,
+        [id,null,JSON.stringify({admin:req.adminUser.username,hours,reason})]);
+    });
+    return res.json({success:true,blockedHours:hours});
+  }catch(e){return res.status(e.status===404?404:503).json({error:'Restrição não confirmada.'});}
+});
+app.post('/admin/api/security/:id/release',requireAdminAuth,async(req,res)=>{
+  const id=cleanId(req.params.id),reason=String(req.body?.reason||'').trim();
+  if(!/^[A-F0-9]{16}$/.test(id)||reason.length<12||reason.length>1000)
+    return res.status(400).json({error:'Identidade e justificativa obrigatórias.'});
+  if(!isPostgres())return res.status(503).json({error:'Ação exige PostgreSQL.'});
+  try{
+    await withTransaction(async run=>{
+      const old=await run('DELETE FROM account_recovery_holds WHERE target_identity=$1 RETURNING target_identity',[id]);
+      if(old.rowCount!==1)throw Object.assign(Error('Conta sem restrição.'),{status:404});
+      await run(`INSERT INTO recovery_security_events
+        (target_identity,actor_identity,event_type,details)
+        VALUES($1,$2,'ADMIN_RECOVERY_RELEASE',$3::jsonb)`,
+        [id,null,JSON.stringify({admin:req.adminUser.username,reason})]);
+    });
+    return res.json({success:true});
+  }catch(e){return res.status(e.status===404?404:503).json({error:'Liberação não confirmada.'});}
+});
+app.post('/admin/api/security/:id/cancel-recoveries',requireAdminAuth,async(req,res)=>{
+  const id=cleanId(req.params.id),reason=String(req.body?.reason||'').trim();
+  if(!/^[A-F0-9]{16}$/.test(id)||reason.length<12||reason.length>1000)
+    return res.status(400).json({error:'Identidade e justificativa obrigatórias.'});
+  if(!isPostgres())return res.status(503).json({error:'Ação exige PostgreSQL.'});
+  try{
+    const cancelled=await withTransaction(async run=>{
+      const r=await run(`UPDATE recovery_grants SET used_at=NOW()
+        WHERE target_identity=$1 AND used_at IS NULL RETURNING id`,[id]);
+      await run(`INSERT INTO recovery_security_events
+        (target_identity,actor_identity,event_type,details)
+        VALUES($1,$2,'ADMIN_CANCEL_RECOVERY',$3::jsonb)`,
+        [id,null,JSON.stringify({admin:req.adminUser.username,reason,grants:r.rowCount})]);
+      return r.rowCount;
+    });
+    return res.json({success:true,cancelled});
+  }catch(_){return res.status(503).json({error:'Cancelamento não confirmado.'});}
+});
+
 /** Consulta de evidências administrativas da identidade prejudicada. */
 app.get('/admin/api/security/:id',requireAdminAuth,async(req,res)=>{
   const id=cleanId(req.params.id);
   if(!/^[A-F0-9]{16}$/.test(id))return res.status(400).json({error:'Identidade inválida.'});
   if(!isPostgres())return res.status(503).json({error:'Auditoria exige banco persistente.'});
   try{
-    const [user,delegates,grants,events,tickets,devices]=await Promise.all([
+    const [user,delegates,grants,events,tickets,devices,hold]=await Promise.all([
       query('SELECT id,alias,is_banned,created_at FROM identities WHERE UPPER(id)=UPPER($1)',[id]),
       query(`SELECT family_identity,is_active,updated_at FROM recovery_delegations
           WHERE target_identity=$1 ORDER BY updated_at DESC LIMIT 100`,[id]),
@@ -2208,12 +2281,14 @@ app.get('/admin/api/security/:id',requireAdminAuth,async(req,res)=>{
       query(`SELECT id,author_identity,subject,category,status,created_at,verified_family_report
           FROM support_tickets WHERE affected_identity=$1
           ORDER BY created_at DESC LIMIT 100`,[id]),
-      query(`SELECT is_active,revoked_at FROM devices WHERE identity_id=$1 LIMIT 100`,[id])
+      query(`SELECT is_active,revoked_at FROM devices WHERE identity_id=$1 LIMIT 100`,[id]),
+      query('SELECT blocked_until,reason,created_at FROM account_recovery_holds WHERE target_identity=$1',[id])
     ]);
     if(user.rowCount!==1)return res.status(404).json({error:'Conta inexistente.'});
     return res.json({success:true,identity:user.rows[0],families:delegates.rows,
       recoverySessions:grants.rows,securityEvents:events.rows,
-      familyTickets:tickets.rows,deviceStatus:devices.rows});
+      familyTickets:tickets.rows,deviceStatus:devices.rows,
+      recoveryHold:hold.rows[0]||null});
   }catch(_){return res.status(503).json({error:'Auditoria indisponível.'});}
 });
 
