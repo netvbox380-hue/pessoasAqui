@@ -1524,6 +1524,52 @@ class PessoasAquiRepository(
                 // A conexão só é confirmada pelo evento oficial do servidor ou por /status.
                 Log.d("PessoasAqui", "Ignorando controle MARK_MUTUAL legado; aguardando confirmação do servidor")
             }
+            payload.startsWith("[VAULT_SHARE_REQUEST_V1:") -> {
+                // O titular já deve ter recuperado sua identidade. O familiar
+                // decide expressamente se libera SUA parte; jamais automaticamente.
+                if (!isPeerPermanent(cleanSender) || !payload.endsWith("]") ||
+                    payload.length > 140) return
+                val data=payload.removePrefix("[VAULT_SHARE_REQUEST_V1:")
+                    .dropLast(1).split(":", limit=2)
+                val code=data.getOrNull(0).orEmpty()
+                val newDevice=data.getOrNull(1).orEmpty().uppercase()
+                if (!code.matches(Regex("^PA-REC-[A-F0-9]{64}$")) ||
+                    !newDevice.matches(Regex("^[A-F0-9]{16}$"))) return
+                val saved=familyShareStore?.load(cleanSender.uppercase()) ?: return
+                if (saved.first <= 0L) return
+                _pendingFamilyShareRelease.value=PendingFamilyShareRelease(
+                    cleanSender.uppercase(), code, newDevice
+                )
+            }
+            payload.startsWith("[VAULT_SHARE_RESPONSE_V1:") -> {
+                // Somente respostas de guardiões habilitados para a sessão
+                // assinada, e com vínculo permanente E2EE, entram na RAM.
+                if (!isPeerPermanent(cleanSender) ||
+                    !expectedV3Guardians.contains(cleanSender.uppercase()) ||
+                    !payload.endsWith("]") || payload.length > 250) return
+                val session=recoveredSessionStore?.load(getMyIdentity().uppercase()) ?: return
+                val parts=payload.removePrefix("[VAULT_SHARE_RESPONSE_V1:")
+                    .dropLast(1).split(":", limit=3)
+                val version=parts.getOrNull(0)?.toLongOrNull() ?: return
+                val digest=parts.getOrNull(1).orEmpty()
+                val expected=java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(session.recoveryCode.toByteArray(Charsets.UTF_8))
+                    .joinToString("") { "%02x".format(it.toInt() and 255) }
+                if (digest != expected || version <= 0L) return
+                val bytes=try {
+                    E2eeCryptoEngine.Base64Helper.decode(parts.getOrNull(2) ?: "")
+                } catch (_: Exception) { return }
+                if (bytes.size != br.com.pessoasaqui.core.backup.RecoveryThresholdCodec.SHARE_SIZE)
+                    return
+                synchronized(_incomingV3Parts) {
+                    val current=_incomingV3Parts.value.filterNot {
+                        it.sender.equals(cleanSender, ignoreCase=true)
+                    }
+                    _incomingV3Parts.value=current+IncomingV3Part(
+                        cleanSender.uppercase(),version,bytes
+                    )
+                }
+            }
             payload.startsWith("[VAULT_SHARE_STORE_V1:") -> {
                 // Parte enviada apenas por titular da família, dentro do canal
                 // permanente E2EE; não vira mensagem nem arquivo de chat.
@@ -1620,7 +1666,7 @@ class PessoasAquiRepository(
             }
             else -> {
                 // Um comando interno de versão futura ou malformado não é texto.
-                if (payload.startsWith("[CALL_")) return
+                if (payload.startsWith("[CALL_") || payload.startsWith("[VAULT_")) return
                 val isPermanent = isPeerPermanent(cleanSender)
                 // Este método recebe somente payloads da INTERNET. Mensagens do Modo A
                 // devem chegar por onTemporaryMessageReceived (BLE), nunca pelo Render,
