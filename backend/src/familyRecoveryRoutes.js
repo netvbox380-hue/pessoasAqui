@@ -289,7 +289,7 @@ function registerFamilyRecoveryRoutes(app, deps) {
           ?'LINK remoto: aguarde 1 hora; requer aprovação independente de outro familiar.'
           :'QR: disponível imediatamente após aprovação de outro familiar distinto.'});
     }catch(e){
-      if(e.status===409)return res.status(409).json({error:e.message});
+      if([404,409,429].includes(e.status))return res.status(e.status).json({error:e.message});
       return dbUnavailable(res);
     }
   });
