@@ -852,10 +852,19 @@
                   ${isOpen ? 'ABERTO' : 'RESPONDIDO'}
                 </span>
                 <span class="font-bold text-white text-sm">${escapeHtml(tkt.subject || 'Sem assunto')}</span>
+                ${tkt.verified_family_report
+                  ? '<span class="px-2 py-0.5 bg-red-950 text-red-300 rounded text-[10px]">INCIDENTE FAMILIAR VERIFICADO</span>'
+                  : ''}
+
                 <span class="text-xs text-gray-500">• ${new Date(tkt.created_at).toLocaleString('pt-BR')}</span>
               </div>
               <div class="text-xs text-gray-400 font-mono">
                 Autor: <span class="text-gray-300 font-semibold">${escapeHtml(tkt.author_alias || 'Usuário')}</span> (${escapeHtml(tkt.author_identity?.substring(0, 12))}...)
+                ${tkt.verified_family_report && /^[A-F0-9]{16}$/i.test(tkt.affected_identity||'')
+                  ? '<button data-target="'+escapeHtml(tkt.affected_identity)+
+                    '" onclick="investigateFamilyAccount(this.dataset.target)" class="ml-2 p-1 bg-emerald-900 rounded text-white text-xs">Investigar familiar</button>'
+                  : ''}
+
               </div>
             </div>
 
@@ -983,6 +992,11 @@
       }
     }
 
+
+    function investigateFamilyAccount(identity) {
+      document.getElementById('security-identity').value=String(identity||'').toUpperCase();
+      switchTab('security');
+    }
 
     // ================= INCIDENTES FAMILIARES / SEGURANÇA =================
     function securityId() {
