@@ -296,3 +296,26 @@ ou outro fator independente forte pré-configurado.
 
 O primitivo é código criptográfico sensível e **requer auditoria independente**,
 além de testes de integração e dispositivos reais antes de ativação.
+
+
+### Revisão adicional de migração V2→V3 (05/11/2026)
+
+- O fluxo Android agora **não sobrescreve automaticamente o PIN existente**
+  ao gerar/reenviar backup ou exportar arquivo. PIN cadastrado é verificado
+  sem alteração do registro; um PIN diferente falha antes de cifrar o backup.
+  Ao configurar o primeiro PIN, ele só é persistido depois da confirmação
+  de replicação ou da exportação cifrada concluída.
+- Cada tentativa de backup recebe **versão única reservada em SharedPreferences
+  com commit durável**, mesmo que a replicação falhe. Evita impedir retransmissão
+  por familiares que guardaram uma tentativa parcialmente entregue.
+  O contador de sucesso de backup permanece independente da reserva de versão.
+- Foram adicionados testes unitários para **V2→V3 com preservação de mensagens
+  privadas, mural e atributos de parentesco/contatos**, abertura retrocompatível
+  do cofre V2, falha segura de criação V3 e retries sem sucesso falso.
+- **Status: implementado no código, não homologado.** Ainda é necessário
+  executar a suíte Android em Antigravity e testar migração/resgate real entre
+  celulares com familiares online/offline, perda de ACK e reinicializações,
+  antes de autorizar release/Render.
+- Ativar Cofre V3 ainda depende de guardar o segredo fora do aparelho;
+  **recuperação familiar distribuída do próprio segredo/PIN não está ligada
+  ao fluxo de produção**. O módulo de partes limiares continua isolado.
