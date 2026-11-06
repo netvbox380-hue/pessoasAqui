@@ -644,9 +644,11 @@ function registerFamilyRecoveryRoutes(app, deps) {
           preparedDeviceIdentity:grant.request_device_identity,
           claimantIdentity:normalizeId(req.body?.newDeviceIdentity),
           issuedAt:new Date(grant.prepared_at).getTime(),
-          expiresAt:new Date(grant.expires_at).getTime(),
+          // QR/LINK de identidade é uso único. Após CLAIM há uma janela
+          // adicional de 15 minutos apenas para liberar partes V3.
+          expiresAt:new Date(grant.used_at).getTime() + 15 * 60 * 1000,
           now:Date.now()
-        }) || normalizeId(req.body?.newDeviceIdentity)!==target) {
+        })) {
           throw Object.assign(Error('Liberação não autorizada, duplicada ou expirada.'),{status:403});
         }
         const nonce=await run(
