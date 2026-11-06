@@ -1273,22 +1273,44 @@ class PessoasAquiRepository(
 
     private val processedMessageIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
+    /**
+     * Única entrada de mensagens da REDE: aceita exclusivamente o envelope
+     * ECDH autenticado. Comandos internos e payloads legados ENC: em trânsito
+     * nunca são interpretados como instruções. Compatibilidade de arquivo
+     * histórico V1/V2 pertence ao módulo de leitura de backups, não à rede.
+     */
     internal fun processIncomingPayload(senderHash: String, senderAlias: String, rawPayload: String, iv: String = "", messageId: String = "") {
-        val myId = cryptoIdentityManager.getTechnicalIdentity()
-        val cleanSender = cleanId(senderHash)
-        // Uma falha de autenticação/decifragem nunca vira bolha de chat nem
-        // sinalização de chamada. Não marcar o ID como processado antes de
-        // validar a mensagem: uma retransmissão futura pode ter dados válidos.
-        val payload = try {
-            if (rawPayload.startsWith("ENC_ECDH:") || rawPayload.startsWith("ENC:")) {
-                E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, cryptoIdentityManager.getActivePrivateKey())
-            } else {
-                rawPayload
-            }
-        } catch (_: SecurityException) {
-            Log.w("PessoasAqui", "Envelope E2EE não autenticado; descartado sem exibir dados cifrados")
+        if (!rawPayload.startsWith("ENC_ECDH:")) {
+            Log.w("PessoasAqui", "Mensagem de rede sem envelope ECDH autenticado descartada")
             return
         }
+        if (iv.isBlank()) {
+            Log.w("PessoasAqui", "Mensagem de rede sem IV descartada")
+            return
+        }
+        val cleanSender = cleanId(senderHash)
+        val payload = try {
+            E2eeCryptoEngine.decrypt(
+                rawPayload, iv, cleanSender,
+                cryptoIdentityManager.getTechnicalIdentity(),
+                cryptoIdentityManager.getActivePrivateKey()
+            )
+        } catch (_: Exception) {
+            Log.w("PessoasAqui", "Falha de autenticação E2EE; mensagem descartada")
+            return
+        }
+        processVerifiedNetworkPayload(cleanSender, senderAlias, payload, messageId)
+    }
+
+    /**
+     * Dispatcher de comandos APÓS verificação do envelope ECDH pela entrada
+     * acima. Separado para testes determinísticos da máquina de estados.
+     * Nunca chamar com bytes provenientes diretamente da rede.
+     */
+    internal fun processVerifiedNetworkPayload(
+        senderHash: String, senderAlias: String, payload: String, messageId: String = ""
+    ) {
+        val cleanSender = cleanId(senderHash)
         if (payload.startsWith("ENC_ECDH:") || payload.startsWith("ENC:")) {
             Log.w("PessoasAqui", "Envelope cifrado inesperado após decifragem; descartado")
             return
