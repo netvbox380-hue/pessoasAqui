@@ -51,12 +51,12 @@ data class InviteIdentityProof(
             inviteId: String = "", token: String = "", signedHash: String? = null
         ): InviteIdentityProof {
             require(operation in setOf("CREATE", "REDEEM",
-                "RECOVERY_DELEGATE", "RECOVERY_ISSUE", "RECOVERY_CLAIM", "RECOVERY_REVOKE",
+                "RECOVERY_DELEGATE", "RECOVERY_ISSUE", "RECOVERY_ISSUE_LINK", "RECOVERY_CLAIM", "RECOVERY_REVOKE", "RECOVERY_APPROVE", "RECOVERY_STATUS", "FAMILY_INCIDENT",
                 "OFFER_PUBLISH", "OFFER_DELETE", "CONNECTION_MARK", "CONNECTION_UNMARK", "IDENTITY_REGISTER", "MESSAGE_SEND", "MESSAGE_PENDING", "PRESENCE_HEARTBEAT", "CONNECTION_STATUS", "PRESENCE_NEARBY", "TICKET_READ", "TICKET_CREATE"))
             val timestamp = System.currentTimeMillis()
             val nonce = UUID.randomUUID().toString()
             val hash = signedHash ?: if (operation in setOf("REDEEM",
-                    "RECOVERY_DELEGATE", "RECOVERY_CLAIM",
+                    "RECOVERY_DELEGATE", "RECOVERY_CLAIM", "RECOVERY_APPROVE", "RECOVERY_STATUS",
                     "OFFER_PUBLISH", "OFFER_DELETE")) tokenDigest(token) else ""
             val payload = canonical(
                 operation, identity.removePrefix("peer-").trim(), alias,
