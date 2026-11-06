@@ -86,6 +86,51 @@ function registerFamilyRecoveryRoutes(app, deps) {
     }
   });
 
+  /** O próprio titular pode contestar todas as recuperações em aberto.
+   * A contestação suspende novas tentativas por 24h e não revoga sua conta.
+   */
+  app.post('/api/family/recovery/contest',async(req,res)=>{
+    if(!ready())return dbUnavailable(res);
+    const owner=normalizeId(req.body?.targetIdentity);
+    const reason=String(req.body?.reason||'Tentativa de recuperação não reconhecida.').trim();
+    if(!VALID_ID.test(owner)||reason.length<10||reason.length>1000)
+      return res.status(400).json({error:'Identidade ou justificativa inválida.'});
+    try{
+      const proof=req.body?.identityProof;
+      if(!await authenticated('RECOVERY_CONTEST',owner,'','',proof))
+        return res.status(401).json({error:'Assinatura da identidade ativa obrigatória.'});
+      const count=await withTransaction(async run=>{
+        const ownerExists=await run(
+          'SELECT id FROM identities WHERE id=$1 FOR UPDATE',[owner]);
+        if(ownerExists.rowCount!==1)throw Object.assign(Error('Conta inexistente'),{status:404});
+        const nonce=await run(
+          `INSERT INTO recovery_proof_nonces(identity_id,operation,nonce)
+            VALUES($1,'RECOVERY_CONTEST',$2) ON CONFLICT DO NOTHING RETURNING nonce`,
+          [owner,proof.nonce]);
+        if(nonce.rowCount!==1)throw Object.assign(Error('Contestação repetida.'),{status:409});
+        const r=await run(
+          'UPDATE recovery_grants SET used_at=NOW() WHERE target_identity=$1 AND used_at IS NULL RETURNING id',
+          [owner]);
+        await run(
+          `INSERT INTO account_recovery_holds(target_identity,blocked_until,reason)
+           VALUES($1,NOW()+INTERVAL '24 hours',$2)
+           ON CONFLICT(target_identity) DO UPDATE SET
+             blocked_until=EXCLUDED.blocked_until,reason=EXCLUDED.reason,created_at=NOW()`,
+          [owner,reason]);
+        await run(
+          `INSERT INTO recovery_security_events(target_identity,actor_identity,event_type,details)
+            VALUES($1,$2,'OWNER_CONTESTED_RECOVERY',$3::jsonb)`,
+          [owner,owner,JSON.stringify({cancelled:r.rowCount})]);
+        return r.rowCount;
+      });
+      return res.json({success:true,cancelled:count,blockedHours:24,
+        message:'Recuperações canceladas e suspensas por 24 horas. O suporte poderá investigar.'});
+    }catch(e){
+      if([404,409].includes(e.status))return res.status(e.status).json({error:e.message});
+      return dbUnavailable(res);
+    }
+  });
+
   // Credenciamento consciente: proprietário autenticado concede a um
   // familiar específico permissão de recuperação. O ID do familiar precisa
   // ser autocertificado pela chave pública indicada.
