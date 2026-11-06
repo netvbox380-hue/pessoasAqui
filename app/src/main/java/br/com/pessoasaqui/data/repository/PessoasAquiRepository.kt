@@ -2508,8 +2508,39 @@ class PessoasAquiRepository(
                     publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
                     signChallenge = cryptoIdentityManager::signChallenge
                 )
-                networkClient.createOneTimeInvite(identity, alias, proof)
-                    .map { it.inviteUrl }
+                val first = networkClient.createOneTimeInvite(identity, alias, proof)
+                val resolved = if (first.isFailure &&
+                    first.exceptionOrNull()?.message.orEmpty().contains("HTTP 401")) {
+                    // Re-registro seguro, assinado pela MESMA chave do titular.
+                    // Não recriar identidade, não substituir a chave existente
+                    // nem permitir fallback não autenticado.
+                    val registerProof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                        operation = "IDENTITY_REGISTER", identity = identity, alias = alias,
+                        publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                        signChallenge = cryptoIdentityManager::signChallenge
+                    )
+                    val enrollment = networkClient.registerIdentity(
+                        identityHash = identity,
+                        publicKeyEd25519 = cryptoIdentityManager.getPublicKeyBase64(),
+                        publicKeyX25519 = "",
+                        pin = "",
+                        alias = alias,
+                        identityProof = registerProof
+                    )
+                    if (enrollment.isFailure) {
+                        Result.failure(enrollment.exceptionOrNull()
+                            ?: SecurityException("A chave ativa da identidade não foi validada."))
+                    } else {
+                        // Uma segunda e última tentativa com nonce novo.
+                        val retryProof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                            operation = "CREATE", identity = identity, alias = alias,
+                            publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                            signChallenge = cryptoIdentityManager::signChallenge
+                        )
+                        networkClient.createOneTimeInvite(identity, alias, retryProof)
+                    }
+                } else first
+                resolved.map { it.inviteUrl }
             } catch (e: Exception) {
                 Result.failure(e)
             }
