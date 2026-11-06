@@ -371,4 +371,24 @@ class P2PVaultManagerTest {
             oldVault, "123456").getOrThrow().privateChats["peer"]?.first()?.text)
     }
 
+    @Test
+    fun testFailedReplicationRetryAllocatesNewVersionWithoutFakeSuccess() {
+        val first = vaultManager.createVaultPackage(
+            pin = "123456", ownerIdentityHash = "AABBCCDDEEFF1122",
+            ownerAlias = "João", privateChats = emptyMap(), localMural = emptyList()
+        )
+        // Primeira tentativa enviada parcialmente (sem confirmação de 2 familiares).
+        // Mesmo sem recordBackupSuccess, o próximo ciphertext precisa de uma
+        // versão mais alta para que um familiar possa armazená-lo.
+        val retry = vaultManager.createVaultPackage(
+            pin = "123456", ownerIdentityHash = "AABBCCDDEEFF1122",
+            ownerAlias = "João", privateChats = emptyMap(), localMural = emptyList(),
+            recoverySecret = P2PVaultManager.generateRecoverySecret()
+        )
+        assertTrue("Tentativas devem sempre avançar versão", retry.version > first.version)
+        assertEquals(0L, vaultManager.getLastBackupVersion())
+        assertEquals(0, vaultManager.getLastReplicatedCount())
+        assertTrue(vaultManager.restoreFromVaultPackage(first, "123456").isSuccess)
+    }
+
 }
