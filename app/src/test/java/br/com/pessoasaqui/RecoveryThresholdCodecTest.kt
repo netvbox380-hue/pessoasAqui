@@ -28,8 +28,7 @@ class RecoveryThresholdCodecTest {
         val a=RecoveryThresholdCodec.split("555555",secret,3)
         val b=RecoveryThresholdCodec.split("123456",secret,3)
         val mixed=runCatching { RecoveryThresholdCodec.combine(a[0],b[1]) }
-        assertTrue(mixed.isFailure ||
-            mixed.getOrThrow().pin!="555555" || mixed.getOrThrow().recoverySecret!=secret)
+        assertTrue("Partes de distribuições distintas devem falhar", mixed.isFailure)
     }
 
     @Test(expected=IllegalArgumentException::class)
@@ -42,4 +41,24 @@ class RecoveryThresholdCodecTest {
     fun rejectsWeakLegacyPinEnrollment() {
         RecoveryThresholdCodec.split("12","PA-VAULT-V3-"+"00".repeat(32),3)
     }
+
+    @Test fun singleShareTamperingIsRejected() {
+        val secret="PA-VAULT-V3-"+"FF".repeat(32)
+        val shares=RecoveryThresholdCodec.split("123456",secret,3)
+        val altered=shares[0].clone()
+        altered[altered.lastIndex]=(altered.last().toInt() xor 1).toByte()
+        assertTrue(runCatching { RecoveryThresholdCodec.combine(altered,shares[1]) }.isFailure)
+        val alteredCommitment=shares[0].clone()
+        alteredCommitment[20]=(alteredCommitment[20].toInt() xor 1).toByte()
+        assertTrue(runCatching { RecoveryThresholdCodec.combine(alteredCommitment,shares[1]) }.isFailure)
+    }
+
+    @Test fun distinctEnrollmentsHaveDistinctIdentifiersEvenForSameSecretAndPin() {
+        val secret="PA-VAULT-V3-"+"12".repeat(32)
+        val one=RecoveryThresholdCodec.split("123456",secret,3)
+        val two=RecoveryThresholdCodec.split("123456",secret,3)
+        assertFalse(one[0].contentEquals(two[0]))
+        assertTrue(runCatching { RecoveryThresholdCodec.combine(one[0],two[1]) }.isFailure)
+    }
 }
+
