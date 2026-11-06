@@ -1,5 +1,8 @@
 package br.com.pessoasaqui
 
+import br.com.pessoasaqui.core.crypto.CryptoIdentityManager
+import br.com.pessoasaqui.core.crypto.E2eeCryptoEngine
+import br.com.pessoasaqui.core.crypto.TrustedIdentityKeys
 import br.com.pessoasaqui.data.repository.PessoasAquiRepository
 import org.junit.Assert.*
 import org.junit.Test
@@ -60,4 +63,55 @@ class NetworkE2eeBoundaryTest {
             "", "forged-guardian")
         assertEquals(original,repo.proximitySimulator.privateChats.value[peer].orEmpty())
     }
+    @Test fun authenticatedP256EcdhControlMessageStillWorks() {
+        // Valida o caminho real de ciphertext, não apenas o dispatcher interno.
+        val sender=CryptoIdentityManager()
+        val receiver=CryptoIdentityManager()
+        val senderId=sender.getTechnicalIdentity()
+        val receiverId=receiver.getTechnicalIdentity()
+        assertTrue(TrustedIdentityKeys.acceptAuthenticatedBinding(
+            senderId,sender.getPublicKeyBase64(),1L
+        ))
+        assertTrue(TrustedIdentityKeys.acceptAuthenticatedBinding(
+            receiverId,receiver.getPublicKeyBase64(),1L
+        ))
+        E2eeCryptoEngine.registerPeerPublicKey(senderId,sender.getPublicKeyBase64())
+        E2eeCryptoEngine.registerPeerPublicKey(receiverId,receiver.getPublicKeyBase64())
+        val repo=PessoasAquiRepository(cryptoIdentityManager=receiver)
+        repo.setMarkPerson(senderId,mark=true)
+        repo.confirmMutualConnectionFromServer(senderId)
+        val (payload,iv)=E2eeCryptoEngine.encrypt(
+            "[CALL_INIT:false:Contato]",senderId,receiverId,
+            sender.getActivePrivateKey()
+        )
+        assertTrue(payload.startsWith("ENC_ECDH:"))
+        repo.processIncomingPayload(senderId,"Contato",payload,iv,"authenticated-call")
+        assertNotNull("Chamada autenticada não pode ser bloqueada",repo.activeCallState.value)
+    }
+
+    @Test fun tamperedEcdhCallMustNotRing() {
+        val sender=CryptoIdentityManager()
+        val receiver=CryptoIdentityManager()
+        val senderId=sender.getTechnicalIdentity()
+        val receiverId=receiver.getTechnicalIdentity()
+        assertTrue(TrustedIdentityKeys.acceptAuthenticatedBinding(
+            senderId,sender.getPublicKeyBase64(),1L
+        ))
+        assertTrue(TrustedIdentityKeys.acceptAuthenticatedBinding(
+            receiverId,receiver.getPublicKeyBase64(),1L
+        ))
+        E2eeCryptoEngine.registerPeerPublicKey(senderId,sender.getPublicKeyBase64())
+        E2eeCryptoEngine.registerPeerPublicKey(receiverId,receiver.getPublicKeyBase64())
+        val repo=PessoasAquiRepository(cryptoIdentityManager=receiver)
+        repo.setMarkPerson(senderId,mark=true)
+        repo.confirmMutualConnectionFromServer(senderId)
+        val (cipher,iv)=E2eeCryptoEngine.encrypt(
+            "[CALL_INIT:true:Contato]",senderId,receiverId,
+            sender.getActivePrivateKey()
+        )
+        val badIv=iv.replaceRange(0,1,if(iv[0]=='A') "B" else "A")
+        repo.processIncomingPayload(senderId,"Contato",cipher,badIv,"tampered-call")
+        assertNull("Tag AES-GCM inválida jamais inicia chamada",repo.activeCallState.value)
+    }
+
 }
