@@ -101,6 +101,7 @@ class P2PVaultManager(
         private const val KEY_LAST_BACKUP_VERSION = "last_backup_version"
         private const val KEY_LAST_ALLOCATED_VERSION = "last_allocated_backup_version"
         private const val KEY_LAST_REPLICATED_COUNT = "last_replicated_count"
+        private const val KEY_LAST_CONFIRMED_FORMAT = "last_confirmed_backup_format"
         private const val KEY_LAST_MESSAGES_COUNT = "last_messages_count"
 
         private const val PBKDF2_ITERATIONS_V1 = 10_000
@@ -229,12 +230,18 @@ class P2PVaultManager(
         }
     }
 
-    fun recordBackupSuccess(version: Long, replicatedCount: Int, messagesCount: Int) {
+    fun isV3SecretRecoveryReady(): Boolean =
+        prefs?.getInt(KEY_LAST_CONFIRMED_FORMAT, 0) == 3 &&
+            getLastReplicatedCount() >= 3
+
+    fun recordBackupSuccess(version: Long, replicatedCount: Int, messagesCount: Int,
+                            formatVersion: Int = 2) {
         prefs?.edit()
             ?.putLong(KEY_LAST_BACKUP_EPOCH, System.currentTimeMillis())
             ?.putLong(KEY_LAST_BACKUP_VERSION, version)
             ?.putInt(KEY_LAST_REPLICATED_COUNT, replicatedCount)
             ?.putInt(KEY_LAST_MESSAGES_COUNT, messagesCount)
+            ?.putInt(KEY_LAST_CONFIRMED_FORMAT, formatVersion)
             ?.apply()
     }
 
