@@ -219,6 +219,7 @@ class BleManager(
     @Volatile private var discoveryState = DiscoveryState.STOPPED
     @Volatile private var foreground = true
     @Volatile private var discoverySuspended = false
+    @Volatile private var highAccuracyRequested = true
     @Volatile private var scanningActive = false
     @Volatile private var advertisingActive = false
     @Volatile private var lastRecoveryAttemptMs = 0L
@@ -290,6 +291,16 @@ class BleManager(
     internal val isScanningActive: Boolean get() = scanningActive
     internal val isAdvertisingActive: Boolean get() = advertisingActive
     val isDiscoverySuspended: Boolean get() = discoverySuspended
+
+    /** Radar/chat: baixa latência; Ofertas e tolerância: modo econômico. */
+    @Synchronized
+    fun setDiscoveryHighAccuracy(enabled: Boolean) {
+        if (highAccuracyRequested == enabled) return
+        highAccuracyRequested = enabled
+        if (!discoverySuspended && scanningActive) {
+            lastScanCallback?.let { startScanning(it) }
+        }
+    }
 
     /**
      * Apenas discovery (scan + advertising) é pausada. A infraestrutura
@@ -530,7 +541,10 @@ class BleManager(
         }
 
         val settings = ScanSettings.Builder()
-            .setScanMode(if (foreground) ScanSettings.SCAN_MODE_LOW_LATENCY else ScanSettings.SCAN_MODE_BALANCED)
+            .setScanMode(
+                if (foreground && highAccuracyRequested) ScanSettings.SCAN_MODE_LOW_LATENCY
+                else ScanSettings.SCAN_MODE_BALANCED
+            )
             .setReportDelay(0)
             .build()
 
