@@ -1505,6 +1505,35 @@ class PessoasAquiRepository(
                 // A conexão só é confirmada pelo evento oficial do servidor ou por /status.
                 Log.d("PessoasAqui", "Ignorando controle MARK_MUTUAL legado; aguardando confirmação do servidor")
             }
+            payload.startsWith("[VAULT_SHARE_STORE_V1:") -> {
+                // Parte enviada apenas por titular da família, dentro do canal
+                // permanente E2EE; não vira mensagem nem arquivo de chat.
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        if (!payload.endsWith("]") || payload.length > 220 ||
+                            !isPeerPermanent(cleanSender)) return@launch
+                        val trustedFamily = (
+                            _realDiscoveredPeople.value + loadSavedContactsFromPrefs()
+                        ).any { p ->
+                            cleanId(p.technicalIdentityHash.ifBlank { p.id })
+                                .equals(cleanSender, ignoreCase = true) && p.isFamily
+                        }
+                        if (!trustedFamily) return@launch
+                        val parts = payload.removePrefix("[VAULT_SHARE_STORE_V1:")
+                            .dropLast(1).split(":", limit = 2)
+                        val version = parts.getOrNull(0)?.toLongOrNull() ?: return@launch
+                        val encoded = parts.getOrNull(1) ?: return@launch
+                        if (familyShareStore?.store(cleanSender.uppercase(), version, encoded) != true)
+                            return@launch
+                        val vault = p2pVaultManager?.getStoredPeerVault(cleanSender)
+                        if (vault?.formatVersion == 3 && vault.version == version) {
+                            sendPrivateMessage(cleanSender, "[VAULT_ACK:$version]")
+                        }
+                    } catch (_: Exception) {
+                        Log.w("PessoasAqui", "Parte V3 rejeitada sem exposição do conteúdo.")
+                    }
+                }
+            }
             payload.startsWith("[VAULT_STORE:") -> {
                 val b64 = payload.removePrefix("[VAULT_STORE:").removeSuffix("]")
                 scope.launch(Dispatchers.IO) {
@@ -1518,7 +1547,11 @@ class PessoasAquiRepository(
                             // Reenvio idempotente: ACK perdido não prende a versão.
                             val alreadyStored = !stored &&
                                 p2pVaultManager?.getStoredPeerVault(cleanSender) == vault
-                            if (stored || alreadyStored) {
+                            // Só confirmar uma réplica V3 se AMBOS cofre e
+                            // respectiva parte Shamir foram persistidos.
+                            val shareReady = vault.formatVersion < 3 ||
+                                familyShareStore?.load(cleanSender.uppercase())?.first == vault.version
+                            if ((stored || alreadyStored) && shareReady) {
                                 sendPrivateMessage(cleanSender, "[VAULT_ACK:${vault.version}]")
                             }
                         }
