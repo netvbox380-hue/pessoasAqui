@@ -84,6 +84,23 @@ class PinSecurityManager(
         }catch(_:Exception){false}
     }
 
+    /**
+     * Verifica o PIN já cadastrado sem alterar o registro nem os contadores
+     * de recuperação. Usado antes de exportar ou migrar backups existentes.
+     * Um PIN diferente nunca deve sobrescrever silenciosamente o PIN antigo.
+     */
+    fun matchesConfiguredPin(candidate: String): Boolean {
+        if (!hasCustomPin() || candidate.length < 4) return false
+        return if (registeredPinHash.startsWith("pbkdf2v2$")) {
+            verifyStrongPin(candidate, registeredPinHash)
+        } else {
+            registeredPinHash.isNotBlank() && MessageDigest.isEqual(
+                hashPin(candidate).toByteArray(Charsets.UTF_8),
+                registeredPinHash.toByteArray(Charsets.UTF_8)
+            )
+        }
+    }
+
     fun hasCustomPin(): Boolean {
         return prefs?.contains("pin_hash") == true
     }
