@@ -9,6 +9,7 @@ class FamilyRecoveryShareStore(context: Context) {
     private val prefs = context.getSharedPreferences("pa_family_shares_v1", Context.MODE_PRIVATE)
     private val crypto = LocalDiskCryptoManager(context)
 
+    @Synchronized
     fun store(owner: String, version: Long, payload: String): Boolean {
         require(owner.matches(Regex("^[A-F0-9]{16}$")))
         require(version > 0 && payload.length <= 160)
@@ -26,6 +27,7 @@ class FamilyRecoveryShareStore(context: Context) {
         return prefs.edit().putString(owner, wrapped).commit()
     }
 
+    @Synchronized
     fun load(owner: String): Pair<Long, String>? {
         if (!owner.matches(Regex("^[A-F0-9]{16}$"))) return null
         val encrypted = prefs.getString(owner, null) ?: return null
