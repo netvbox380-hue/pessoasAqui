@@ -32,7 +32,8 @@ import javax.crypto.spec.SecretKeySpec
  * Pacote Criptografado do Cofre Distribuído (Zero-Knowledge).
  *
  * Contém o histórico de mensagens compactado em GZIP e cifrado com AES-256-GCM.
- * A chave de descriptografia só pode ser derivada a partir do PIN de 6 dígitos do usuário.
+ * V1/V2: derivação legada baseada em PIN. V3: PIN e segredo de alta entropia independente;
+ * familiares recebem o arquivo cifrado e nunca o segredo V3.
  */
 @Serializable
 data class EncryptedVaultPackage(
@@ -76,7 +77,7 @@ data class VaultContentData(
  * Gerenciador de Cofre P2P Distribuído entre Aparelhos Familiares.
  *
  * Implementa:
- * - Criptografia militar ponta a ponta Zero-Knowledge (AES-256-GCM + PBKDF2WithHmacSHA256).
+ * - Criptografia de cofre AES-256-GCM e PBKDF2WithHmacSHA256; V3 requer segredo independente.
  * - Compactação GZIP para payloads minúsculos (~150KB - 300KB).
  * - Versionamento com eleição automática do backup mais recente.
  * - Replicação silenciosa redundante em até 3 dispositivos familiares.
