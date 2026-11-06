@@ -76,6 +76,20 @@ class PessoasAquiRepository(
     }
 
 
+    // Descoberta BLE é opt-in por Radar; nunca ligar automaticamente pelo
+    // lifecycle, GATT, heartbeat ou callbacks do adaptador.
+    private val _radarPausedForBattery = MutableStateFlow(true)
+    val radarPausedForBattery: StateFlow<Boolean> = _radarPausedForBattery.asStateFlow()
+    @Volatile private var radarRequested = false
+    @Volatile private var uiForeground = false
+    @Volatile private var radarTabVisible = false
+    @Volatile private var bleChatScreenOpen = false
+    @Volatile private var offersScreenOpen = false
+    private var radarIdlePauseJob: Job? = null
+    private val radarPauseLock = Any()
+    private val RADAR_TAB_IDLE_MS = 30_000L
+    private val RADAR_BACKGROUND_IDLE_MS = 60_000L
+
     val diskCrypto = LocalDiskCryptoManager(context)
     private val vaultSecretStore = context?.let { VaultRecoverySecretStore(it) }
 
@@ -2067,10 +2081,65 @@ class PessoasAquiRepository(
 
     private var bleBatchJob: Job? = null
 
+    /**
+     * Atualização do estado de navegação. Proximidade em chat e ofertas que
+     * dependem do rádio não podem ser interrompidas por troca de abas.
+     */
+    fun onRadioUiChanged(radarVisible: Boolean, chatOpen: Boolean, offersVisible: Boolean) {
+        synchronized(radarPauseLock) {
+            radarTabVisible = radarVisible
+            bleChatScreenOpen = chatOpen
+            offersScreenOpen = offersVisible
+            scheduleRadarIdlePauseLocked()
+        }
+    }
+
+    /** Ação explícita do usuário; nunca muda o Bluetooth do sistema. */
+    fun activateRadarForDiscovery() {
+        synchronized(radarPauseLock) {
+            if (!_hasGrantedPermissions.value) return
+            radarRequested = true
+            radarIdlePauseJob?.cancel()
+            radarIdlePauseJob = null
+            _radarPausedForBattery.value = false
+            bleManager?.setDiscoverySuspended(false)
+            startNativeBleHardware()
+        }
+    }
+
+    private fun scheduleRadarIdlePauseLocked() {
+        radarIdlePauseJob?.cancel()
+        radarIdlePauseJob = null
+        if (!radarRequested || _radarPausedForBattery.value) return
+        if (uiForeground && (radarTabVisible || bleChatScreenOpen || offersScreenOpen)) return
+        // A comunicação existente continua disponível durante o prazo de tolerância.
+        val delayMs = if (!uiForeground) RADAR_BACKGROUND_IDLE_MS else RADAR_TAB_IDLE_MS
+        radarIdlePauseJob = scope.launch {
+            delay(delayMs)
+            synchronized(radarPauseLock) {
+                if (!radarRequested || _radarPausedForBattery.value) return@synchronized
+                if (uiForeground && (radarTabVisible || bleChatScreenOpen || offersScreenOpen)) return@synchronized
+                radarRequested = false
+                _radarPausedForBattery.value = true
+                bleManager?.setDiscoverySuspended(true)
+                // Não fechar GATT, nem apagar mensagens ou conexões permanentes.
+                _realDiscoveredPeople.value = emptyList()
+                updateUnifiedData()
+            }
+        }
+    }
+
+
     private fun startNativeBleHardware() {
         try {
             bleTransportCoordinator.start()
             bleManager?.let { ble ->
+                // Inicialização do transporte não autoriza busca permanente.
+                // Inclui chamadas indiretas por permissões, perfil e Bluetooth ON.
+                if (!radarRequested) {
+                    ble.setDiscoverySuspended(true)
+                    return@let
+                }
                 if (ble.isBluetoothEnabled) {
                     ble.startAdvertising(
                         myIdentityHash = cryptoIdentityManager.getTechnicalIdentity(),
@@ -2160,6 +2229,10 @@ class PessoasAquiRepository(
 
     /** Recupera descoberta ao voltar ao app, sem forçar reinício do GATT ativo. */
     fun setBleAppForeground(visible: Boolean) {
+        synchronized(radarPauseLock) {
+            uiForeground = visible
+            scheduleRadarIdlePauseLocked()
+        }
         if (!_hasGrantedPermissions.value) return
         try {
             bleManager?.setAppForeground(visible)
@@ -2178,7 +2251,9 @@ class PessoasAquiRepository(
             }
             // forceRefresh apenas compatibilidade com a interface anterior:
             // recuperação real ocorre por erro de rádio e mudanças de ciclo de vida.
-            ble.ensureDiscoveryContinuity()
+            if (radarRequested && !_radarPausedForBattery.value) {
+                ble.ensureDiscoveryContinuity()
+            }
         } catch (e: Exception) {
             Log.w("PessoasAqui", "Falha ao verificar BLE ao voltar ao app: ${e.message}")
         }
