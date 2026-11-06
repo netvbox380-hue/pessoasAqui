@@ -195,6 +195,13 @@ class P2PVaultManager(
         return prefs?.getInt(KEY_LAST_MESSAGES_COUNT, 0) ?: 0
     }
 
+    /** Ao restaurar V1/V2, avançar a base de versão sem declarar backup enviado. */
+    fun recordRestoredBackupVersion(version: Long) {
+        if (version > getLastBackupVersion()) {
+            prefs?.edit()?.putLong(KEY_LAST_BACKUP_VERSION, version)?.commit()
+        }
+    }
+
     fun recordBackupSuccess(version: Long, replicatedCount: Int, messagesCount: Int) {
         prefs?.edit()
             ?.putLong(KEY_LAST_BACKUP_EPOCH, System.currentTimeMillis())
