@@ -248,6 +248,8 @@ function registerFamilyRecoveryRoutes(app, deps) {
             FROM recovery_grants WHERE token_hash=$1 FOR UPDATE`,[hexSha(code)])).rows[0];
         if(!grant||grant.used_at||new Date(grant.expires_at).getTime()<=Date.now())
           throw Object.assign(Error('Solicitação expirada ou utilizada.'),{status:410});
+        if(!grant.eligible_at)
+          throw Object.assign(Error('Código anterior à política familiar atual; gere um novo QR/LINK.'),{status:410});
         const hold=await run(
           'SELECT target_identity FROM account_recovery_holds WHERE target_identity=$1 AND blocked_until>NOW()',
           [grant.target_identity]);
@@ -295,11 +297,13 @@ function registerFamilyRecoveryRoutes(app, deps) {
         return res.status(401).json({error:'Segunda assinatura familiar inválida.'});
       const result=await withTransaction(async run=>{
         const grant=(await run(
-          'SELECT id,target_identity,family_identity,expires_at,used_at,request_device_identity,request_public_key,prepared_at FROM recovery_grants WHERE token_hash=$1 FOR UPDATE',
+          'SELECT id,target_identity,family_identity,expires_at,eligible_at,used_at,request_device_identity,request_public_key,prepared_at FROM recovery_grants WHERE token_hash=$1 FOR UPDATE',
           [hexSha(token)])).rows[0];
         if(!grant || grant.target_identity!==target || grant.used_at ||
            new Date(grant.expires_at).getTime()<=Date.now())
           throw Object.assign(Error('Sessão inválida ou expirada.'),{status:410});
+        if(!grant.eligible_at)
+          throw Object.assign(Error('Sessão anterior à política atual; gere novo código.'),{status:410});
         if(family===grant.family_identity)
           throw Object.assign(Error('O familiar que emitiu o QR/LINK não pode ser o segundo autorizador.'),{status:403});
         if(!grant.request_device_identity||!grant.request_public_key||!grant.prepared_at)
@@ -355,6 +359,8 @@ function registerFamilyRecoveryRoutes(app, deps) {
         const grant=found.rows[0];
         if(!grant || grant.used_at || new Date(grant.expires_at).getTime()<=Date.now())
           throw Object.assign(Error('Chave inválida, expirada ou utilizada'),{status:410});
+        if(!grant.eligible_at)
+          throw Object.assign(Error('Código legado inseguro desativado. Gere novo código.'),{status:410});
         if(grant.request_device_identity!==newId ||
            grant.request_public_key!==proof.publicKey || !grant.prepared_at)
           throw Object.assign(Error('Recuperação exige solicitação assinada por este aparelho.'),{status:403});
