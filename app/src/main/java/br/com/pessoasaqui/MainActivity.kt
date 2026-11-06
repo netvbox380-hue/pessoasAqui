@@ -279,6 +279,17 @@ fun PessoasAquiNavHost(
     var isCreatingInvite by remember { mutableStateOf(false) }
     var showVipDialog by remember { mutableStateOf(false) }
 
+    // Navegação é a fonte de verdade para manter ou suspender discovery BLE.
+    // O coordenador GATT continua separado, preservando sessões já abertas.
+    LaunchedEffect(currentScreen, currentMainTab) {
+        val onMain = currentScreen is Screen.Main
+        repository.onRadioUiChanged(
+            radarVisible = onMain && currentMainTab == 0,
+            chatOpen = currentScreen is Screen.Chat,
+            offersVisible = onMain && currentMainTab == 2
+        )
+    }
+
     val enableBluetoothLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
