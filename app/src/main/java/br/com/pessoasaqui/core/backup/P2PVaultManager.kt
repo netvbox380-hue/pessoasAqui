@@ -99,6 +99,7 @@ class P2PVaultManager(
         private const val KEY_FREQUENCY_HOURS = "frequency_hours"
         private const val KEY_LAST_BACKUP_EPOCH = "last_backup_epoch"
         private const val KEY_LAST_BACKUP_VERSION = "last_backup_version"
+        private const val KEY_LAST_ALLOCATED_VERSION = "last_allocated_backup_version"
         private const val KEY_LAST_REPLICATED_COUNT = "last_replicated_count"
         private const val KEY_LAST_MESSAGES_COUNT = "last_messages_count"
 
@@ -194,6 +195,31 @@ class P2PVaultManager(
 
     fun getLastMessagesCount(): Int {
         return prefs?.getInt(KEY_LAST_MESSAGES_COUNT, 0) ?: 0
+    }
+
+    private var lastAllocatedInMemory = 0L
+
+    /**
+     * Cada tentativa recebe versão única e durável, mesmo que a replicação
+     * falhe. Assim, um familiar que recebeu uma tentativa incompleta não
+     * bloqueia novo backup com ciphertext diferente e mesma versão.
+     * Não marca a tentativa como backup confirmado.
+     */
+    @Synchronized
+    private fun allocateBackupVersion(): Long {
+        val previous = maxOf(
+            lastAllocatedInMemory,
+            getLastBackupVersion(),
+            prefs?.getLong(KEY_LAST_ALLOCATED_VERSION, 0L) ?: 0L
+        )
+        require(previous < Long.MAX_VALUE) { "Limite de versões de backup atingido" }
+        val allocated = previous + 1L
+        if (prefs != null &&
+            !prefs.edit().putLong(KEY_LAST_ALLOCATED_VERSION, allocated).commit()) {
+            throw IllegalStateException("Não foi possível reservar versão durável do backup")
+        }
+        lastAllocatedInMemory = allocated
+        return allocated
     }
 
     /** Ao restaurar V1/V2, avançar a base de versão sem declarar backup enviado. */
@@ -366,7 +392,7 @@ class P2PVaultManager(
         val meta = EncryptedVaultPackage(
             ownerIdentityHash = ownerIdentityHash.removePrefix("peer-").trim().lowercase(),
             ownerAlias = ownerAlias,
-            version = getLastBackupVersion() + 1,
+            version = allocateBackupVersion(),
             timestampEpochMs = System.currentTimeMillis(),
             saltHex = bytesToHex(salt),
             ivHex = bytesToHex(iv),
