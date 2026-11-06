@@ -568,6 +568,20 @@ function registerFamilyRecoveryRoutes(app, deps) {
         old.close(4001,'Recovered identity');
       }catch(_){}
     }
+    // A antiga chave ECDH do titular está revogada. Avisar os familiares
+    // online para consultarem o novo binding autenticado ANTES de abrir E2EE.
+    // A notificação não carrega chave privada nem fornece autorização.
+    try {
+      const guardians=await query(
+        'SELECT family_identity FROM recovery_delegations WHERE target_identity=$1 AND is_active=TRUE',
+        [target]);
+      for(const item of guardians.rows) {
+        const socket=activeSockets?.get(item.family_identity.toLowerCase());
+        if(socket?.readyState===WebSocket.OPEN) {
+          socket.send(JSON.stringify({type:'IDENTITY_KEY_ROTATED',identityHash:target}));
+        }
+      }
+    }catch(_){ /* Recovery já foi concluída; polling autenticado recupera. */ }
     return res.json({success:true,targetIdentity:target,
       message:'Identidade recuperada com nova chave autorizada.'});
   });
