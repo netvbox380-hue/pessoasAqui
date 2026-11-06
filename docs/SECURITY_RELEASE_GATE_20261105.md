@@ -161,3 +161,92 @@ uso de aparelhos, banco remoto, Render, geração de APK ou deploy nesta etapa.
    sobrescrever V3 armazenado por V1/V2, mesmo com versão maior.
 6. Repetir nos aparelhos Android 14 e 16; rodar compilação debug/release
    e testes unitários em Antigravity, em branch/main com este commit.
+
+
+## Integração de recuperação e suporte familiar — 05/11/2026 (código, não homologado)
+
+**Requisito de produto:** recuperação familiar exige **2 familiares distintos**,
+credenciados e ativos no PostgreSQL. Um único familiar não pode emitir e
+aprovar a mesma recuperação. QR tem elegibilidade imediata após todos os
+avales; LINK possui **1 hora** de proteção e mais 15 minutos de validade para
+conclusão. A mera passagem do tempo nunca autoriza a transferência.
+
+### Fluxo implementado no código
+
+1. Titular autoriza familiares individualmente mediante assinatura ECDSA P-256.
+2. Titular consulta `/api/family/recovery/readiness`; o Cofre V3 só pode ser
+   ativado pela interface quando existem ao menos dois familiares autorizados.
+3. Familiar A emite sessão QR ou LINK com operação ECDSA específica,
+   código aleatório 256-bit, expiração e `eligible_at` persistidos.
+4. O aparelho novo assina `/api/family/recovery/prepare`, vinculando a
+   sessão a sua chave pública e identidade técnica; o código antigo sozinho
+   não permite transferir a identidade.
+5. Familiar B **diferente de A** assina `/api/family/recovery/approve` e o
+   banco verifica delegação ativa, chave atual, nonce, sessão e aparelho.
+6. `/claim` exige B independente, preparação, prazo, identidade bloqueada
+   por nenhum incidente e geração de chave correta antes da transferência.
+7. LINK HTTPS `/recover#key=...` mantém o código fora do GET HTTP,
+   com landing sem cache/referrer e deep link Android. QR usa payload direto.
+8. Familiar pode relatar incidente via Suporte selecionando contato,
+   assinatura sobre os campos e vínculo credenciado verificado no banco.
+9. Painel administrativo agora inclui aba de investigação do ID prejudicado,
+   familiares credenciados, sessões, eventos, tickets e status de dispositivos,
+   além de bloqueio temporário de recuperação, liberação e cancelamento
+   auditados. O titular pode contestar e suspender recuperação por 24h.
+10. Backups V3 exigem ACKs de dois familiares distintos para reportar sucesso,
+    recusam downgrade V3→V2 e permitem repetição idempotente quando ACK
+    anterior se perdeu. Restauração V1/V2 avança a versão antes da migração.
+
+### Pendências críticas (não tratar como implementadas)
+
+- **PIN esquecido / reconstrução do segredo V3:** NÃO implementado. O fluxo
+  ainda exige PIN **e** segredo V3 previamente guardado offline. Não existe
+  distribuição/recuperação criptográfica por partes para familiares.
+  Não afirmar que dois familiares recuperam o segredo ou o PIN; é necessário
+  protocolo auditado de escrow criptográfico + controle de papéis, sem jamais
+  expor PIN em texto claro. A recuperação da identidade não é a restauração
+  do backup. Para esquecer PIN com esquema limiar exigindo dois participantes
+  na reconstrução *além* do familiar de identidade, serão necessários 3
+  familiares ou outro fator independente credenciado.
+- **Recuperação sem familiares em duas horas:** não implementada; requer
+  credencial de emergência de alta entropia previamente emitida e armazenada
+  separadamente, vinculada a sessão de posse de nova chave. Nunca usar apenas
+  temporizador ou declaração pessoal.
+- **V2→V3:** nova geração pelo conteúdo local, atualização de versão e
+  confirmação de dois destinatários estão conectadas, mas a atomicidade
+  da migração em múltiplos aparelhos e a preservação de cópias legadas
+  devem ser homologadas em rede real. A ativação V3 não apaga históricos.
+- **QR realmente presencial:** QR/link diferem por modalidade assinada e
+  prazo, mas um QR fotografado/transmitido pode ser usado remotamente.
+  Ainda falta vinculação verificável a BLE presencial, se o produto exigir
+  garantia de presença física.
+- **Exclusão administrativa definitiva:** deliberadamente NÃO adicionada;
+  precisa de autenticação do titular ou duas aprovações administrativas
+  independentes, política LGPD, retenção, reversão e auditoria. Banimento
+  e desbanimento já existiam, bloqueio de recuperação é novo e reversível.
+- **Autenticação forte de operador administrativo:** sessão HMAC e senha
+  existem, mas MFA, RBAC individual, duplo controle de ações destrutivas e
+  auditoria resistente a adulteração continuam pendentes.
+- **Compilação, migrações PostgreSQL reais, testes de integração de endpoints,
+  testes físicos Android 14/16, comunicação BLE e LINK no dispositivo não
+  foram executados nesta sessão.**
+- **Não fazer deploy no Render e não publicar APK antes da homologação.**
+
+### Testes obrigatórios para Antigravity
+
+```powershell
+cd backend
+node --test tests/*.test.js
+cd ..
+.\gradlew.bat :app:compileDebugKotlin --rerun-tasks
+.\gradlew.bat :app:testDebugUnitTest --rerun-tasks
+.\gradlew.bat :app:compileReleaseKotlin --rerun-tasks
+```
+
+Em ambiente PostgreSQL isolado de produção, verificar: somente um familiar
+(negado), dois familiares, QR, LINK antes e após 1h (preferir relógio
+controlado), contestação autenticada, nonce repetido, chave familiar
+revogada, aparelho trocado, revogação simultânea, falha do banco, PIN
+errado, cópia V2 legada, exportação/importação V3, ACK duplicado/perdido,
+suporte familiar sem vínculo (403), suporte com vínculo, consulta admin
+sem autenticação (401), holds e reativação.
