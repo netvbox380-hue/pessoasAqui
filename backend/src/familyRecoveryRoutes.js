@@ -694,12 +694,13 @@ function registerFamilyRecoveryRoutes(app, deps) {
           [target]);
         if (held.rowCount>0)
           throw Object.assign(Error('Recuperação suspensa por incidente.'),{status:423});
+        const isRetry=alreadyReleased.includes(family);
         if (!validateShareRelease({
           issuer:grant.family_identity,
           approver:validApprover,
           releaser:family,
           activeDelegates:delegates.map(d=>d.family_identity),
-          alreadyReleasedBy:alreadyReleased,
+          alreadyReleasedBy:isRetry ? alreadyReleased.filter(id=>id!==family) : alreadyReleased,
           preparedDeviceIdentity:grant.request_device_identity,
           claimantIdentity:normalizeId(req.body?.newDeviceIdentity),
           issuedAt:new Date(grant.prepared_at).getTime(),
