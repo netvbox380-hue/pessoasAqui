@@ -89,6 +89,37 @@ function registerFamilyRecoveryRoutes(app, deps) {
     }
   });
 
+  // Lista de guardiões para distribuição V3. Somente o titular ativo pode
+  // consultar; o cliente não deve escolher pessoas apenas pelo atributo
+  // isFamily armazenado localmente.
+  app.post('/api/family/recovery/delegates',async(req,res)=>{
+    if(!ready())return dbUnavailable(res);
+    const owner=normalizeId(req.body?.targetIdentity);
+    if(!VALID_ID.test(owner))return res.status(400).json({error:'Identidade inválida.'});
+    try {
+      const proof=req.body?.identityProof;
+      if(!await authenticated('RECOVERY_READINESS',owner,'','',proof))
+        return res.status(401).json({error:'Assinatura do titular inválida.'});
+      const identities=await withTransaction(async run=>{
+        const nonce=await run(
+          `INSERT INTO recovery_proof_nonces(identity_id,operation,nonce)
+           VALUES($1,'RECOVERY_READINESS',$2)
+           ON CONFLICT DO NOTHING RETURNING nonce`,[owner,proof.nonce]);
+        if(nonce.rowCount!==1)
+          throw Object.assign(Error('Prova repetida.'),{status:409});
+        const active=await run(
+          `SELECT family_identity FROM recovery_delegations
+           WHERE target_identity=$1 AND is_active=TRUE ORDER BY family_identity`,[owner]);
+        return active.rows.map(row=>normalizeId(row.family_identity))
+          .filter(id=>VALID_ID.test(id)&&id!==owner);
+      });
+      return res.json({success:true,authorizedFamilyIdentities:[...new Set(identities)]});
+    }catch(e){
+      if(e.status===409)return res.status(409).json({error:e.message});
+      return dbUnavailable(res);
+    }
+  });
+
   /** O próprio titular pode contestar todas as recuperações em aberto.
    * A contestação suspende novas tentativas por 24h e não revoga sua conta.
    */
