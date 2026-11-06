@@ -90,6 +90,8 @@ class PessoasAquiRepository(
 
     val diskCrypto = LocalDiskCryptoManager(context)
     private val vaultSecretStore = context?.let { VaultRecoverySecretStore(it) }
+    private val familyShareStore = context?.let { br.com.pessoasaqui.core.backup.FamilyRecoveryShareStore(it) }
+    private val recoveredSessionStore = context?.let { br.com.pessoasaqui.core.backup.VaultRecoverySessionStore(it) }
 
     fun isVaultV3Enabled(): Boolean = vaultSecretStore?.hasConfiguredSecret() == true
 
@@ -3675,13 +3677,23 @@ class PessoasAquiRepository(
             .sortedByDescending { if (it.isFamily) 1 else 0 }
             .take(3)
 
-        val minimumReplicas = if (vault.formatVersion == 3) 2 else 1
+        val minimumReplicas = if (vault.formatVersion == 3) 3 else 1
         if (targetPeers.size < minimumReplicas) {
             return Result.failure(Exception(
-                "Backup V3 requer ao menos dois familiares disponíveis; configure sua rede de proteção. " +
+                "Backup V3 com recuperação do PIN e segredo exige três familiares disponíveis e autorizados; configure sua rede de proteção. " +
                 "O histórico anterior foi preservado."
             ))
         }
+
+        val shares = if (vault.formatVersion == 3) {
+            try {
+                br.com.pessoasaqui.core.backup.RecoveryThresholdCodec.split(
+                    pin, recoverySecret ?: return Result.failure(
+                        SecurityException("Segredo V3 obrigatório para distribuição das partes.")
+                    ), targetPeers.size
+                )
+            } catch (e: Exception) { return Result.failure(e) }
+        } else emptyList()
 
         try {
             vaultReplicationAcks.begin(vault.version, targetPeers.map { it.technicalIdentityHash })
@@ -3689,8 +3701,14 @@ class PessoasAquiRepository(
             return Result.failure(e)
         }
         try {
-            for (peer in targetPeers) {
+            for ((index, peer) in targetPeers.withIndex()) {
                 try {
+                    if (vault.formatVersion == 3) {
+                        val encoded = E2eeCryptoEngine.Base64Helper.encode(shares[index])
+                        sendPrivateMessage(peer.technicalIdentityHash,
+                            "[VAULT_SHARE_STORE_V1:${vault.version}:$encoded]")
+                        delay(60L)
+                    }
                     sendPrivateMessage(peer.technicalIdentityHash, payload)
                     delay(60L)
                 } catch (e: Exception) {
