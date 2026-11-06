@@ -408,6 +408,7 @@ class BleManager(
      * e consigam estabelecer transporte físico GATT (anúncio conectável ADV_IND).
      */
     @SuppressLint("MissingPermission")
+    @Synchronized
     fun startAdvertising(
         myIdentityHash: String,
         myAlias: String,
@@ -492,6 +493,7 @@ class BleManager(
      * Encerra a transmissão BLE.
      */
     @SuppressLint("MissingPermission")
+    @Synchronized
     fun stopAdvertising() {
         advertisingGeneration.incrementAndGet()
         advertisingActive = false
