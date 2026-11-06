@@ -3929,24 +3929,41 @@ class PessoasAquiRepository(
         val b64 = E2eeCryptoEngine.Base64Helper.encode(jsonStr.toByteArray(Charsets.UTF_8))
         val payload = "[VAULT_STORE:$b64]"
 
-        // Seleciona prioritariamente até 3 contatos de confiança (família ou conexões mútuas)
-        val allPeers = discoveredPeople.value
-        val targetPeers = allPeers
-            .filter { if (vault.formatVersion == 3) it.isFamily else it.isFamily || it.isMutualConnection }
-            .distinctBy { it.technicalIdentityHash }
-            .sortedByDescending { if (it.isFamily) 1 else 0 }
-            .take(3)
-
-        if (vault.formatVersion == 3) {
-            val authorizedCount = getFamilyRecoveryReadiness().getOrElse {
+        // isFamily local não constitui delegação de recuperação. O conjunto
+        // autoritativo precisa ser consultado ANTES de enviar partes Shamir.
+        val activeV3Guardians: Set<String> = if (vault.formatVersion == 3) {
+            try {
+                val proof=br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                    operation="RECOVERY_READINESS",identity=getMyIdentity(),alias="",
+                    publicKeyBase64=cryptoIdentityManager.getPublicKeyBase64(),
+                    signChallenge=cryptoIdentityManager::signChallenge
+                )
+                networkClient.fetchAuthorizedFamilyGuardians(getMyIdentity(),proof)
+                    .getOrThrow().map { cleanId(it).uppercase() }
+                    .filter { it.matches(Regex("^[A-F0-9]{16}$")) &&
+                        it != getMyIdentity().uppercase() }.toSet()
+            } catch (e: Exception) {
                 return Result.failure(SecurityException(
-                    "Delegações V3 não verificadas no servidor; nenhum cofre anterior foi substituído."
+                    "Não foi possível validar os três guardiões no servidor; backup V3 suspenso.",e
                 ))
             }
-            if (authorizedCount < 3) return Result.failure(SecurityException(
-                "Distribuição V3 exige três familiares autorizados no backend; encontrados $authorizedCount."
+        } else emptySet()
+        if (vault.formatVersion == 3 && activeV3Guardians.size < 3)
+            return Result.failure(SecurityException(
+                "Distribuição V3 exige três guardiões com delegação ativa no backend."
             ))
-        }
+
+        val allPeers = discoveredPeople.value
+        val targetPeers = allPeers
+            .filter { peer ->
+                if (vault.formatVersion == 3)
+                    peer.isFamily &&
+                        cleanId(peer.technicalIdentityHash.ifBlank { peer.id }).uppercase() in activeV3Guardians
+                else peer.isFamily || peer.isMutualConnection
+            }
+            .distinctBy { cleanId(it.technicalIdentityHash.ifBlank { it.id }).uppercase() }
+            .sortedByDescending { if (it.isFamily) 1 else 0 }
+            .take(3)
         val minimumReplicas = if (vault.formatVersion == 3) 3 else 1
         if (targetPeers.size < minimumReplicas) {
             return Result.failure(Exception(
