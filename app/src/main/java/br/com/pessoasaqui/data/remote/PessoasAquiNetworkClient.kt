@@ -301,6 +301,27 @@ open class PessoasAquiNetworkClient(
         } catch (e: Exception) { Result.failure(e) }
     }
 
+    /** Registra a solicitação assinada pelo aparelho novo ANTES do segundo aval. */
+    suspend fun prepareFamilyRecovery(
+        recoveryKey: String, newDeviceIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json=JSONObject().apply {
+                put("recoveryKey",recoveryKey)
+                put("newDeviceIdentity",newDeviceIdentity)
+                put("identityProof",identityProof.toJson())
+            }
+            val request=Request.Builder().url("$baseUrl/api/family/recovery/prepare")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val obj=JSONObject(response.body?.string()?:"{}")
+                if(response.isSuccessful&&obj.optBoolean("success"))Result.success(true)
+                else Result.failure(IOException(obj.optString("error","Sessão não iniciada.")))
+            }
+        }catch(e:Exception){Result.failure(e)}
+    }
+
     /** Segunda autorização: identidade distinta da que emitiu o QR/LINK. */
     suspend fun approveFamilyRecovery(
         targetIdentity: String, familyIdentity: String, recoveryKey: String,
