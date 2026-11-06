@@ -285,7 +285,11 @@ fun PessoasAquiNavHost(
         val onMain = currentScreen is Screen.Main
         repository.onRadioUiChanged(
             radarVisible = onMain && currentMainTab == 0,
-            chatOpen = currentScreen is Screen.Chat,
+            // Só conversa temporária exige continuidade de discovery BLE.
+            // Conexões mútuas/família seguem pela internet (Modo B).
+            chatOpen = (currentScreen as? Screen.Chat)?.person?.let {
+                !it.isMutualConnection && !it.isFamily
+            } == true,
             offersVisible = onMain && currentMainTab == 2
         )
     }
