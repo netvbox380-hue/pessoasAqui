@@ -4077,6 +4077,7 @@ class PessoasAquiRepository(
         restoreVaultContacts(content.contacts)
 
         vm.recordRestoredBackupVersion(bestVault.version)
+        if (bestVault.formatVersion == 3) recoveredSessionStore?.clear()
         val totalMsgs = content.privateChats.values.sumOf { it.size } + content.localMural.size
         return Result.success(totalMsgs)
     }
