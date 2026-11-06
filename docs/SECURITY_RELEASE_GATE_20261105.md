@@ -271,3 +271,28 @@ sem autenticação (401), holds e reativação.
   suporte sem famílias e PIN de emergência ainda não implementados;
   compilação Android, testes Node, banco PostgreSQL real e testes em
   aparelhos também não foram executados. Não declarar homologado.
+
+
+### Primitivo de compartilhamento recuperável (isolado, ainda não liberado)
+
+Foi adicionado `RecoveryThresholdCodec` com partes Shamir 2-de-N em GF(256)
+para material de PIN numérico e segredo V3. O algoritmo tem teste Kotlin
+isolado de combinação de todos os pares (2-de-5) **executado em JVM local
+fora do build Android**, além dos testes JUnit adicionados ao projeto.
+
+**Não há ainda distribuição de partes entre familiares, autorização de
+liberação vinculada à recuperação, recriptografia das partes para nova chave,
+persistência segura das partes em cada aparelho ou UI completa de PIN esquecido.**
+Sem esses componentes, nenhum familiar consegue recuperar PIN/segredo
+automaticamente e a função permanece inativa. **Não afirmar que ela funciona.**
+
+A política de papéis impõe um terceiro familiar para reconstrução com duas
+partes, caso o familiar que emitia o QR/LINK não possa participar da liberação.
+Com exatamente dois familiares, recuperação de identidade com PIN conhecido
+pode ser autorizada; **PIN perdido não pode ser recuperado pelo método de
+duas partes mantendo a separação estrita exigida**. O produto deve explicar
+esta diferença na UI e não habilitar o caminho de esquecimento sem 3 familiares
+ou outro fator independente forte pré-configurado.
+
+O primitivo é código criptográfico sensível e **requer auditoria independente**,
+além de testes de integração e dispositivos reais antes de ativação.
