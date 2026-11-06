@@ -573,13 +573,31 @@ fun MainScreen(
                         onCreateInviteLink = {
                             if (!isCreatingInvite) {
                                 isCreatingInvite = true
-                                repository.createOneTimeInviteLink { url ->
+                                repository.createOneTimeInviteLinkDetailed { result ->
                                     isCreatingInvite = false
+                                    val url = result.getOrNull()
                                     if (url != null && InviteLinkParser.parse(url) != null) {
                                         generatedInviteUrl = url
                                         inviteGenerationError = null
+                                    } else if (url != null) {
+                                        // Nunca revelar o URL recebido: contém token de uso único.
+                                        inviteGenerationError = "O servidor retornou um convite incompatível com a validação LINK + QR (LINK_INVALID)."
                                     } else {
-                                        inviteGenerationError = "Não foi possível criar um convite válido. Verifique a conexão com o servidor."
+                                        val detail = result.exceptionOrNull()?.message.orEmpty()
+                                        inviteGenerationError = when {
+                                            "HTTP 401" in detail ->
+                                                "Identidade não autenticada pelo servidor (HTTP 401). Não apague os dados do aplicativo."
+                                            "HTTP 503" in detail ->
+                                                "Serviço de convites indisponível (HTTP 503). Verifique a conexão Render–Supabase."
+                                            "HTTP 409" in detail ->
+                                                "Conflito na criação do convite (HTTP 409). Tente novamente."
+                                            "HTTP 400" in detail ->
+                                                "Dados de identidade rejeitados pelo servidor (HTTP 400)."
+                                            "Chave privada indisponível" in detail ->
+                                                "Chave criptográfica local indisponível. Não reinstale ou limpe os dados do aplicativo."
+                                            else ->
+                                                "Falha ao gerar convite: ${detail.take(180).ifBlank { "sem detalhes retornados" }}"
+                                        }
                                     }
                                 }
                             }
