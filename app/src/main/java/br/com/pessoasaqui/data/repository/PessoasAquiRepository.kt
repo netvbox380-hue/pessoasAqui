@@ -2132,9 +2132,10 @@ class PessoasAquiRepository(
                 radarRequested = false
                 _radarPausedForBattery.value = true
                 bleManager?.setDiscoverySuspended(true)
-                // Não fechar GATT, nem apagar mensagens ou conexões permanentes.
-                _realDiscoveredPeople.value = emptyList()
-                updateUnifiedData()
+                // Não fechar GATT e NÃO limpar _realDiscoveredPeople aqui:
+                // cleanupExpiredTemporarySessions usa os timestamps desta lista
+                // para encerrar sessões e apagar mensagens temporárias após 45 s.
+                // A UI esconde o Radar pelo estado radarPausedForBattery.
             }
         }
     }
