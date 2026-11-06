@@ -337,7 +337,7 @@ fun MainScreen(
                                 DropdownMenuItem(
                                     text = { Text("🔐 Aprovar recuperação de um familiar", color = RadarCyan) },
                                     leadingIcon = {
-                                        Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = RadarCyan)
+                                        Icon(Icons.Default.Shield, contentDescription = null, tint = RadarCyan)
                                     },
                                     onClick = {
                                         showTopMenu = false
