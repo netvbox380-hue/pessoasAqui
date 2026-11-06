@@ -71,6 +71,16 @@ fun DistributedBackupDialog(
     var newSecretForSetup by remember { mutableStateOf<String?>(null) }
     var secretSavedOutsideDevice by remember { mutableStateOf(false) }
     var isEnablingVaultV3 by remember { mutableStateOf(false) }
+    var recoveryFamilyCount by remember { mutableStateOf<Int?>(null) }
+    var recoveryReadinessNotice by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        val result=repository.getFamilyRecoveryReadiness()
+        recoveryFamilyCount=result.getOrNull()
+        recoveryReadinessNotice=if(result.isFailure)
+            "Não foi possível verificar familiares no servidor: recuperação distribuída não confirmada."
+        else null
+    }
+
     var restoreTextInput by remember { mutableStateOf("") }
 
     val lastEpoch = vaultManager?.getLastBackupEpochMs() ?: 0L
@@ -291,6 +301,18 @@ fun DistributedBackupDialog(
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = recoveryFamilyCount?.let { count ->
+                                if(count>=2) "🟢 $count familiares autorizados no servidor (mínimo: 2)."
+                                else "🟡 $count de 2 familiares autorizados. Adicione e autorize pelo menos mais um."
+                            } ?: "Verificando familiares autorizados no servidor...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                        recoveryReadinessNotice?.let { notice ->
+                            Text(notice, style=MaterialTheme.typography.bodySmall, color=WarningAmber)
+                        }
                         if (!repository.isVaultV3Enabled()) {
                             Spacer(Modifier.height(8.dp))
                             OutlinedButton(onClick = {
