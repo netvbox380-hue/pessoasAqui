@@ -81,6 +81,15 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 // Inicia conexão com banco (Supabase PostgreSQL ou local)
 initDatabase();
 
+// O segredo do LINK fica no fragmento (#key), que não chega ao backend.
+app.get(['/recover','/recover/'], (req,res)=>{
+  res.set('Cache-Control','no-store, private');
+  res.set('Referrer-Policy','no-referrer');
+  res.set('Content-Security-Policy',
+    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'");
+  res.sendFile(path.join(__dirname,'../public/recover/index.html'));
+});
+
 // Servir o Painel Administrativo Web Integrado
 app.get(['/admin', '/admin/'], (req, res) => res.sendFile(path.join(__dirname, '../public/admin/index.html')));
 app.use('/admin', express.static(path.join(__dirname, '../public/admin')));
