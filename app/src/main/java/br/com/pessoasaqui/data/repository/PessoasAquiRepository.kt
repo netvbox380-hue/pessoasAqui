@@ -25,6 +25,7 @@ import br.com.pessoasaqui.core.subscription.PlayBillingManager
 import br.com.pessoasaqui.core.backup.P2PVaultManager
 import br.com.pessoasaqui.core.backup.EncryptedVaultPackage
 import br.com.pessoasaqui.core.backup.VaultContact
+import br.com.pessoasaqui.core.backup.VaultReplicationAcks
 import br.com.pessoasaqui.core.backup.VaultRecoverySecretStore
 import br.com.pessoasaqui.core.crypto.LocalDiskCryptoManager
 import br.com.pessoasaqui.domain.model.RecurringReminder
@@ -293,6 +294,7 @@ class PessoasAquiRepository(
     val receivedVaultResponses: StateFlow<List<EncryptedVaultPackage>> = _receivedVaultResponses.asStateFlow()
 
     private val _vaultAckCount = MutableStateFlow(0)
+    private val vaultReplicationAcks = VaultReplicationAcks()
     val vaultAckCount: StateFlow<Int> = _vaultAckCount.asStateFlow()
 
     // Estado do usuário atual neste aparelho persistido com SharedPreferences
@@ -1455,7 +1457,10 @@ class PessoasAquiRepository(
                             cleanId(vault.ownerIdentityHash).equals(cleanSender, ignoreCase = true) &&
                             isPeerPermanent(cleanSender)) {
                             val stored = p2pVaultManager?.storePeerVault(vault) ?: false
-                            if (stored) {
+                            // Reenvio idempotente: ACK perdido não prende a versão.
+                            val alreadyStored = !stored &&
+                                p2pVaultManager?.getStoredPeerVault(cleanSender) == vault
+                            if (stored || alreadyStored) {
                                 sendPrivateMessage(cleanSender, "[VAULT_ACK:${vault.version}]")
                             }
                         }
@@ -1467,7 +1472,9 @@ class PessoasAquiRepository(
             payload.startsWith("[VAULT_ACK:") -> {
                 val ackVersion = payload.removePrefix("[VAULT_ACK:").removeSuffix("]").toLongOrNull() ?: 0L
                 Log.i("PessoasAqui", "Cofre v$ackVersion confirmado silenciosamente pelo contato $cleanSender")
-                _vaultAckCount.value = _vaultAckCount.value + 1
+                if (ackVersion > 0 && vaultReplicationAcks.acknowledge(ackVersion, cleanSender)) {
+                    _vaultAckCount.value = _vaultAckCount.value + 1
+                }
             }
             payload.startsWith("[VAULT_QUERY:") -> {
                 val targetOwnerHash = payload.removePrefix("[VAULT_QUERY:").removeSuffix("]").trim().lowercase()
@@ -3396,32 +3403,53 @@ class PessoasAquiRepository(
         // Seleciona prioritariamente até 3 contatos de confiança (família ou conexões mútuas)
         val allPeers = discoveredPeople.value
         val targetPeers = allPeers
-            .filter { it.isFamily || it.isMutualConnection }
+            .filter { if (vault.formatVersion == 3) it.isFamily else it.isFamily || it.isMutualConnection }
             .distinctBy { it.technicalIdentityHash }
             .sortedByDescending { if (it.isFamily) 1 else 0 }
             .take(3)
 
-        if (targetPeers.isEmpty()) {
-            // Se ainda não há contatos mútuos conectados, salva localmente o registro da versão
-            vm.recordBackupSuccess(vault.version, 0, vault.totalMessagesCount)
-            return Result.failure(Exception("Nenhum familiar ou contato mútuo disponível para replicação. Utilize a 'Exportação de Arquivo' para backup pessoal."))
+        val minimumReplicas = if (vault.formatVersion == 3) 2 else 1
+        if (targetPeers.size < minimumReplicas) {
+            return Result.failure(Exception(
+                "Backup V3 requer ao menos dois familiares disponíveis; configure sua rede de proteção. " +
+                "O histórico anterior foi preservado."
+            ))
         }
 
-        var sentCount = 0
-        for (i in targetPeers.indices) {
-            val peer = targetPeers[i]
-            try {
-                sendPrivateMessage(peer.technicalIdentityHash, payload)
-                sentCount++
-                onProgress(sentCount, targetPeers.size)
-                delay(60L)
-            } catch (e: Exception) {
-                Log.w("PessoasAqui", "Falha ao enviar cofre silencioso para ${peer.alias}: ${e.message}")
+        try {
+            vaultReplicationAcks.begin(vault.version, targetPeers.map { it.technicalIdentityHash })
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        try {
+            for (peer in targetPeers) {
+                try {
+                    sendPrivateMessage(peer.technicalIdentityHash, payload)
+                    delay(60L)
+                } catch (e: Exception) {
+                    Log.w("PessoasAqui", "Falha ao enviar cofre silencioso para ${peer.alias}: ${e.message}")
+                }
             }
-        }
 
-        vm.recordBackupSuccess(vault.version, sentCount, vault.totalMessagesCount)
-        return Result.success(sentCount)
+            var waited = 0L
+            while (waited < 8_000L &&
+                vaultReplicationAcks.confirmedCount(vault.version) < minimumReplicas) {
+                delay(200L)
+                waited += 200L
+                onProgress(vaultReplicationAcks.confirmedCount(vault.version), targetPeers.size)
+            }
+            val confirmed = vaultReplicationAcks.confirmedCount(vault.version)
+            if (confirmed < minimumReplicas) {
+                return Result.failure(Exception(
+                    "Backup enviado, mas somente $confirmed de $minimumReplicas confirmações " +
+                    "criptografadas foram recebidas. Tente novamente; nada foi apagado."
+                ))
+            }
+            vm.recordBackupSuccess(vault.version, confirmed, vault.totalMessagesCount)
+            return Result.success(confirmed)
+        } finally {
+            vaultReplicationAcks.end(vault.version)
+        }
     }
 
     /**
