@@ -56,6 +56,7 @@ open class PessoasAquiNetworkClient(
     var onOfferDeleted: ((String) -> Unit)? = null
     var onSupportTicketReplied: ((ticketId: String, subject: String, reply: String, timestamp: Long) -> Unit)? = null
     var onRecoverySecurityAlert: ((method: String, eligibleAtEpochMs: Long) -> Unit)? = null
+    var onAuthenticatedKeyRotation: ((identityHash: String) -> Unit)? = null
     var onModerationWarning: ((message: String) -> Unit)? = null
     var onAccountBanned: ((message: String) -> Unit)? = null
 
@@ -664,6 +665,12 @@ open class PessoasAquiNetworkClient(
                             val id = obj.optString("offerId")
                             if (id.isNotBlank()) {
                                 onOfferDeleted?.invoke(id)
+                            }
+                        }
+                        "IDENTITY_KEY_ROTATED" -> {
+                            val identity=obj.optString("identityHash")
+                            if (identity.matches(Regex("^[A-Fa-f0-9]{16}$"))) {
+                                onAuthenticatedKeyRotation?.invoke(identity.uppercase())
                             }
                         }
                         "RECOVERY_ALERT" -> {
