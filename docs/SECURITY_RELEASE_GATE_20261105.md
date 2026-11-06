@@ -319,3 +319,24 @@ além de testes de integração e dispositivos reais antes de ativação.
 - Ativar Cofre V3 ainda depende de guardar o segredo fora do aparelho;
   **recuperação familiar distribuída do próprio segredo/PIN não está ligada
   ao fluxo de produção**. O módulo de partes limiares continua isolado.
+
+
+### Continuidade técnica — partes Shamir vinculadas a uma distribuição
+
+O primitivo isolado `RecoveryThresholdCodec` passou a incluir identificador aleatório
+de distribuição (16 bytes) e compromisso SHA-256 contextualizado de seu material
+(PIN + segredo V3), rejeitando combinação entre distribuições diferentes e
+alteração acidental/maliciosa de uma das partes. O formato de parte isolada
+mudou de 42 para 90 bytes. Testes JUnit adicionados para rejeitar adulteração
+e partes de inscrições distintas. O compromisso **não autentica familiares**:
+envelopes autenticados, ligação à sessão/dispositivo, revogação, transporte
+cifrado, armazenamento em aparelhos familiares e controle de acesso backend
+continuam obrigatórios antes da ativação.
+
+**Não ativar recuperação de PIN/segredo V3 na UI ou em produção.** A função de
+distribuição ainda não foi conectada e nenhum PIN/segredo perdido passa a ser
+recuperável apenas por este commit. É necessário testar compilação e JUnit no
+Antigravity, realizar revisão criptográfica independente e homologação física.
+
+**A publicação no Render permanece bloqueada** até comprovação dos contratos
+HTTP/WS, migrações de esquema e compatibilidade do novo APK.
