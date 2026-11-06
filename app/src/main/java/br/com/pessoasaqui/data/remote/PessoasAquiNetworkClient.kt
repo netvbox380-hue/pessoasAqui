@@ -223,6 +223,28 @@ open class PessoasAquiNetworkClient(
         }
     }
 
+    /** Contestação autenticada pelo aparelho que ainda detém a chave ativa. */
+    suspend fun contestFamilyRecovery(
+        ownerIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val body=JSONObject().apply {
+                put("targetIdentity",ownerIdentity)
+                put("reason","Tentativa de recuperação não reconhecida pelo titular.")
+                put("identityProof",identityProof.toJson())
+            }
+            val request=Request.Builder().url("$baseUrl/api/family/recovery/contest")
+                .post(body.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val data=JSONObject(response.body?.string()?:"{}")
+                if(response.isSuccessful&&data.optBoolean("success"))
+                    Result.success(data.optInt("cancelled",0))
+                else Result.failure(IOException(data.optString("error","Contestação não confirmada.")))
+            }
+        }catch(e:Exception){Result.failure(e)}
+    }
+
     /** Verificação persistente de dois familiares autorizados, assinada pelo titular. */
     suspend fun fetchFamilyRecoveryReadiness(
         ownerIdentity: String,
