@@ -70,6 +70,7 @@ fun DistributedBackupDialog(
     var v3RecoverySecret by remember { mutableStateOf("") }
     var newSecretForSetup by remember { mutableStateOf<String?>(null) }
     var secretSavedOutsideDevice by remember { mutableStateOf(false) }
+    var isEnablingVaultV3 by remember { mutableStateOf(false) }
     var restoreTextInput by remember { mutableStateOf("") }
 
     val lastEpoch = vaultManager?.getLastBackupEpochMs() ?: 0L
@@ -286,7 +287,7 @@ fun DistributedBackupDialog(
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            text = "Para backups V3, um PIN sozinho não basta. Guarde o segredo em local separado do telefone; os familiares recebem somente o cofre cifrado.",
+                            text = "É necessário autorizar pelo menos dois familiares no servidor. Guarde o segredo V3 em local separado do telefone; nenhum familiar isolado poderá autorizar a transferência da identidade.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
@@ -529,21 +530,24 @@ fun DistributedBackupDialog(
             },
             confirmButton = {
                 Button(
-                    enabled = secretSavedOutsideDevice,
+                    enabled = secretSavedOutsideDevice && !isEnablingVaultV3,
                     onClick = {
                         val secret = newSecretForSetup ?: return@Button
-                        try {
-                            if (repository.enableVaultV3(secret)) {
-                                backupStatusMessage = "Proteção V3 ativada. Próximo backup utilizará o segredo independente."
+                        isEnablingVaultV3 = true
+                        scope.launch {
+                            val result = repository.enableVaultV3Verified(secret)
+                            isEnablingVaultV3 = false
+                            if (result.isSuccess) {
+                                backupStatusMessage = "Proteção V3 ativada com dois familiares autorizados. Próximo backup será V3."
                                 newSecretForSetup = null
                             } else {
-                                Toast.makeText(context, "Não foi possível ativar o segredo V3.", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context,
+                                    result.exceptionOrNull()?.message ?: "Falha ao ativar V3.",
+                                    Toast.LENGTH_LONG).show()
                             }
-                        } catch (e: Exception) {
-                            Toast.makeText(context, e.message ?: "Falha ao proteger segredo no Keystore", Toast.LENGTH_LONG).show()
                         }
                     }
-                ) { Text("Ativar V3") }
+                ) { Text(if (isEnablingVaultV3) "Verificando familiares..." else "Ativar V3") }
             },
             dismissButton = {
                 TextButton(onClick = { newSecretForSetup = null }) { Text("Cancelar") }
