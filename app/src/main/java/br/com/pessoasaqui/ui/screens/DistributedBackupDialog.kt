@@ -538,8 +538,10 @@ fun DistributedBackupDialog(
                             val result = repository.enableVaultV3Verified(secret)
                             isEnablingVaultV3 = false
                             if (result.isSuccess) {
-                                backupStatusMessage = "Proteção V3 ativada com dois familiares autorizados. Próximo backup será V3."
+                                backupStatusMessage = "Proteção V3 ativada. Informe seu PIN para gerar e distribuir agora a versão V3, preservando seu histórico."
                                 newSecretForSetup = null
+                                pinInput = ""
+                                showPinPromptForBackup = true
                             } else {
                                 Toast.makeText(context,
                                     result.exceptionOrNull()?.message ?: "Falha ao ativar V3.",
