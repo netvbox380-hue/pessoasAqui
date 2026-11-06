@@ -100,6 +100,17 @@
                 <data android:scheme="pessoasaqui" />
             </intent-filter>
 
+            <!-- LINK familiar remoto (URL fragment não vai ao servidor) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="pessoasaqui3.onrender.com"
+                    android:pathPrefix="/recover" />
+            </intent-filter>
+
             <!-- Deep Link para convites de conexão mútua (URL web HTTPS / Android App Links) -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
