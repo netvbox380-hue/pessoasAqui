@@ -259,6 +259,16 @@ function registerFamilyRecoveryRoutes(app, deps) {
         if(created.rowCount!==1)throw Object.assign(Error('Autorização já utilizada ou revogada'),{status:409});
         return created.rows[0];
       });
+      // Aviso sem código secreto: o titular pode contestar durante o prazo.
+      const ownerSocket=activeSockets?.get(target.toLowerCase());
+      if(ownerSocket && ownerSocket.readyState===WebSocket.OPEN){
+        try{ownerSocket.send(JSON.stringify({
+          type:'RECOVERY_ALERT',targetIdentity:target,method:policy.method,
+          eligibleAtEpochMs:policy.eligibleAt,
+          expiresAtEpochMs:policy.expiresAt,
+          message:'Nova tentativa de recuperação da sua identidade. Conteste se não reconhece.'
+        }));}catch(_){}
+      }
       return res.json({success:true,recoveryKey:secret,
         targetIdentity:target, method:policy.method,
         expiresAt:generated.expires_at,
