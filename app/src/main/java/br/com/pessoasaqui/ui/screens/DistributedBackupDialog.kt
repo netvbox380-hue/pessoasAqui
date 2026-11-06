@@ -290,7 +290,9 @@ fun DistributedBackupDialog(
                     Column(modifier = Modifier.padding(14.dp)) {
                         Text(
                             text = if (repository.isVaultV3Enabled())
-                                "Cofre V3 protegido por segredo independente ✅"
+                                if (vaultManager?.isV3SecretRecoveryReady() == true)
+                                    "Cofre V3 confirmado por três familiares ✅"
+                                else "Segredo V3 configurado — backup familiar pendente"
                             else "Ativar proteção reforçada do cofre V3",
                             color = TextPrimary,
                             fontWeight = FontWeight.Bold
