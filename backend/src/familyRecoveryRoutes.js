@@ -391,6 +391,61 @@ function registerFamilyRecoveryRoutes(app, deps) {
     }
   });
 
+  // Acompanhamento autenticado do pedido pelo MESMO aparelho preparado.
+  // Não expõe família, chaves ou token em resposta.
+  app.post('/api/family/recovery/status',async(req,res)=>{
+    if(!ready())return dbUnavailable(res);
+    const code=String(req.body?.recoveryKey||'').trim().toUpperCase();
+    const newId=normalizeId(req.body?.newDeviceIdentity);
+    const proof=req.body?.identityProof;
+    if(!VALID_SECRET.test(code)||!VALID_ID.test(newId))
+      return res.status(400).json({error:'Código ou aparelho inválido.'});
+    if(!verifyInviteIdentityProof('RECOVERY_STATUS',newId,'','',hexSha(code),proof))
+      return res.status(401).json({error:'Prova da sessão inválida.'});
+    try{
+      const result=await withTransaction(async run=>{
+        const found=await run(`SELECT id,target_identity,family_identity,
+             request_device_identity,request_public_key,used_at,expires_at,eligible_at,method
+             FROM recovery_grants WHERE token_hash=$1`,[hexSha(code)]);
+        const grant=found.rows[0];
+        if(!grant||grant.request_device_identity!==newId||
+           grant.request_public_key!==proof.publicKey)
+          throw Object.assign(Error('Sessão não pertence a este aparelho.'),{status:403});
+        const nonce=await run(
+          `INSERT INTO recovery_proof_nonces(identity_id,operation,nonce)
+           VALUES($1,'RECOVERY_STATUS',$2) ON CONFLICT DO NOTHING RETURNING nonce`,
+          [newId,proof.nonce]);
+        if(nonce.rowCount!==1)throw Object.assign(Error('Prova de consulta repetida.'),{status:409});
+        const families=await run(
+          'SELECT family_identity FROM recovery_delegations WHERE target_identity=$1 AND is_active=TRUE',
+          [grant.target_identity]);
+        const other=await run(
+          `SELECT family_identity FROM recovery_approvals
+             WHERE grant_id=$1 AND family_identity<>$2`,
+          [grant.id,grant.family_identity]);
+        const validApprover=other.rows.some(a=>families.rows.some(f=>f.family_identity===a.family_identity));
+        const held=await run(
+          'SELECT target_identity FROM account_recovery_holds WHERE target_identity=$1 AND blocked_until>NOW()',
+          [grant.target_identity]);
+        const now=Date.now(),expiresAt=new Date(grant.expires_at).getTime(),
+          eligibleAt=grant.eligible_at?new Date(grant.eligible_at).getTime():Infinity;
+        return {
+          status:grant.used_at?'USED':expiresAt<=now?'EXPIRED':held.rowCount?'SUSPENDED':
+            !validApprover?'WAITING_SECOND_FAMILY':now<eligibleAt?'WAITING_SECURITY_WINDOW':'READY',
+          method:grant.method,eligibleAtEpochMs:Number.isFinite(eligibleAt)?eligibleAt:0,
+          expiresAtEpochMs:expiresAt,
+          secondFamilyApproved:validApprover,
+          canComplete:!grant.used_at && expiresAt>now && held.rowCount===0 &&
+            validApprover && families.rows.length>=MIN_FAMILIES && now>=eligibleAt
+        };
+      });
+      return res.json({success:true,...result});
+    }catch(e){
+      if([403,409].includes(e.status))return res.status(e.status).json({error:e.message});
+      return dbUnavailable(res);
+    }
+  });
+
   // O aparelho novo cria sua própria chave P-256 e ASSINA o hash do
   // código recebido. A identidade original só muda de chave numa transação.
   app.post('/api/family/recovery/claim', async (req,res)=>{
