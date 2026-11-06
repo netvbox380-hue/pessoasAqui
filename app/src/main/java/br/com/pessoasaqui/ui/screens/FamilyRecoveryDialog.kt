@@ -40,9 +40,15 @@ fun FamilyRecoveryDialog(
 ) {
     val clipboardManager = LocalClipboardManager.current
     var copiedNotice by remember { mutableStateOf(false) }
+    val isRemoteLink = authorization.method == "LINK"
+    val sharePayload = if (isRemoteLink)
+        "https://pessoasaqui3.onrender.com/recover#key=${authorization.recoveryKey}"
+    else authorization.recoveryKey
 
-    val qrBitmap = remember(authorization.recoveryKey) {
-        QrCodeGenerator.generateQrCodeBitmap(authorization.recoveryKey, 512, 512)
+
+    val qrBitmap = remember(authorization.recoveryKey, authorization.method) {
+        if (isRemoteLink) null
+        else QrCodeGenerator.generateQrCodeBitmap(authorization.recoveryKey, 512, 512)
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -75,13 +81,15 @@ fun FamilyRecoveryDialog(
                 )
 
                 Text(
-                    text = "Autorização temporária gerada para ${person.alias}. Confira a identidade da pessoa antes de compartilhar. O PIN pessoal será usado somente para abrir o backup criptografado, se disponível.",
+                    text = if (isRemoteLink)
+                        "LINK remoto para ${person.alias}: a transferência só poderá ocorrer após 1 hora e com segundo aval de outro familiar distinto."
+                    else "QR para ${person.alias}: pode avançar imediatamente após assinatura de outro familiar independente. Nunca contém o PIN.",
                     style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary),
                     textAlign = TextAlign.Center
                 )
 
-                // Representação visual do QR Code Criptográfico Real
-                Surface(
+                // Mostrar QR apenas no modo QR; LINK é compartilhado como URL.
+                if (!isRemoteLink) Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = Color.White,
                     modifier = Modifier
@@ -117,7 +125,7 @@ fun FamilyRecoveryDialog(
                         .fillMaxWidth()
                         .background(DarkCard, RoundedCornerShape(10.dp))
                         .clickable {
-                            clipboardManager.setText(AnnotatedString(authorization.recoveryKey))
+                            clipboardManager.setText(AnnotatedString(sharePayload))
                             copiedNotice = true
                         }
                         .padding(12.dp),
@@ -144,7 +152,7 @@ fun FamilyRecoveryDialog(
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = authorization.recoveryKey,
+                        text = sharePayload,
                         style = MaterialTheme.typography.titleMedium.copy(
                             color = RadarCyan,
                             fontWeight = FontWeight.Bold,
@@ -158,7 +166,9 @@ fun FamilyRecoveryDialog(
                     color = WarningAmber.copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = "⚠️ Válido por 15 minutos • Uso único • Quem obtiver esta chave poderá tentar recuperar a identidade. Entregue somente ao titular.",
+                        text = if (isRemoteLink)
+                            "⚠️ LINK remoto: uma hora de proteção e 15 minutos para concluir após o prazo. Uso único. Requer outro familiar para aprovação."
+                        else "⚠️ QR: válido por 15 minutos e uso único. Requer outro familiar autorizado para concluir.",
                         style = MaterialTheme.typography.labelSmall.copy(
                             color = WarningAmber,
                             fontWeight = FontWeight.Medium
