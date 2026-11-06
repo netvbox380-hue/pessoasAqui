@@ -38,6 +38,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun EntreNaSuaRecoveryScreen(
     pinSecurityManager: PinSecurityManager,
+    initialRecoveryKey: String? = null,
     onFindAuthorization: (String) -> RecoveryAuthorization?,
     onClaimRecovery: (suspend (recoveryKey: String, pin: String) -> Result<String>)? = null,
     onRestoreConversations: (suspend (pin: String, recoverySecret: String?) -> Result<Int>)? = null,
@@ -57,7 +58,11 @@ fun EntreNaSuaRecoveryScreen(
     val coroutineScope = rememberCoroutineScope()
     val recoverySessionId = remember { "session-device-new" }
 
-    var recoveryKeyInput by remember { mutableStateOf("") }
+    var recoveryKeyInput by remember { mutableStateOf(initialRecoveryKey.orEmpty()) }
+    LaunchedEffect(initialRecoveryKey) {
+        if (!initialRecoveryKey.isNullOrBlank())
+            recoveryKeyInput = initialRecoveryKey
+    }
     var validatedAuth by remember { mutableStateOf<RecoveryAuthorization?>(null) }
     var pinInput by remember { mutableStateOf("") }
     var vaultRecoverySecret by remember { mutableStateOf("") }
