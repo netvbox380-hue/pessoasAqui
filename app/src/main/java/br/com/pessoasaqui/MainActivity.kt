@@ -44,6 +44,7 @@ data class IncomingInvite(
 class MainActivity : ComponentActivity() {
 
     private val incomingInvite = mutableStateOf<IncomingInvite?>(null)
+    private val incomingRecoveryKey = mutableStateOf<String?>(null)
     private val targetPeerToOpen = mutableStateOf<NearbyPerson?>(null)
 
 
@@ -79,6 +80,8 @@ class MainActivity : ComponentActivity() {
                         repository = repository,
                         incomingInvite = incomingInvite.value,
                         onClearIncomingInvite = { incomingInvite.value = null },
+                        incomingRecoveryKey = incomingRecoveryKey.value,
+                        onClearIncomingRecovery = { incomingRecoveryKey.value = null },
                         targetPeerToOpen = targetPeerToOpen.value,
                         onClearTargetPeerToOpen = { targetPeerToOpen.value = null }
                     )
@@ -176,6 +179,22 @@ class MainActivity : ComponentActivity() {
 
     private fun parseDeepLink(intent: Intent?) {
         val uri = intent?.data ?: return
+        // LINK de recuperação: somente domínio oficial ou esquema do app.
+        // Em HTTPS o código fica no fragmento e nunca é enviado no GET.
+        val recoveryUrl = (uri.scheme.equals("https", ignoreCase = true) &&
+            uri.host.equals("pessoasaqui3.onrender.com", ignoreCase = true) &&
+            uri.path?.trimEnd('/') == "/recover") ||
+            (uri.scheme.equals("pessoasaqui", ignoreCase = true) &&
+             uri.host.equals("recover", ignoreCase = true))
+        if (recoveryUrl) {
+            val source = if (uri.scheme.equals("https", ignoreCase = true))
+                uri.fragment.orEmpty() else uri.query.orEmpty()
+            val match = Regex("(?:^|&)key=(PA-REC-[A-F0-9]{64})(?:&|$)",
+                RegexOption.IGNORE_CASE).find(source)
+            incomingRecoveryKey.value=match?.groupValues?.get(1)
+                ?.uppercase(java.util.Locale.ROOT)
+            return
+        }
         // Deep links externos são entrada não confiável: aplicar a mesma
         // política estrita de domínio, ID e token usada em QR/clipboard.
         val invite = InviteLinkParser.parse(uri.toString()) ?: return
@@ -204,6 +223,8 @@ fun PessoasAquiNavHost(
     repository: PessoasAquiRepository,
     incomingInvite: IncomingInvite? = null,
     onClearIncomingInvite: () -> Unit = {},
+    incomingRecoveryKey: String? = null,
+    onClearIncomingRecovery: () -> Unit = {},
     targetPeerToOpen: NearbyPerson? = null,
     onClearTargetPeerToOpen: () -> Unit = {}
 ) {
@@ -267,6 +288,13 @@ fun PessoasAquiNavHost(
         targetPeerToOpen?.let { person ->
             currentScreen = Screen.Chat(person)
             onClearTargetPeerToOpen()
+        }
+    }
+
+    LaunchedEffect(incomingRecoveryKey, isAgeVerified, hasCompletedProfile, hasGrantedPermissions) {
+        if (incomingRecoveryKey != null && isAgeVerified &&
+            hasCompletedProfile && hasGrantedPermissions) {
+            currentScreen = Screen.EntreNaSua
         }
     }
 
@@ -574,6 +602,7 @@ fun PessoasAquiNavHost(
 
             EntreNaSuaRecoveryScreen(
                 pinSecurityManager = repository.pinSecurityManager,
+                initialRecoveryKey = incomingRecoveryKey,
                 // Somente o servidor valida o código v2. Nunca aceitar
                 // autorização local do simulador como prova de titularidade.
                 onFindAuthorization = { _ -> null },
@@ -587,7 +616,10 @@ fun PessoasAquiNavHost(
                 onRecoverySuccess = { recoveredHash ->
                     repository.transferIdentityToThisDevice(recoveredHash)
                 },
-                onBack = { currentScreen = Screen.Main }
+                onBack = {
+                    onClearIncomingRecovery()
+                    currentScreen = Screen.Main
+                }
             )
         }
     }
