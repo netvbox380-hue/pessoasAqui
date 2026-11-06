@@ -21,7 +21,7 @@ function deriveInviteId(identity, nonce) {
 }
 function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHash, proof, now = Date.now(), activePublicKey = null) {
   try {
-    if (!['CREATE', 'REDEEM', 'RECOVERY_DELEGATE', 'RECOVERY_ISSUE', 'RECOVERY_ISSUE_LINK', 'RECOVERY_CLAIM', 'RECOVERY_REVOKE', 'RECOVERY_APPROVE', 'RECOVERY_PREPARE', 'RECOVERY_STATUS', 'RECOVERY_READINESS', 'RECOVERY_CONTEST', 'FAMILY_INCIDENT', 'OFFER_PUBLISH', 'OFFER_DELETE', 'CONNECTION_MARK', 'CONNECTION_UNMARK', 'IDENTITY_REGISTER', 'MESSAGE_SEND', 'MESSAGE_PENDING', 'PRESENCE_HEARTBEAT', 'CONNECTION_STATUS', 'PRESENCE_NEARBY', 'TICKET_READ', 'TICKET_CREATE', 'REPORT_CREATE', 'IDENTITY_KEY_LOOKUP'].includes(operation) ||
+    if (!['CREATE', 'REDEEM', 'RECOVERY_DELEGATE', 'RECOVERY_ISSUE', 'RECOVERY_ISSUE_LINK', 'RECOVERY_CLAIM', 'RECOVERY_REVOKE', 'RECOVERY_APPROVE', 'RECOVERY_PREPARE', 'RECOVERY_STATUS', 'RECOVERY_READINESS', 'RECOVERY_CONTEST', 'RECOVERY_GUARDIANS', 'RECOVERY_SHARE_RELEASE', 'FAMILY_INCIDENT', 'OFFER_PUBLISH', 'OFFER_DELETE', 'CONNECTION_MARK', 'CONNECTION_UNMARK', 'IDENTITY_REGISTER', 'MESSAGE_SEND', 'MESSAGE_PENDING', 'PRESENCE_HEARTBEAT', 'CONNECTION_STATUS', 'PRESENCE_NEARBY', 'TICKET_READ', 'TICKET_CREATE', 'REPORT_CREATE', 'IDENTITY_KEY_LOOKUP'].includes(operation) ||
         typeof identity !== 'string' || typeof alias !== 'string' ||
         typeof inviteId !== 'string' || typeof tokenHash !== 'string' ||
         !proof || proof.v !== 1) return false;
@@ -45,6 +45,8 @@ function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHa
         (operation === 'REPORT_CREATE' &&
           (inviteId !== '' || !/^[a-f0-9]{16}$/i.test(alias) || !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
         ((operation === 'RECOVERY_APPROVE') && !/^[a-f0-9]{16}$/i.test(alias)) ||
+        ((operation === 'RECOVERY_SHARE_RELEASE') && !/^[a-f0-9]{16}$/i.test(alias)) ||
+        ((operation === 'RECOVERY_GUARDIANS') && alias !== '') ||
         ((operation === 'RECOVERY_STATUS' || operation === 'RECOVERY_PREPARE' || operation === 'RECOVERY_CLAIM') && alias !== '') ||
         ((operation === 'CONNECTION_MARK' || operation === 'CONNECTION_UNMARK') &&
           (inviteId !== '' || tokenHash !== '' || !/^[a-f0-9]{16}$/i.test(alias))) ||
