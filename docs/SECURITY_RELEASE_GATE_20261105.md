@@ -340,3 +340,28 @@ Antigravity, realizar revisão criptográfica independente e homologação físi
 
 **A publicação no Render permanece bloqueada** até comprovação dos contratos
 HTTP/WS, migrações de esquema e compatibilidade do novo APK.
+
+
+### Progresso controlado — 06/11/2026 (não homologado)
+
+- Cofre V3: `executeDistributedBackupInternal` rejeita explicitamente segredo
+  informado diferente daquele configurado e protegido no Keystore. Se a chave
+  local está indisponível, a operação falha antes de tentar escrever. Evita
+  sobrescrever cópias V3 com um segredo diferente e provocar perda de acesso.
+- Inicialização da UI: aba **Conversas** é a padrão (`currentMainTab = 1`).
+  **Isso não desliga o scanner BLE**: a política de pausa do Radar continua
+  pendente de desenho com exclusões para sessões GATT ativas e ofertas.
+- Bateria: o serviço em primeiro plano deixou de manter `PARTIAL_WAKE_LOCK`
+  e `WifiLock` adquiridos permanentemente. O ticker e as notificações
+  continuam no código, mas comportamento real sob Doze, chamadas recebidas,
+  notificações, lembretes e WebSocket em Android 14/16 precisa ser medido. Se
+  houver regressão, usar locks de escopo curto para a operação ativa, não
+  reaplicar locks globais sem timeout.
+- Compatibilidade: convites LINK/QR existentes preservados; nenhuma alteração
+  no Render, Supabase ou contratos HTTP/WS nesta sequência.
+- **Gate inalterado:** recuperação limiar de PIN/segredo V3 ainda é PRIMITIVO
+  ISOLADO; distribuição/escrow autenticado de partes, transferência cifrada ao
+  aparelho novo, consentimento e auditoria independente não concluídos.
+- **Sem testes executados nesta sessão**: Android SDK/Antigravity, PostgreSQL
+  isolado e testes reais de BLE, chamadas e importação V2/V3 ainda obrigatórios.
+  Nenhum APK/AAB ou deploy autorizado.
