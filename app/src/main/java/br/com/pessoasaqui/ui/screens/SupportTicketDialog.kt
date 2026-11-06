@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import br.com.pessoasaqui.data.remote.SupportTicketItem
+import br.com.pessoasaqui.domain.model.NearbyPerson
 import br.com.pessoasaqui.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -39,7 +40,9 @@ fun SupportTicketDialog(
     tickets: List<SupportTicketItem> = emptyList(),
     onRefreshTickets: () -> Unit = {},
     onDismiss: () -> Unit,
-    onSubmitTicket: suspend (category: String, subject: String, message: String) -> Result<Boolean>
+    onSubmitTicket: suspend (category: String, subject: String, message: String) -> Result<Boolean>,
+    familyContacts: List<NearbyPerson> = emptyList(),
+    onReportFamilyIncident: (suspend (target: String, category: String, message: String) -> Result<Boolean>)? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -47,6 +50,7 @@ fun SupportTicketDialog(
     var selectedTab by remember { mutableIntStateOf(if (tickets.isNotEmpty()) 0 else 1) }
 
     var selectedCategory by remember { mutableStateOf("DUVIDA") }
+    var affectedFamilyId by remember { mutableStateOf("") }
     var subjectText by remember { mutableStateOf("") }
     var messageText by remember { mutableStateOf("") }
     var isSubmitting by remember { mutableStateOf(false) }
@@ -54,6 +58,7 @@ fun SupportTicketDialog(
 
     val categories = listOf(
         "DUVIDA" to "Dúvida Geral sobre o App",
+        "FAMILY_SECURITY" to "🚨 Informar problema de segurança de familiar",
         "RECUPERACAO" to "Ajuda com Recuperação / PIN",
         "BUG" to "Relato de Problema Técnico / Falha",
         "SUGESTAO" to "Sugestão de Melhoria",
@@ -372,6 +377,37 @@ fun SupportTicketDialog(
                             }
                         }
 
+                        if (selectedCategory == "FAMILY_SECURITY") {
+                            Text(
+                                "Selecione o familiar prejudicado. O sistema validará o vínculo de recuperação no servidor.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = EmeraldGreen
+                            )
+                            val validFamilyContacts = familyContacts.filter { it.isFamily }
+                                .distinctBy { it.technicalIdentityHash.ifBlank { it.id } }
+                            if (validFamilyContacts.isEmpty()) {
+                                Text("Nenhum familiar vinculado. Adicione familiares de confiança primeiro.",
+                                    color = Color.LightGray, fontSize = 12.sp)
+                            }
+                            validFamilyContacts.forEach { family ->
+                                val id = family.technicalIdentityHash.ifBlank { family.id }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().clickable { affectedFamilyId = id },
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    RadioButton(
+                                        selected = affectedFamilyId == id,
+                                        onClick = { affectedFamilyId = id }
+                                    )
+                                    Text(family.alias, color = Color.White, fontSize = 12.sp)
+                                }
+                            }
+                            Text(
+                                "Não inclua PIN, chaves, códigos de recuperação ou mensagens privadas no relato.",
+                                color = Color.LightGray, fontSize = 11.sp
+                            )
+                        }
+
                         OutlinedTextField(
                             value = subjectText,
                             onValueChange = { subjectText = it },
@@ -408,13 +444,21 @@ fun SupportTicketDialog(
             if (selectedTab == 1) {
                 Button(
                     onClick = {
-                        if (subjectText.isBlank() || messageText.isBlank()) {
+                        if ((selectedCategory != "FAMILY_SECURITY" && subjectText.isBlank()) ||
+                            messageText.isBlank() ||
+                            (selectedCategory == "FAMILY_SECURITY" && affectedFamilyId.isBlank())) {
                             Toast.makeText(context, "Preencha o assunto e a mensagem.", Toast.LENGTH_SHORT).show()
                             return@Button
                         }
                         isSubmitting = true
                         coroutineScope.launch {
-                            val result = onSubmitTicket(selectedCategory, subjectText.trim(), messageText.trim())
+                            val result = if (selectedCategory == "FAMILY_SECURITY") {
+                                onReportFamilyIncident?.invoke(
+                                    affectedFamilyId, "SECURITY_RECOVERY", messageText.trim()
+                                ) ?: Result.failure(IllegalStateException("Relato familiar indisponível."))
+                            } else {
+                                onSubmitTicket(selectedCategory, subjectText.trim(), messageText.trim())
+                            }
                             isSubmitting = false
                             if (result.isSuccess) {
                                 Toast.makeText(context, "Petição enviada com sucesso! A moderação responderá em breve.", Toast.LENGTH_LONG).show()
