@@ -1534,6 +1534,11 @@ class PessoasAquiRepository(
                 // A conexão só é confirmada pelo evento oficial do servidor ou por /status.
                 Log.d("PessoasAqui", "Ignorando controle MARK_MUTUAL legado; aguardando confirmação do servidor")
             }
+            payload == "[VAULT_SHARE_REVOKE_V1]" -> {
+                if (isPeerPermanent(cleanSender)) {
+                    familyShareStore?.remove(cleanSender.uppercase())
+                }
+            }
             payload.startsWith("[VAULT_SHARE_REQUEST_V1:") -> {
                 // O titular já deve ter recuperado sua identidade. O familiar
                 // decide expressamente se libera SUA parte; jamais automaticamente.
