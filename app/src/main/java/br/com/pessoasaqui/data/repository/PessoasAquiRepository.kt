@@ -3151,7 +3151,9 @@ class PessoasAquiRepository(
                     targetIdentityHash = response.targetIdentity,
                     authorizedByFamilyName = getMyAlias(),
                     recoveryKey = response.recoveryKey,
-                    expiresAtEpochMs = response.expiresAtEpochMs
+                    expiresAtEpochMs = response.expiresAtEpochMs,
+                    method = response.method,
+                    eligibleAtEpochMs = response.eligibleAtEpochMs
                 )
             }
         } catch (e: Exception) { Result.failure(e) }
