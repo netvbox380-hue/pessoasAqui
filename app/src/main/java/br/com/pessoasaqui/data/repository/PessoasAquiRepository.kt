@@ -2995,6 +2995,24 @@ class PessoasAquiRepository(
         }
         return try {
             val deviceId = cryptoIdentityManager.getTechnicalIdentity()
+            // O aparelho inicia uma sessão assinada, à qual o segundo familiar
+            // vinculará sua autorização independente antes da transferência.
+            val preparationProof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_PREPARE",
+                identity = deviceId,
+                alias = "",
+                token = cleanKey,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            val prepared = networkClient.prepareFamilyRecovery(
+                recoveryKey = cleanKey,
+                newDeviceIdentity = deviceId,
+                identityProof = preparationProof
+            )
+            if (prepared.isFailure) return Result.failure(
+                prepared.exceptionOrNull() ?: SecurityException("Sessão não preparada.")
+            )
             val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
                 operation = "RECOVERY_CLAIM",
                 identity = deviceId,
