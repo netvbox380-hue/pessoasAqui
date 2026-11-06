@@ -3590,6 +3590,7 @@ class PessoasAquiRepository(
         // Restaura contatos preservados no cofre
         restoreVaultContacts(content.contacts)
 
+        vm.recordRestoredBackupVersion(bestVault.version)
         val totalMsgs = content.privateChats.values.sumOf { it.size } + content.localMural.size
         return Result.success(totalMsgs)
     }
@@ -3675,6 +3676,7 @@ class PessoasAquiRepository(
         // Restaura contatos preservados no cofre
         restoreVaultContacts(content.contacts)
 
+        vm.recordRestoredBackupVersion(vault.version)
         val totalMsgs = content.privateChats.values.sumOf { it.size } + content.localMural.size
         return Result.success(totalMsgs)
     }
