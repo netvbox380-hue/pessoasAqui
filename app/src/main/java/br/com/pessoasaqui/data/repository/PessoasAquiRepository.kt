@@ -2088,6 +2088,9 @@ class PessoasAquiRepository(
             radarTabVisible = radarVisible
             bleChatScreenOpen = chatOpen
             offersScreenOpen = offersVisible
+            // Na aba Ofertas ou no período de tolerância, buscar com menor
+            // intensidade; somente Radar ou chat temporário exigem latência alta.
+            bleManager?.setDiscoveryHighAccuracy(radarVisible || chatOpen)
             // Abrir explicitamente uma conversa temporária também é intenção
             // válida de comunicação BLE; uma conversa permanente não reativa rádio.
             if (chatOpen && uiForeground && !radarRequested && _hasGrantedPermissions.value) {
