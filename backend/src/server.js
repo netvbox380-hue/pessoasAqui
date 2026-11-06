@@ -133,6 +133,31 @@ setTimeout(async () => {
       )`);
       await query(`CREATE INDEX IF NOT EXISTS idx_recovery_grants_target
         ON recovery_grants(target_identity,expires_at)`);
+      // Migração aditiva: recuperação autorizada por duas identidades distintas.
+      await query(`ALTER TABLE recovery_grants
+        ADD COLUMN IF NOT EXISTS method VARCHAR(8) NOT NULL DEFAULT 'LINK'`);
+      await query(`ALTER TABLE recovery_grants
+        ADD COLUMN IF NOT EXISTS eligible_at TIMESTAMPTZ`);
+      await query(`CREATE TABLE IF NOT EXISTS recovery_approvals (
+        grant_id VARCHAR(64) NOT NULL REFERENCES recovery_grants(id) ON DELETE CASCADE,
+        family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        approved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY(grant_id, family_identity)
+      )`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_recovery_approvals_family
+        ON recovery_approvals(family_identity)`);
+      await query(`CREATE TABLE IF NOT EXISTS recovery_security_events (
+        id BIGSERIAL PRIMARY KEY,
+        target_identity VARCHAR(64) NOT NULL,
+        actor_identity VARCHAR(64),
+        event_type VARCHAR(48) NOT NULL,
+        request_id VARCHAR(64),
+        details JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_recovery_security_events_target
+        ON recovery_security_events(target_identity,created_at DESC)`);
+
       await query(`CREATE TABLE IF NOT EXISTS offers_secure (
         id VARCHAR(64) PRIMARY KEY,
         author_id VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
@@ -189,6 +214,9 @@ setTimeout(async () => {
         replied_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )`);
+      await query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS affected_identity VARCHAR(64)`);
+      await query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS verified_family_report BOOLEAN NOT NULL DEFAULT FALSE`);
+
 
       const bannedRes = await query(`SELECT id FROM identities WHERE is_banned = TRUE`);
       for (const row of bannedRes.rows) {
