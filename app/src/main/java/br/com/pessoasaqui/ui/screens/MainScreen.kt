@@ -64,6 +64,7 @@ fun MainScreen(
     var inviteGenerationError by remember { mutableStateOf<String?>(null) }
     val clipboardManager = LocalClipboardManager.current
     var showSupportDialog by remember { mutableStateOf(false) }
+    var showSecondFamilyApprovalDialog by remember { mutableStateOf(false) }
 
     val people by repository.discoveredPeople.collectAsState()
     val scope = rememberCoroutineScope()
@@ -331,6 +332,16 @@ fun MainScreen(
                                     onClick = {
                                         showTopMenu = false
                                         showBackupDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("🔐 Aprovar recuperação de um familiar", color = RadarCyan) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = RadarCyan)
+                                    },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showSecondFamilyApprovalDialog = true
                                     }
                                 )
                                 DropdownMenuItem(
@@ -893,6 +904,16 @@ fun MainScreen(
                 )
             }
 
+            if (showSecondFamilyApprovalDialog) {
+                FamilySecondApprovalDialog(
+                    familyContacts = connectedPeople,
+                    onApprove = { identity, key ->
+                        repository.approveSecondFamilyRecovery(identity, key)
+                    },
+                    onDismiss = { showSecondFamilyApprovalDialog = false }
+                )
+            }
+
             // Diálogo de Petição e Suporte Oficial
             if (showSupportDialog) {
                 SupportTicketDialog(
@@ -901,6 +922,10 @@ fun MainScreen(
                     onDismiss = { showSupportDialog = false },
                     onSubmitTicket = { category, subject, message ->
                         repository.openSupportTicket(category, subject, message)
+                    },
+                    familyContacts = connectedPeople,
+                    onReportFamilyIncident = { affected, category, message ->
+                        repository.openFamilySecurityIncident(affected, category, message)
                     }
                 )
             }
