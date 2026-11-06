@@ -40,6 +40,7 @@ fun EntreNaSuaRecoveryScreen(
     pinSecurityManager: PinSecurityManager,
     initialRecoveryKey: String? = null,
     onFindAuthorization: (String) -> RecoveryAuthorization?,
+    onBeginRecovery: (suspend (recoveryKey: String) -> Result<Boolean>)? = null,
     onClaimRecovery: (suspend (recoveryKey: String, pin: String) -> Result<String>)? = null,
     onCheckRecoveryStatus: (suspend (recoveryKey: String) -> Result<String>)? = null,
     onRestoreConversations: (suspend (pin: String, recoverySecret: String?) -> Result<Int>)? = null,
@@ -344,6 +345,21 @@ fun EntreNaSuaRecoveryScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
+                        if (onBeginRecovery != null) {
+                            Button(
+                                enabled = !isLoading,
+                                onClick = {
+                                    isLoading = true
+                                    coroutineScope.launch {
+                                        val outcome=onBeginRecovery(recoveryKeyInput)
+                                        isLoading=false
+                                        statusMessage=if(outcome.isSuccess)
+                                            "Solicitação iniciada neste aparelho. Agora peça ao segundo familiar autorizado para aprovar o mesmo QR/código. Após os avales, conclua a transferência."
+                                        else outcome.exceptionOrNull()?.message ?: "Falha ao iniciar recuperação."
+                                    }
+                                }
+                            ) { Text("1. Iniciar recuperação neste aparelho") }
+                        }
                         if (onCheckRecoveryStatus != null) {
                             OutlinedButton(
                                 enabled = !isLoading,
