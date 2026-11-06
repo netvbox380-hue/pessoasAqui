@@ -349,8 +349,12 @@ HTTP/WS, migrações de esquema e compatibilidade do novo APK.
   local está indisponível, a operação falha antes de tentar escrever. Evita
   sobrescrever cópias V3 com um segredo diferente e provocar perda de acesso.
 - Inicialização da UI: aba **Conversas** é a padrão (`currentMainTab = 1`).
-  **Isso não desliga o scanner BLE**: a política de pausa do Radar continua
-  pendente de desenho com exclusões para sessões GATT ativas e ofertas.
+  Política de suspensão do Radar BLE implementada em código: descoberta
+  inicialmente pausada, ativação explícita, 30 s após sair do Radar e 60 s
+  após minimizar; conversas temporárias abertas e aba Ofertas visível mantêm
+  discovery conforme necessidade. O botão de retomada é apresentado na aba
+  Pessoas. **NÃO homologado**; detalhamento no arquivo
+  `docs/RADAR_BATTERY_POLICY_20261105.md`.
 - Bateria: o serviço em primeiro plano deixou de manter `PARTIAL_WAKE_LOCK`
   e `WifiLock` adquiridos permanentemente. O ticker e as notificações
   continuam no código, mas comportamento real sob Doze, chamadas recebidas,
