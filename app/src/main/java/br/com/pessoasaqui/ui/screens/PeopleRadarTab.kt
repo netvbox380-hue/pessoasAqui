@@ -94,16 +94,22 @@ fun PeopleRadarTab(
         }
     }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "radarPulse")
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.25f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "scale"
-    )
+    // Não manter a animação infinita do Radar quando a descoberta está pausada.
+    val pulseScale = if (radarPausedForBattery) {
+        1f
+    } else {
+        val infiniteTransition = rememberInfiniteTransition(label = "radarPulse")
+        val activePulse by infiniteTransition.animateFloat(
+            initialValue = 0.85f,
+            targetValue = 1.25f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(2000, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "scale"
+        )
+        activePulse
+    }
 
     Column(
         modifier = Modifier
