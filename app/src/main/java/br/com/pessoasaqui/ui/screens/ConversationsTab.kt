@@ -1,6 +1,8 @@
 package br.com.pessoasaqui.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -566,10 +568,14 @@ fun ConversationsTab(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(24.dp),
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState())
+                                .padding(bottom = 12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
