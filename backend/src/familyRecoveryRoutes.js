@@ -242,6 +242,17 @@ function registerFamilyRecoveryRoutes(app, deps) {
       const hash=hexSha(secret);
       const grantId='rgr_'+hexSha(family+':'+proof.nonce).slice(0,24);
       const generated=await withTransaction(async run=>{
+        // Serializar por identidade evita flood concorrente de códigos de recuperação.
+        const owner=await run(
+          'SELECT id FROM identities WHERE id=$1 FOR UPDATE',[target]);
+        if(owner.rowCount!==1)
+          throw Object.assign(Error('Identidade indisponível.'),{status:404});
+        const recent=await run(
+          `SELECT COUNT(*)::int AS count FROM recovery_grants
+           WHERE target_identity=$1 AND created_at>NOW()-INTERVAL '1 hour'`,
+          [target]);
+        if(Number(recent.rows[0]?.count||0)>=3)
+          throw Object.assign(Error('Limite de tentativas de recuperação atingido. Aguarde antes de gerar outra.'),{status:429});
         const binding=await run(
           'SELECT generation FROM identity_key_bindings WHERE identity_id=$1',
           [target]);
