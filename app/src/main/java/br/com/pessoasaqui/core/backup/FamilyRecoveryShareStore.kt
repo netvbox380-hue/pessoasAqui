@@ -16,6 +16,7 @@ class FamilyRecoveryShareStore(context: Context) {
         require(part.size == RecoveryThresholdCodec.SHARE_SIZE && (part[0].toInt() and 255) > 0)
         val old = prefs.getString(owner, null)
         if (old != null) {
+            if (!old.startsWith("ENC_V2:")) return false
             val previous = try { crypto.decrypt(old) } catch (_: Exception) { return false }
             val oldVersion = previous.substringBefore(':').toLongOrNull() ?: return false
             if (oldVersion > version) return false
