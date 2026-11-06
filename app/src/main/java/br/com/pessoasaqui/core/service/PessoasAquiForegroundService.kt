@@ -8,10 +8,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import br.com.pessoasaqui.MainActivity
@@ -20,8 +18,8 @@ import kotlinx.coroutines.*
 
 /**
  * Serviço em Primeiro Plano (Foreground Service) que mantém o WebSocket E2EE,
- * a escuta de chamadas de voz/vídeo e o radar ativos mesmo quando o celular
- * está bloqueado, com a tela apagada (Doze Mode) ou em segundo plano.
+ * notificações e chamadas em segundo plano. Sem WakeLocks permanentes,
+ * a execução pode ser adiada pelo Doze; validar recebimento em tela apagada.
  */
 class PessoasAquiForegroundService : Service() {
 
@@ -44,8 +42,6 @@ class PessoasAquiForegroundService : Service() {
         }
     }
 
-    private var cpuWakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
     private val serviceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
     private var reminderTickerJob: kotlinx.coroutines.Job? = null
     private var lastVaultCheckMs = 0L
@@ -54,13 +50,11 @@ class PessoasAquiForegroundService : Service() {
         super.onCreate()
         ensureServiceChannel()
         startForegroundCompat()
-        acquireBackgroundLocks()
         startReminderTicker()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundCompat()
-        acquireBackgroundLocks()
         startReminderTicker()
         // Garante que o repositório singleton esteja inicializado
         (application as? PessoasAquiApp)?.repository
@@ -153,42 +147,13 @@ class PessoasAquiForegroundService : Service() {
         }
     }
 
-    @Suppress("DEPRECATION")
-    private fun acquireBackgroundLocks() {
-        try {
-            if (cpuWakeLock == null || cpuWakeLock?.isHeld == false) {
-                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-                cpuWakeLock = pm.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
-                    "PessoasAqui::BackgroundCpuWakeLock"
-                ).apply {
-                    setReferenceCounted(false)
-                    acquire()
-                }
-            }
-            if (wifiLock == null || wifiLock?.isHeld == false) {
-                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                } else {
-                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                }
-                wifiLock = wm.createWifiLock(lockMode, "PessoasAqui::RealtimeWifiLock").apply {
-                    setReferenceCounted(false)
-                    acquire()
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Aviso ao adquirir locks de segundo plano: ${e.message}")
-        }
-    }
-
+    // A execução do serviço não deve impedir o repouso da CPU e do Wi-Fi.
+    // Se chamadas exigirem WakeLock, usar lock específico de duração limitada
+    // com liberação em finally (nunca no ciclo inteiro do serviço).
     override fun onDestroy() {
         try {
             reminderTickerJob?.cancel()
             serviceScope.cancel()
-            cpuWakeLock?.let { if (it.isHeld) it.release() }
-            wifiLock?.let { if (it.isHeld) it.release() }
         } catch (_: Exception) {}
         super.onDestroy()
     }
