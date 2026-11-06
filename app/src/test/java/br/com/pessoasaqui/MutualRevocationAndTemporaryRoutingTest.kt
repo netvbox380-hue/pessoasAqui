@@ -39,12 +39,12 @@ class MutualRevocationAndTemporaryRoutingTest {
         val repo = PessoasAquiRepository()
         repo.setMarkPerson(peerId, mark = true)
         repo.confirmMutualConnectionFromServer(peerId)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:false:Contato]", "", "call-start-01")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_INIT:false:Contato]", "call-start-01")
         // O segundo comando CALL_INIT é retransmissão, não outra chamada.
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:false:Contato]", "", "call-start-02")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_INIT:false:Contato]", "call-start-02")
         assertNotNull(repo.activeCallState.value)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "call-end-01")
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "call-end-02")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_END]", "call-end-01")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_END]", "call-end-02")
         val calls = callRecords(repo)
         assertEquals("Uma ligação deve gerar somente um registro", 1, calls.size)
         assertTrue(calls.single().text.contains("Chamada de voz perdida"))
@@ -56,11 +56,11 @@ class MutualRevocationAndTemporaryRoutingTest {
         val repo = PessoasAquiRepository()
         repo.setMarkPerson(peerId, mark = true)
         repo.confirmMutualConnectionFromServer(peerId)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:true:Contato]", "", "video-call-start")
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_ACK]", "", "video-call-ack")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_INIT:true:Contato]", "video-call-start")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_ACK]", "video-call-ack")
         assertFalse("O chamador não pode atender no lugar do destinatário",
             repo.activeCallState.value?.isConnected ?: true)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]", "", "video-call-end")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_END]", "video-call-end")
         val calls = callRecords(repo)
         assertEquals(1, calls.size)
         assertTrue(calls.single().text.contains("Videochamada perdida"))
@@ -84,23 +84,23 @@ class MutualRevocationAndTemporaryRoutingTest {
         val first = br.com.pessoasaqui.core.media.CallSignalingProtocol.newCallId()
         val second = br.com.pessoasaqui.core.media.CallSignalingProtocol.newCallId()
 
-        repo.processIncomingPayload(peerId, "Contato",
-            "[CALL_INIT:false:Contato:$first]", "", "invite-1")
+        repo.processVerifiedNetworkPayload(peerId, "Contato",
+            "[CALL_INIT:false:Contato:$first]", "invite-1")
         assertNotNull(repo.activeCallState.value)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]#$first", "", "end-1")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_END]#$first", "end-1")
         assertNull(repo.activeCallState.value)
 
-        repo.processIncomingPayload(peerId, "Contato",
-            "[CALL_INIT:false:Contato:$second]", "", "invite-2")
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]#$first", "", "stale-end")
+        repo.processVerifiedNetworkPayload(peerId, "Contato",
+            "[CALL_INIT:false:Contato:$second]", "invite-2")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_END]#$first", "stale-end")
         assertNotNull("A chamada antiga não pode encerrar uma ligação nova", repo.activeCallState.value)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]#$second", "", "end-2")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_END]#$second", "end-2")
         assertNull(repo.activeCallState.value)
 
         val entries = callRecords(repo)
         assertEquals("Um registro por callId", 2, entries.size)
-        repo.processIncomingPayload(peerId, "Contato",
-            "[CALL_INIT:false:Contato:$second]", "", "delayed-replay")
+        repo.processVerifiedNetworkPayload(peerId, "Contato",
+            "[CALL_INIT:false:Contato:$second]", "delayed-replay")
         assertNull("Convites encerrados não podem tocar novamente", repo.activeCallState.value)
     }
 
@@ -109,15 +109,15 @@ class MutualRevocationAndTemporaryRoutingTest {
         repo.setMarkPerson(peerId, mark = true)
         repo.confirmMutualConnectionFromServer(peerId)
         val id = br.com.pessoasaqui.core.media.CallSignalingProtocol.newCallId()
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_INIT:true:Contato:$id]", "", "media-setup")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_INIT:true:Contato:$id]", "media-setup")
         assertFalse(repo.activeCallState.value?.isConnected ?: true)
 
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_AUDIO_FRAME:AAAA]", "", "media-before-accept")
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_VIDEO_FRAME:BBBB]", "", "video-before-accept")
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_ACK]#$id", "", "ack-before-accept")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_AUDIO_FRAME:AAAA]", "media-before-accept")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_VIDEO_FRAME:BBBB]", "video-before-accept")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_ACK]#$id", "ack-before-accept")
         assertFalse("Mídia e ACK nunca são consentimento de atendimento",
             repo.activeCallState.value?.isConnected ?: true)
-        repo.processIncomingPayload(peerId, "Contato", "[CALL_END]#$id", "", "media-end")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[CALL_END]#$id", "media-end")
         val calls = callRecords(repo)
         assertEquals("Mídia não solicitada deve gerar apenas a chamada perdida", 1, calls.size)
         assertTrue(calls.single().text.contains("Videochamada perdida"))
@@ -263,7 +263,7 @@ class MutualRevocationAndTemporaryRoutingTest {
 
     @Test fun legacyMutualControlTextAloneNeverGrantsPermanentMode() {
         val repo = PessoasAquiRepository()
-        repo.processIncomingPayload(peerId, "Contato", "[MARK_MUTUAL:Contato]", "", "legacy-mark-1")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[MARK_MUTUAL:Contato]", "legacy-mark-1")
         assertFalse(repo.isPeerPermanent(peerId))
     }
 
