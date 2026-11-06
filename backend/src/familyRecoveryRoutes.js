@@ -9,9 +9,10 @@
  */
 const crypto = require('node:crypto');
 const {verifyInviteIdentityProof} = require('./inviteAuth');
+const {eligibility, MIN_FAMILIES, canClaim} = require('./recoveryPolicy');
 const VALID_ID = /^[a-f0-9]{16}$/i;
 const VALID_SECRET = /^PA-REC-[A-F0-9]{64}$/;
-const TTL_MS = 15 * 60 * 1000;
+const TTL_MS = 15 * 60 * 1000; // QR
 const hexSha = value => crypto.createHash('sha256').update(value, 'utf8').digest('hex');
 const normalizeId = value => String(value || '').trim().replace(/^peer-/i,'').toUpperCase();
 
@@ -135,7 +136,12 @@ function registerFamilyRecoveryRoutes(app, deps) {
       return res.status(400).json({error:'Identidade de recuperação inválida.'});
     try{
       const proof=req.body?.identityProof;
-      if(!await authenticated('RECOVERY_ISSUE',family,target,'',proof))
+      // A modalidade LINK integra o método na assinatura para impedir troca
+      // unilateral de QR para LINK (ou vice-versa) no transporte.
+      const method=String(req.body?.method||'QR').toUpperCase();
+      if(!['QR','LINK'].includes(method))return res.status(400).json({error:'Método inválido.'});
+      const operation=method==='LINK'?'RECOVERY_ISSUE_LINK':'RECOVERY_ISSUE';
+      if(!await authenticated(operation,family,target,'',proof))
         return res.status(401).json({error:'Assinatura do familiar inválida.'});
       const delegated=await query(
         `SELECT family_public_key FROM recovery_delegations
@@ -144,6 +150,12 @@ function registerFamilyRecoveryRoutes(app, deps) {
       if(!isPostgres())return dbUnavailable(res);
       if(delegated.rows.length!==1 || delegated.rows[0].family_public_key!==proof.publicKey)
         return res.status(403).json({error:'Familiar não autorizado pelo titular.'});
+      const familyCount=await query(
+        'SELECT COUNT(DISTINCT family_identity)::int AS count FROM recovery_delegations WHERE target_identity=$1 AND is_active=TRUE',
+        [target]);
+      if(Number(familyCount.rows[0]?.count||0)<MIN_FAMILIES)
+        return res.status(409).json({error:'Adicione pelo menos dois familiares distintos e autorizados antes de recuperar sua conta.'});
+      const policy=eligibility(method);
       const secret='PA-REC-'+crypto.randomBytes(32).toString('hex').toUpperCase();
       const hash=hexSha(secret);
       const grantId='rgr_'+hexSha(family+':'+proof.nonce).slice(0,24);
@@ -154,21 +166,78 @@ function registerFamilyRecoveryRoutes(app, deps) {
         const generation=Number(binding.rows[0]?.generation||0);
         const created=await run(
           `INSERT INTO recovery_grants
-             (id, token_hash, target_identity, family_identity, family_public_key, expected_generation, expires_at)
-           SELECT $1,$2,$3,$4,$5,$6,NOW()+INTERVAL '15 minutes'
+             (id, token_hash, target_identity, family_identity, family_public_key,
+              expected_generation, expires_at, method, eligible_at)
+           SELECT $1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7/1000.0),$8,TO_TIMESTAMP($9/1000.0)
              FROM recovery_delegations WHERE target_identity=$3 AND family_identity=$4
                AND is_active=TRUE AND family_public_key=$5
-           ON CONFLICT DO NOTHING RETURNING expires_at`,
-          [grantId,hash,target,family,proof.publicKey,generation]);
+           ON CONFLICT DO NOTHING RETURNING expires_at, eligible_at`,
+          [grantId,hash,target,family,proof.publicKey,generation,
+           policy.expiresAt,policy.method,policy.eligibleAt]);
         if(created.rowCount!==1)throw Object.assign(Error('Autorização já utilizada ou revogada'),{status:409});
         return created.rows[0];
       });
       return res.json({success:true,recoveryKey:secret,
-        targetIdentity:target,expiresAt:generated.expires_at,
+        targetIdentity:target, method:policy.method,
+        expiresAt:generated.expires_at,
+        eligibleAtEpochMs:new Date(generated.eligible_at).getTime(),
         expiresAtEpochMs:new Date(generated.expires_at).getTime(),
-        notice:'Válido por 15 minutos • Uso único • Confirme a identidade do destinatário.'});
+        notice:method==='LINK'
+          ?'LINK remoto: aguarde 1 hora; requer aprovação independente de outro familiar.'
+          :'QR: disponível imediatamente após aprovação de outro familiar distinto.'});
     }catch(e){
       if(e.status===409)return res.status(409).json({error:e.message});
+      return dbUnavailable(res);
+    }
+  });
+
+
+  // O segundo familiar AUTORIZA a sessão, sem jamais receber PIN ou segredo
+  // do cofre. A assinatura vincula alvo e hash do token de uso único.
+  app.post('/api/family/recovery/approve',async(req,res)=>{
+    if(!ready())return dbUnavailable(res);
+    const family=normalizeId(req.body?.familyIdentity);
+    const target=normalizeId(req.body?.targetIdentity);
+    const token=String(req.body?.recoveryKey||'').trim().toUpperCase();
+    if(!VALID_ID.test(family)||!VALID_ID.test(target)||!VALID_SECRET.test(token))
+      return res.status(400).json({error:'Solicitação inválida.'});
+    try{
+      const proof=req.body?.identityProof;
+      if(!await authenticated('RECOVERY_APPROVE',family,target,hexSha(token),proof))
+        return res.status(401).json({error:'Segunda assinatura familiar inválida.'});
+      const result=await withTransaction(async run=>{
+        const grant=(await run(
+          'SELECT id,target_identity,family_identity,expires_at,used_at FROM recovery_grants WHERE token_hash=$1 FOR UPDATE',
+          [hexSha(token)])).rows[0];
+        if(!grant || grant.target_identity!==target || grant.used_at ||
+           new Date(grant.expires_at).getTime()<=Date.now())
+          throw Object.assign(Error('Sessão inválida ou expirada.'),{status:410});
+        if(family===grant.family_identity)
+          throw Object.assign(Error('O familiar que emitiu o QR/LINK não pode ser o segundo autorizador.'),{status:403});
+        const approved=await run(
+          `INSERT INTO recovery_approvals(grant_id,family_identity)
+           SELECT $1,$2 FROM recovery_delegations
+           WHERE target_identity=$3 AND family_identity=$2 AND is_active=TRUE
+             AND family_public_key=$4
+           ON CONFLICT DO NOTHING RETURNING grant_id`,
+          [grant.id,family,target,proof.publicKey]);
+        if(approved.rowCount!==1)
+          throw Object.assign(Error('Familiar não autorizado ou aprovação já utilizada.'),{status:409});
+        await run(
+          `INSERT INTO recovery_proof_nonces(identity_id,operation,nonce)
+           VALUES($1,'RECOVERY_APPROVE',$2) ON CONFLICT DO NOTHING RETURNING nonce`,
+          [family,proof.nonce]).then(r=>{
+            if(r.rowCount!==1)throw Object.assign(Error('Prova repetida.'),{status:409});
+          });
+        await run(
+          `INSERT INTO recovery_security_events(target_identity,actor_identity,event_type,request_id)
+           VALUES($1,$2,'SECOND_FAMILY_APPROVED',$3)`,[target,family,grant.id]);
+        return grant.id;
+      });
+      return res.json({success:true,requestId:result,
+        message:'Aprovação registrada. A transferência depende das demais provas e do prazo aplicável.'});
+    }catch(e){
+      if([403,409,410].includes(e.status))return res.status(e.status).json({error:e.message});
       return dbUnavailable(res);
     }
   });
@@ -189,7 +258,7 @@ function registerFamilyRecoveryRoutes(app, deps) {
       target=await withTransaction(async run=>{
         const found=await run(
           `SELECT id,target_identity,family_identity,family_public_key,
-                  expected_generation, expires_at,used_at
+                  expected_generation, expires_at,eligible_at,method,used_at
              FROM recovery_grants WHERE token_hash=$1 FOR UPDATE`,
           [hexSha(secret)]);
         const grant=found.rows[0];
@@ -200,6 +269,28 @@ function registerFamilyRecoveryRoutes(app, deps) {
         const owner=await run('SELECT id FROM identities WHERE UPPER(id)=UPPER($1) FOR UPDATE',
           [grant.target_identity]);
         if(owner.rowCount!==1)throw Object.assign(Error('Identidade indisponível'),{status:410});
+
+        const delegates=await run(
+          `SELECT family_identity FROM recovery_delegations
+            WHERE target_identity=$1 AND is_active=TRUE FOR SHARE`,[grant.target_identity]);
+        const approvals=await run(
+          `SELECT family_identity FROM recovery_approvals
+            WHERE grant_id=$1 AND family_identity<>$2 FOR SHARE`,
+          [grant.id,grant.family_identity]);
+        const approvedOther=approvals.rows.map(r=>r.family_identity)
+          .find(id=>delegates.rows.some(d=>d.family_identity===id));
+        if(!canClaim({
+          issuer:grant.family_identity,approver:approvedOther,
+          activeDelegates:delegates.rows.map(r=>r.family_identity),
+          now:Date.now(),eligibleAt:new Date(grant.eligible_at).getTime(),
+          expiresAt:new Date(grant.expires_at).getTime()
+        })) {
+          throw Object.assign(Error(
+            Date.now()<new Date(grant.eligible_at).getTime()
+              ?'LINK em período de proteção de 1 hora.'
+              :'A recuperação exige uma segunda autorização de familiar diferente e ativa.'
+          ),{status:409});
+        }
         const active=await run(
           'SELECT generation FROM identity_key_bindings WHERE identity_id=$1 FOR UPDATE',
           [grant.target_identity]);
@@ -227,6 +318,10 @@ function registerFamilyRecoveryRoutes(app, deps) {
         await run(
           'UPDATE recovery_grants SET used_at=NOW() WHERE target_identity=$1 AND used_at IS NULL',
           [grant.target_identity]);
+        await run(
+          `INSERT INTO recovery_security_events(target_identity,actor_identity,event_type,request_id)
+            VALUES($1,$2,'IDENTITY_RECOVERED',$3)`,
+          [grant.target_identity,newId,grant.id]);
         await run(
           'UPDATE devices SET is_active=FALSE,revoked_at=NOW() WHERE identity_id=$1 AND is_active=TRUE',
           [grant.target_identity]);
