@@ -409,7 +409,7 @@ fun EntreNaSuaRecoveryScreen(
                                     statusMessage = "Recuperação local insegura desativada. Atualize o aplicativo."
                                 }
                             },
-                            enabled = !lockoutState.isLocked && !isLoading,
+                            enabled = !isLoading,
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(
