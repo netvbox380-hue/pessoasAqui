@@ -88,6 +88,32 @@ class PessoasAquiRepository(
     fun enableVaultV3(secret: String): Boolean =
         vaultSecretStore?.enable(getMyIdentity(), secret) == true
 
+    /** Bloqueia ativação V3 antes de 2 credenciamentos familiares no backend. */
+    suspend fun enableVaultV3Verified(secret: String): Result<Boolean> {
+        return try {
+            val identity = getMyIdentity()
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_READINESS",
+                identity = identity,
+                alias = "",
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            val readiness = networkClient.fetchFamilyRecoveryReadiness(identity, proof)
+            val count = readiness.getOrElse { return Result.failure(it) }
+            if (count < 2) return Result.failure(SecurityException(
+                "Adicione e autorize pelo menos dois familiares de confiança para ativar a recuperação distribuída. " +
+                "Atualmente: $count de 2."
+            ))
+            val enabled = vaultSecretStore?.enable(identity, secret) == true
+            if (!enabled) Result.failure(SecurityException(
+                "Segredo V3 já configurado ou o armazenamento seguro do aparelho está indisponível."
+            )) else Result.success(true)
+        } catch(e: Exception){ Result.failure(e) }
+    }
+
+
+
     private fun currentVaultSecret(): String? {
         val store = vaultSecretStore ?: return null
         val secret = store.load(getMyIdentity())
