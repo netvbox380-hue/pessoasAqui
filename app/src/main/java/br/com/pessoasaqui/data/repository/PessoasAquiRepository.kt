@@ -3255,7 +3255,23 @@ class PessoasAquiRepository(
                 newDeviceIdentity = deviceId,
                 identityProof = proof
             )
-            if (claimed.isSuccess) deviceSessionManager.resetSession()
+            if (claimed.isSuccess) {
+                deviceSessionManager.resetSession()
+                // A rotação foi confirmada no backend. Guardar a sessão
+                // efêmera cifrada antes de trocar o identificador local.
+                val target = cleanId(claimed.getOrThrow()).uppercase()
+                val stored = try {
+                    recoveredSessionStore?.save(
+                        br.com.pessoasaqui.core.backup.VaultRecoverySessionStore.Session(
+                            cleanKey, deviceId.uppercase(), target,
+                            System.currentTimeMillis() + 15 * 60 * 1000L
+                        )
+                    ) == true
+                } catch (_: Exception) { false }
+                if (!stored) {
+                    Log.w("PessoasAqui", "Sessão de partes V3 não pôde ser preservada no Keystore.")
+                }
+            }
             claimed
         } catch (e: Exception) { Result.failure(e) }
     }
