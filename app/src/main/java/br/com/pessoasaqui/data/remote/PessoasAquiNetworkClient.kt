@@ -370,6 +370,29 @@ open class PessoasAquiNetworkClient(
         }catch(e:Exception){Result.failure(e)}
     }
 
+    /** Status consultado somente pela chave do aparelho que preparou a sessão. */
+    suspend fun getFamilyRecoveryStatus(
+        recoveryKey: String,
+        newDeviceIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val json=JSONObject().apply {
+                put("recoveryKey",recoveryKey)
+                put("newDeviceIdentity",newDeviceIdentity)
+                put("identityProof",identityProof.toJson())
+            }
+            val request=Request.Builder().url("$baseUrl/api/family/recovery/status")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val body=JSONObject(response.body?.string()?:"{}")
+                if(response.isSuccessful&&body.optBoolean("success"))
+                    Result.success(body.getString("status"))
+                else Result.failure(IOException(body.optString("error","Não foi possível consultar recuperação.")))
+            }
+        }catch(e:Exception){Result.failure(e)}
+    }
+
     /** Segunda autorização: identidade distinta da que emitiu o QR/LINK. */
     suspend fun approveFamilyRecovery(
         targetIdentity: String, familyIdentity: String, recoveryKey: String,
