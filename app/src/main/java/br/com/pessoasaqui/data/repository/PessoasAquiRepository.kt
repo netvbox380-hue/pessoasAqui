@@ -3175,6 +3175,25 @@ class PessoasAquiRepository(
      * Segunda autorização familiar: somente o familiar DIFERENTE daquele
      * que emitiu a primeira autorização pode assinar esta sessão.
      */
+    /** Acompanhe o pedido sem revelar o código aos demais contatos. */
+    suspend fun checkPreparedFamilyRecoveryStatus(recoveryKey: String): Result<String> {
+        val code = recoveryKey.trim().uppercase(java.util.Locale.ROOT)
+        if (!Regex("^PA-REC-[A-F0-9]{64}$").matches(code))
+            return Result.failure(IllegalArgumentException("Código inválido."))
+        return try {
+            val identity = getMyIdentity()
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation="RECOVERY_STATUS",
+                identity=identity,
+                alias="",
+                token=code,
+                publicKeyBase64=cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge=cryptoIdentityManager::signChallenge
+            )
+            networkClient.getFamilyRecoveryStatus(code, identity, proof)
+        } catch(e:Exception){Result.failure(e)}
+    }
+
     /** Acionável apenas pelo próprio titular autenticado no aparelho ativo. */
     suspend fun contestSuspiciousRecovery(): Result<Int> {
         return try {
