@@ -41,6 +41,7 @@ fun EntreNaSuaRecoveryScreen(
     initialRecoveryKey: String? = null,
     onFindAuthorization: (String) -> RecoveryAuthorization?,
     onClaimRecovery: (suspend (recoveryKey: String, pin: String) -> Result<String>)? = null,
+    onCheckRecoveryStatus: (suspend (recoveryKey: String) -> Result<String>)? = null,
     onRestoreConversations: (suspend (pin: String, recoverySecret: String?) -> Result<Int>)? = null,
     onRecoverySuccess: (String) -> Unit,
     onBack: () -> Unit
@@ -337,6 +338,36 @@ fun EntreNaSuaRecoveryScreen(
                                 unfocusedBorderColor = DarkCardElevated
                             )
                         )
+
+                        Text(
+                            text = "Esta recuperação depende de dois familiares autorizados. Após iniciar, peça a outro familiar distinto para escolher Aprovar recuperação na aba Pessoas. LINK remoto exige 1 hora. O PIN nunca é enviado ao servidor.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                        if (onCheckRecoveryStatus != null) {
+                            OutlinedButton(
+                                enabled = !isLoading,
+                                onClick = {
+                                    isLoading = true
+                                    coroutineScope.launch {
+                                        val status = onCheckRecoveryStatus(recoveryKeyInput)
+                                        isLoading = false
+                                        statusMessage = status.fold(
+                                            onSuccess = { when(it) {
+                                                "READY" -> "Segundo familiar confirmou. Recuperação pronta para conclusão."
+                                                "WAITING_SECOND_FAMILY" -> "Aguardando segundo familiar autorizado, diferente do emissor."
+                                                "WAITING_SECURITY_WINDOW" -> "Segunda autorização confirmada. Aguarde o prazo de proteção do LINK (1 hora)."
+                                                "SUSPENDED" -> "Recuperação suspensa após alerta de segurança."
+                                                "USED" -> "Código já utilizado. Gere outro."
+                                                "EXPIRED" -> "Código expirado. Gere outro."
+                                                else -> "Estado da recuperação: $it"
+                                            }},
+                                            onFailure = { it.message ?: "Consulta indisponível." }
+                                        )
+                                    }
+                                }
+                            ) { Text("Consultar estado da recuperação") }
+                        }
 
                         Button(
                             onClick = {
