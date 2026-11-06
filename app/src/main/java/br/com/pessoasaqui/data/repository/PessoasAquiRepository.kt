@@ -1056,6 +1056,10 @@ class PessoasAquiRepository(
     private val _moderationWarningAlert = MutableStateFlow<String?>(null)
     val moderationWarningAlert: StateFlow<String?> = _moderationWarningAlert.asStateFlow()
     fun dismissModerationWarning() { _moderationWarningAlert.value = null }
+    private val _recoverySecurityAlert = MutableStateFlow<String?>(null)
+    val recoverySecurityAlert: StateFlow<String?> = _recoverySecurityAlert.asStateFlow()
+    fun dismissRecoverySecurityAlert() { _recoverySecurityAlert.value = null }
+
 
     private val _accountBannedAlert = MutableStateFlow<String?>(null)
     val accountBannedAlert: StateFlow<String?> = _accountBannedAlert.asStateFlow()
@@ -1106,6 +1110,14 @@ class PessoasAquiRepository(
         }
         networkClient.onSupportTicketReplied = { ticketId, subject, reply, timestamp ->
             scope.launch { handleSupportTicketReplied(ticketId, subject, reply, timestamp) }
+        }
+        networkClient.onRecoverySecurityAlert = { method, _ ->
+            scope.launch {
+                _recoverySecurityAlert.value =
+                    "Tentativa de recuperação de sua identidade por $method. " +
+                    "Se não reconhece esta solicitação, conteste agora. " +
+                    "O sistema impede o uso da conta sem autorizações criptográficas válidas."
+            }
         }
         networkClient.onModerationWarning = { warningMsg ->
             scope.launch {
