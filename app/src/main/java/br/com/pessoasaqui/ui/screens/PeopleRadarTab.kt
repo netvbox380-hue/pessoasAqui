@@ -42,6 +42,8 @@ fun PeopleRadarTab(
     currentIntent: UserIntent,
     isDemoMode: Boolean = false,
     isBluetoothEnabled: Boolean = true,
+    radarPausedForBattery: Boolean = false,
+    onActivateRadar: () -> Unit = {},
     localMessages: List<ChatMessage> = emptyList(),
     onSendLocalMessage: (String) -> Unit = {},
     onClearLocalMessages: () -> Unit = {},
@@ -60,8 +62,8 @@ fun PeopleRadarTab(
     // Isolamento estrito do Radar de Proximidade Física BLE (10m):
     // 1. Bluetooth deve estar ativo
     // 2. Apenas pessoas com distância física estimada de até 10 metros
-    val visibleRadarPeople = remember(people, isBluetoothEnabled) {
-        if (!isBluetoothEnabled) {
+    val visibleRadarPeople = remember(people, isBluetoothEnabled, radarPausedForBattery) {
+        if (!isBluetoothEnabled || radarPausedForBattery) {
             emptyList()
         } else {
             people.filter { it.estimatedDistanceMeters <= 10.0 && !it.id.startsWith("sim-", ignoreCase = true) }
@@ -238,6 +240,36 @@ fun PeopleRadarTab(
             }
         }
 
+        if (radarPausedForBattery && isBluetoothEnabled) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = DarkSurface)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        "Radar pausado para economizar bateria.",
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "A busca por pessoas próximas foi interrompida enquanto o aplicativo estava em segundo plano ou fora do Radar.",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(
+                        onClick = onActivateRadar,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = RadarCyan, contentColor = DeepBlack)
+                    ) { Text("Ativar Radar novamente") }
+                }
+            }
+        }
+
         // Card de Status do Radar & Seletor de Intenção
         Card(
             shape = RoundedCornerShape(18.dp),
@@ -281,7 +313,7 @@ fun PeopleRadarTab(
                                 )
                             )
                             Text(
-                                text = if (visibleRadarPeople.isEmpty()) "Buscando pessoas no local..." else "${visibleRadarPeople.size} pessoa(s) no seu alcance",
+                                text = if (radarPausedForBattery) "Radar pausado" else if (visibleRadarPeople.isEmpty()) "Buscando pessoas no local..." else "${visibleRadarPeople.size} pessoa(s) no seu alcance",
                                 style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary)
                             )
                         }
@@ -419,7 +451,7 @@ fun PeopleRadarTab(
                     }
 
                     Text(
-                        text = "Buscando pessoas por perto...",
+                        text = if (radarPausedForBattery) "Ative o Radar para buscar pessoas" else "Buscando pessoas por perto...",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary
@@ -428,7 +460,9 @@ fun PeopleRadarTab(
                     )
 
                     Text(
-                        text = "Qualquer pessoa que estiver fisicamente perto com o PessoasAqui aberto aparecerá automaticamente aqui no app.",
+                        text = if (radarPausedForBattery)
+                            "A descoberta BLE está suspensa. Suas conexões permanentes continuam disponíveis na aba Conversas."
+                        else "Qualquer pessoa que estiver fisicamente perto com o PessoasAqui aberto aparecerá automaticamente aqui no app.",
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = TextSecondary,
                             textAlign = TextAlign.Center,
