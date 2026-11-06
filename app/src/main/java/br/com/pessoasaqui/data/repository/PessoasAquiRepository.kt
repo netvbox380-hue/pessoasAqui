@@ -3598,6 +3598,11 @@ class PessoasAquiRepository(
                     val second=valid.first { it.sender!=first.sender }
                     val material=br.com.pessoasaqui.core.backup.RecoveryThresholdCodec
                         .combine(first.bytes,second.bytes)
+                    synchronized(_incomingV3Parts) {
+                        _incomingV3Parts.value.forEach { it.bytes.fill(0) }
+                        _incomingV3Parts.value=emptyList()
+                    }
+                    expectedV3Guardians.clear()
                     return Result.success(material)
                 }
                 delay(200L)
