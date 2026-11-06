@@ -50,7 +50,7 @@ function verifyInviteIdentityProof(operation, identity, alias, inviteId, tokenHa
           (inviteId !== '' || tokenHash !== '' || !/^[a-f0-9]{16}$/i.test(alias))) ||
         (operation.startsWith('OFFER_') && (inviteId !== '' || !/^[a-f0-9]{64}$/i.test(tokenHash))) ||
         (operation.startsWith('RECOVERY_') && (inviteId !== '' ||
-          (['RECOVERY_ISSUE', 'RECOVERY_ISSUE_LINK', 'RECOVERY_REVOKE'].includes(operation) ? tokenHash !== '' : !/^[a-f0-9]{64}$/i.test(tokenHash))))) return false;
+          (['RECOVERY_ISSUE', 'RECOVERY_ISSUE_LINK', 'RECOVERY_REVOKE', 'RECOVERY_READINESS'].includes(operation) ? tokenHash !== '' : !/^[a-f0-9]{64}$/i.test(tokenHash))))) return false;
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(publicKey) ||
         !/^[A-Za-z0-9+/]+={0,2}$/.test(signature)) return false;
     const der = Buffer.from(publicKey, 'base64');
