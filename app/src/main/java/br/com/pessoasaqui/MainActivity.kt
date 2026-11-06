@@ -401,11 +401,12 @@ fun PessoasAquiNavHost(
                         }
                     }
                 },
-                onGenerateFamilyRecovery = { targetPerson ->
+                onGenerateFamilyRecovery = { targetPerson, method ->
                     // Autorizações locais simuladas não transferem identidades.
                     scope.launch {
                         val result = repository.issueFamilyRecoveryRemote(
-                            targetIdentityHash = targetPerson.technicalIdentityHash
+                            targetIdentityHash = targetPerson.technicalIdentityHash,
+                            method = method
                         )
                         result.onSuccess { auth ->
                             activeFamilyRecoveryAuth = Pair(targetPerson, auth)
