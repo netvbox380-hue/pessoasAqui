@@ -197,6 +197,57 @@ function registerFamilyRecoveryRoutes(app, deps) {
   });
 
 
+
+  // Um novo aparelho INICIA a sessão provando posse de sua própria chave.
+  // Família não pode aprovar/liberar segredo sem esta preparação persistida.
+  app.post('/api/family/recovery/prepare',async(req,res)=>{
+    if(!ready())return dbUnavailable(res);
+    const code=String(req.body?.recoveryKey||'').trim().toUpperCase();
+    const newId=normalizeId(req.body?.newDeviceIdentity);
+    const proof=req.body?.identityProof;
+    if(!VALID_SECRET.test(code)||!VALID_ID.test(newId))
+      return res.status(400).json({error:'Sessão ou aparelho inválido.'});
+    if(!verifyInviteIdentityProof('RECOVERY_PREPARE',newId,'','',hexSha(code),proof))
+      return res.status(401).json({error:'Prova do novo aparelho inválida.'});
+    try{
+      const prepared=await withTransaction(async run=>{
+        const grant=(await run(`SELECT id,target_identity,family_identity,expires_at,
+            used_at,request_device_identity,request_public_key,eligible_at
+            FROM recovery_grants WHERE token_hash=$1 FOR UPDATE`,[hexSha(code)])).rows[0];
+        if(!grant||grant.used_at||new Date(grant.expires_at).getTime()<=Date.now())
+          throw Object.assign(Error('Solicitação expirada ou utilizada.'),{status:410});
+        const hold=await run(
+          'SELECT target_identity FROM account_recovery_holds WHERE target_identity=$1 AND blocked_until>NOW()',
+          [grant.target_identity]);
+        if(hold.rowCount>0)throw Object.assign(Error('Recuperação protegida pelo suporte.'),{status:423});
+        if(grant.request_device_identity &&
+           (grant.request_device_identity!==newId||grant.request_public_key!==proof.publicKey))
+          throw Object.assign(Error('Esta autorização já foi vinculada a outro aparelho.'),{status:409});
+        const saved=await run(`UPDATE recovery_grants
+          SET request_device_identity=$2,request_public_key=$3,
+              prepared_at=COALESCE(prepared_at,NOW())
+          WHERE id=$1 RETURNING id`,[grant.id,newId,proof.publicKey]);
+        if(saved.rowCount!==1)throw Error('Falha ao iniciar a recuperação');
+        const nonce=await run(
+          `INSERT INTO recovery_proof_nonces(identity_id,operation,nonce)
+           VALUES($1,'RECOVERY_PREPARE',$2) ON CONFLICT DO NOTHING RETURNING nonce`,
+          [newId,proof.nonce]);
+        if(nonce.rowCount!==1)throw Object.assign(Error('Prova reutilizada.'),{status:409});
+        await run(`INSERT INTO recovery_security_events
+          (target_identity,actor_identity,event_type,request_id)
+          VALUES($1,$2,'NEW_DEVICE_PREPARED',$3)`,[grant.target_identity,newId,grant.id]);
+        return {targetIdentity:grant.target_identity,
+          eligibleAtEpochMs:new Date(grant.eligible_at).getTime(),
+          expiresAtEpochMs:new Date(grant.expires_at).getTime()};
+      });
+      return res.json({success:true,...prepared,
+        notice:'Nova sessão autenticada. Solicite aval de outro familiar diferente do emissor.'});
+    }catch(e){
+      if([409,410,423].includes(e.status))return res.status(e.status).json({error:e.message});
+      return dbUnavailable(res);
+    }
+  });
+
   // O segundo familiar AUTORIZA a sessão, sem jamais receber PIN ou segredo
   // do cofre. A assinatura vincula alvo e hash do token de uso único.
   app.post('/api/family/recovery/approve',async(req,res)=>{
@@ -212,13 +263,15 @@ function registerFamilyRecoveryRoutes(app, deps) {
         return res.status(401).json({error:'Segunda assinatura familiar inválida.'});
       const result=await withTransaction(async run=>{
         const grant=(await run(
-          'SELECT id,target_identity,family_identity,expires_at,used_at FROM recovery_grants WHERE token_hash=$1 FOR UPDATE',
+          'SELECT id,target_identity,family_identity,expires_at,used_at,request_device_identity,request_public_key,prepared_at FROM recovery_grants WHERE token_hash=$1 FOR UPDATE',
           [hexSha(token)])).rows[0];
         if(!grant || grant.target_identity!==target || grant.used_at ||
            new Date(grant.expires_at).getTime()<=Date.now())
           throw Object.assign(Error('Sessão inválida ou expirada.'),{status:410});
         if(family===grant.family_identity)
           throw Object.assign(Error('O familiar que emitiu o QR/LINK não pode ser o segundo autorizador.'),{status:403});
+        if(!grant.request_device_identity||!grant.request_public_key||!grant.prepared_at)
+          throw Object.assign(Error('O novo aparelho precisa iniciar a recuperação antes do segundo aval.'),{status:409});
         const approved=await run(
           `INSERT INTO recovery_approvals(grant_id,family_identity)
            SELECT $1,$2 FROM recovery_delegations
@@ -263,12 +316,16 @@ function registerFamilyRecoveryRoutes(app, deps) {
       target=await withTransaction(async run=>{
         const found=await run(
           `SELECT id,target_identity,family_identity,family_public_key,
-                  expected_generation, expires_at,eligible_at,method,used_at
+                  expected_generation, expires_at,eligible_at,method,used_at,
+                  request_device_identity,request_public_key,prepared_at
              FROM recovery_grants WHERE token_hash=$1 FOR UPDATE`,
           [hexSha(secret)]);
         const grant=found.rows[0];
         if(!grant || grant.used_at || new Date(grant.expires_at).getTime()<=Date.now())
           throw Object.assign(Error('Chave inválida, expirada ou utilizada'),{status:410});
+        if(grant.request_device_identity!==newId ||
+           grant.request_public_key!==proof.publicKey || !grant.prepared_at)
+          throw Object.assign(Error('Recuperação exige solicitação assinada por este aparelho.'),{status:403});
         const hold=await run(
           'SELECT blocked_until FROM account_recovery_holds WHERE target_identity=$1 AND blocked_until>NOW() FOR SHARE',
           [grant.target_identity]);
