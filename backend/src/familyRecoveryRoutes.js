@@ -54,6 +54,38 @@ function registerFamilyRecoveryRoutes(app, deps) {
       Date.now(), active);
   }
 
+  // Estado real da rede de recuperação, assinado pela própria identidade.
+  // Conta apenas delegações autorizadas no PostgreSQL, nunca contatos locais.
+  app.post('/api/family/recovery/readiness',async(req,res)=>{
+    if(!ready())return dbUnavailable(res);
+    const owner=normalizeId(req.body?.targetIdentity);
+    if(!VALID_ID.test(owner))return res.status(400).json({error:'Identidade inválida.'});
+    try{
+      const proof=req.body?.identityProof;
+      if(!await authenticated('RECOVERY_READINESS',owner,'','',proof))
+        return res.status(401).json({error:'Chave do titular inválida.'});
+      const result=await withTransaction(async run=>{
+        const used=await run(
+          `INSERT INTO recovery_proof_nonces(identity_id,operation,nonce)
+           VALUES($1,'RECOVERY_READINESS',$2) ON CONFLICT DO NOTHING RETURNING nonce`,
+          [owner,proof.nonce]);
+        if(used.rowCount!==1)throw Object.assign(Error('Prova repetida.'),{status:409});
+        const count=await run(
+          `SELECT COUNT(DISTINCT family_identity)::int AS count FROM recovery_delegations
+           WHERE target_identity=$1 AND is_active=TRUE`,[owner]);
+        return Number(count.rows[0]?.count||0);
+      });
+      return res.json({success:true,authorizedFamilyCount:result,
+        minimumRequired:MIN_FAMILIES,identityRecoveryReady:result>=MIN_FAMILIES,
+        notice:result<MIN_FAMILIES
+          ?'Cadastre e autorize mais familiares de confiança antes de ativar a recuperação distribuída.'
+          :'Autorizações familiares encontradas. A proteção dos cofres também requer cópias confirmadas.'});
+    }catch(e){
+      if(e.status===409)return res.status(409).json({error:e.message});
+      return dbUnavailable(res);
+    }
+  });
+
   // Credenciamento consciente: proprietário autenticado concede a um
   // familiar específico permissão de recuperação. O ID do familiar precisa
   // ser autocertificado pela chave pública indicada.
