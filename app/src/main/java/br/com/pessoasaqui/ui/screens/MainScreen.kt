@@ -70,6 +70,7 @@ fun MainScreen(
     var isContestingRecovery by remember { mutableStateOf(false) }
 
     val people by repository.discoveredPeople.collectAsState()
+    val radarPausedForBattery by repository.radarPausedForBattery.collectAsState()
     val scope = rememberCoroutineScope()
     val offers by repository.localOffers.collectAsState()
     val animalAvatar by repository.myAnimalAvatar.collectAsState()
@@ -117,7 +118,7 @@ fun MainScreen(
     // Pessoas estritamente dentro do Radar de Proximidade BLE (10m)
     // Se o Bluetooth estiver desligado, nenhuma pessoa é descoberta no radar
     val radarPeople = remember(people, isBluetoothEnabled) {
-        if (!isBluetoothEnabled) {
+        if (!isBluetoothEnabled || radarPausedForBattery) {
             emptyList()
         } else {
             people.filter { it.estimatedDistanceMeters <= BleConstants.MAX_DISCOVERY_DISTANCE_METERS && !it.id.startsWith("sim-", ignoreCase = true) }
@@ -536,6 +537,8 @@ fun MainScreen(
                 when (selectedTabIndex) {
                     0 -> PeopleRadarTab(
                         people = radarPeople,
+                        radarPausedForBattery = radarPausedForBattery,
+                        onActivateRadar = { repository.activateRadarForDiscovery() },
                         currentIntent = currentIntent,
                         isDemoMode = isDemoMode,
                         isBluetoothEnabled = isBluetoothEnabled,
