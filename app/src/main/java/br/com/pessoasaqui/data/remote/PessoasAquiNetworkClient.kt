@@ -443,6 +443,31 @@ open class PessoasAquiNetworkClient(
         } catch (e: Exception) { Result.failure(e) }
     }
 
+    suspend fun authorizeV3ShareRelease(
+        targetIdentity: String,
+        familyIdentity: String,
+        recoveryKey: String,
+        newDeviceIdentity: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val payload = JSONObject().apply {
+                put("targetIdentity", targetIdentity)
+                put("familyIdentity", familyIdentity)
+                put("recoveryKey", recoveryKey)
+                put("newDeviceIdentity", newDeviceIdentity)
+                put("identityProof", identityProof.toJson())
+            }
+            val request = Request.Builder().url("$baseUrl/api/family/recovery/share-release")
+                .post(payload.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val obj = JSONObject(response.body?.string() ?: "{}")
+                if(response.isSuccessful && obj.optBoolean("authorized")) Result.success(true)
+                else Result.failure(SecurityException(obj.optString("error", "Autorização negada")))
+            }
+        } catch(e: Exception) { Result.failure(e) }
+    }
+
     /**
      * Inicia conexão WebSocket em tempo real para Relay E2EE, Presença e Notificações de Revogação
      */
