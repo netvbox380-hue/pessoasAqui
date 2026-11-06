@@ -1800,6 +1800,52 @@ app.post('/api/tickets', async (req, res) => {
 /**
  * Consulta de Chamados do Usuário (Para o App exibir respostas)
  */
+
+/**
+ * Denúncia de familiar: o alvo é recuperado do vínculo de recuperação
+ * credenciado pelo titular, e não de relação declarada pela própria Maria.
+ * O suporte recebe metadados mínimos e NUNCA PIN/segredo do cofre.
+ */
+app.post('/api/family/support/report',async(req,res)=>{
+  const author=cleanId(req.body?.authorIdentity);
+  const affected=cleanId(req.body?.affectedIdentity);
+  const reason=String(req.body?.message||'').trim();
+  const category=String(req.body?.category||'SECURITY_RECOVERY').trim().toUpperCase();
+  if(!/^[A-F0-9]{16}$/.test(author)||!/^[A-F0-9]{16}$/.test(affected)||
+     author===affected || reason.length<10 || reason.length>4000 ||
+     !['SECURITY_RECOVERY','LOST_DEVICE','UNAUTHORIZED_DELETE','ACCOUNT_THEFT'].includes(category))
+    return res.status(400).json({error:'Dados inválidos para denúncia familiar.'});
+  if(!await verifySignedHttp(req,res,'FAMILY_INCIDENT',author,affected,
+    digestHttpParts([String(req.body?.authorIdentity||''),
+      String(req.body?.affectedIdentity||''),category,reason])))return;
+  if(!isPostgres())return res.status(503).json({error:'Consulta familiar indisponível.'});
+  try{
+    const verified=await query(
+      `SELECT family_identity FROM recovery_delegations
+        WHERE target_identity=$1 AND family_identity=$2 AND is_active=TRUE`,
+      [affected,author]);
+    if(verified.rowCount!==1)return res.status(403).json({
+      error:'Somente familiar autorizado pelo titular pode usar este canal.'});
+    const ticketId='tkt_'+Date.now().toString(36)+'_'+crypto.randomBytes(8).toString('hex');
+    await withTransaction(async run=>{
+      const saved=await run(
+        `INSERT INTO support_tickets
+          (id,author_identity,author_alias,subject,category,message,affected_identity,verified_family_report)
+          VALUES($1,$2,$3,$4,$5,$6,$7,TRUE) RETURNING id`,
+        [ticketId,author,String(req.body?.authorAlias||'Familiar').slice(0,64),
+         'Incidente de segurança familiar',category,reason,affected]);
+      if(saved.rowCount!==1)throw Error('Falha na gravação');
+      await run(
+        `INSERT INTO recovery_security_events
+          (target_identity,actor_identity,event_type,request_id)
+         VALUES($1,$2,'FAMILY_INCIDENT_REPORTED',$3)`,
+        [affected,author,ticketId]);
+    });
+    return res.json({success:true,ticketId,affectedIdentity:affected,
+      message:'Denúncia registrada; a equipe analisará o caso sem acesso a PIN ou mensagens privadas.'});
+  }catch(_){return res.status(503).json({error:'Não foi possível registrar o incidente.'});}
+});
+
 app.get('/api/tickets/my', (_req,res)=>res.status(401).json({error:'Autenticação obrigatória.'}));
 app.post('/api/tickets/my', async (req, res) => {
   const identity = cleanId(req.body?.identity);
@@ -2142,6 +2188,35 @@ app.post('/admin/api/tickets/:id/reply', requireAdminAuth, async (req, res) => {
 /**
  * Consulta e Gestão de Usuários
  */
+
+/** Consulta de evidências administrativas da identidade prejudicada. */
+app.get('/admin/api/security/:id',requireAdminAuth,async(req,res)=>{
+  const id=cleanId(req.params.id);
+  if(!/^[A-F0-9]{16}$/.test(id))return res.status(400).json({error:'Identidade inválida.'});
+  if(!isPostgres())return res.status(503).json({error:'Auditoria exige banco persistente.'});
+  try{
+    const [user,delegates,grants,events,tickets,devices]=await Promise.all([
+      query('SELECT id,alias,is_banned,created_at FROM identities WHERE UPPER(id)=UPPER($1)',[id]),
+      query(`SELECT family_identity,is_active,updated_at FROM recovery_delegations
+          WHERE target_identity=$1 ORDER BY updated_at DESC LIMIT 100`,[id]),
+      query(`SELECT id,family_identity,method,eligible_at,expires_at,used_at,created_at
+          FROM recovery_grants WHERE target_identity=$1
+          ORDER BY created_at DESC LIMIT 100`,[id]),
+      query(`SELECT actor_identity,event_type,request_id,details,created_at
+          FROM recovery_security_events WHERE target_identity=$1
+          ORDER BY created_at DESC LIMIT 200`,[id]),
+      query(`SELECT id,author_identity,subject,category,status,created_at,verified_family_report
+          FROM support_tickets WHERE affected_identity=$1
+          ORDER BY created_at DESC LIMIT 100`,[id]),
+      query(`SELECT is_active,revoked_at FROM devices WHERE identity_id=$1 LIMIT 100`,[id])
+    ]);
+    if(user.rowCount!==1)return res.status(404).json({error:'Conta inexistente.'});
+    return res.json({success:true,identity:user.rows[0],families:delegates.rows,
+      recoverySessions:grants.rows,securityEvents:events.rows,
+      familyTickets:tickets.rows,deviceStatus:devices.rows});
+  }catch(_){return res.status(503).json({error:'Auditoria indisponível.'});}
+});
+
 app.get('/admin/api/users', requireAdminAuth, async (req, res) => {
   if(process.env.DATABASE_URL&&!isPostgres())return res.status(503).json({error:'Banco administrativo indisponível.'});
   const usersList = [];
