@@ -369,3 +369,19 @@ HTTP/WS, migrações de esquema e compatibilidade do novo APK.
 - **Sem testes executados nesta sessão**: Android SDK/Antigravity, PostgreSQL
   isolado e testes reais de BLE, chamadas e importação V2/V3 ainda obrigatórios.
   Nenhum APK/AAB ou deploy autorizado.
+
+
+### Integração familiar V3 com recuperação de PIN esquecido / segredo perdido
+
+Código integrado na `main`: armazenamento cifrado de partes Shamir nos três
+familiares, autorização P-256 pós-CLAIM, separação do emissor e dos dois
+guardiões, reconstrução 2-de-N no aparelho recuperado, interfaces de
+consentimento e consulta ao backend. Ver desenho e homologação em
+`docs/RECUPERACAO_FAMILIAR_V3_INTEGRACAO_20261105.md`.
+
+**Gate de produção mantém-se FECHADO.** Faltam compilação Android, todos os
+testes, execução contra PostgreSQL isolado, testes físicos nos cinco aparelhos,
+revisão independente do protocolo e validação de recuperação em falhas de rede
+e migração de backups. Backend `share-release`, `guardians` e tabela
+`recovery_share_releases` ainda não estão no Render/Supabase de produção.
+A presença de código integrado não constitui homologação de segurança.
