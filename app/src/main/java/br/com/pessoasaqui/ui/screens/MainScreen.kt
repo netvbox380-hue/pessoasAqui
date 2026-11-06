@@ -117,7 +117,7 @@ fun MainScreen(
 
     // Pessoas estritamente dentro do Radar de Proximidade BLE (10m)
     // Se o Bluetooth estiver desligado, nenhuma pessoa é descoberta no radar
-    val radarPeople = remember(people, isBluetoothEnabled) {
+    val radarPeople = remember(people, isBluetoothEnabled, radarPausedForBattery) {
         if (!isBluetoothEnabled || radarPausedForBattery) {
             emptyList()
         } else {
