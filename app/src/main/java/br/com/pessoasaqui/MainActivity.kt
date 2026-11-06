@@ -236,6 +236,7 @@ fun PessoasAquiNavHost(
     val discoveredPeople by repository.discoveredPeople.collectAsState()
     val activeCallState by repository.activeCallState.collectAsState()
     val pendingFamilyRequest by repository.pendingFamilyRequest.collectAsState()
+    val pendingFamilyShareRelease by repository.pendingFamilyShareRelease.collectAsState()
     val recurringReminders by repository.recurringReminders.collectAsState()
     val subscriptionTier by (repository.subscriptionManager?.currentTier ?: MutableStateFlow(SubscriptionTier.FREE)).collectAsState()
     val availableAppUpdate by repository.availableAppUpdate.collectAsState()
@@ -635,6 +636,7 @@ fun PessoasAquiNavHost(
                 onCheckRecoveryStatus = { key ->
                     repository.checkPreparedFamilyRecoveryStatus(key)
                 },
+                onRecoverVaultMaterial = { repository.recoverV3MaterialFromFamily() },
                 onRestoreConversations = { pin, secret ->
                     if (secret.isNullOrBlank()) repository.queryAndRestoreFromFamilyVault(pin)
                     else repository.queryAndRestoreFromFamilyVaultWithSecret(pin, secret)
