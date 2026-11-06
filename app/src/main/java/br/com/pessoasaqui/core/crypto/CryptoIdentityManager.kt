@@ -1,7 +1,6 @@
 package br.com.pessoasaqui.core.crypto
 
 import android.content.Context
-import android.util.Base64
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -41,8 +40,8 @@ class CryptoIdentityManager(
         if (!savedPrivEnc.isNullOrBlank() && !savedPubKey.isNullOrBlank()) {
             try {
                 val decPrivB64 = localDiskCrypto.decrypt(savedPrivEnc)
-                val privBytes = Base64.decode(decPrivB64, Base64.NO_WRAP)
-                val pubBytes = Base64.decode(savedPubKey, Base64.NO_WRAP)
+                val privBytes = E2eeCryptoEngine.Base64Helper.decode(decPrivB64)
+                val pubBytes = E2eeCryptoEngine.Base64Helper.decode(savedPubKey)
 
                 val kf = KeyFactory.getInstance("EC")
                 val privKey = kf.generatePrivate(PKCS8EncodedKeySpec(privBytes))
@@ -73,7 +72,7 @@ class CryptoIdentityManager(
             activeKeyPair = kp
 
             val pubBytes = kp.public.encoded
-            savedPublicKeyBase64 = Base64.encodeToString(pubBytes, Base64.NO_WRAP)
+            savedPublicKeyBase64 = E2eeCryptoEngine.Base64Helper.encode(pubBytes)
 
             // Se o usuário já tinha uma identidade pública (savedHash), preserva 100% para não quebrar contatos
             if (!savedHash.isNullOrBlank()) {
@@ -85,7 +84,7 @@ class CryptoIdentityManager(
             }
 
             // Cifra e persiste a chave privada usando AES-256-GCM local
-            val privB64 = Base64.encodeToString(kp.private.encoded, Base64.NO_WRAP)
+            val privB64 = E2eeCryptoEngine.Base64Helper.encode(kp.private.encoded)
             val encPrivKey = localDiskCrypto.encrypt(privB64)
 
             if (prefs != null && !prefs.edit()
@@ -117,7 +116,7 @@ class CryptoIdentityManager(
         require(Regex("^[A-F0-9]{16}$").matches(clean)) { "Identidade recuperada inválida" }
         val active = activeKeyPair?.public?.encoded
             ?: throw SecurityException("Recuperação exige chave privada íntegra no novo aparelho")
-        val activePublic = Base64.encodeToString(active, Base64.NO_WRAP)
+        val activePublic = E2eeCryptoEngine.Base64Helper.encode(active)
         if (!newPublicKeyBase64.isNullOrBlank() && newPublicKeyBase64 != activePublic)
             throw SecurityException("A chave da recuperação não corresponde ao aparelho")
         val prefs = context?.getSharedPreferences("pessoasaqui_crypto_prefs", Context.MODE_PRIVATE)
@@ -130,7 +129,7 @@ class CryptoIdentityManager(
     }
 
     fun getPublicKeyBase64(): String {
-        return activeKeyPair?.public?.encoded?.let { Base64.encodeToString(it, Base64.NO_WRAP) }
+        return activeKeyPair?.public?.encoded?.let { E2eeCryptoEngine.Base64Helper.encode(it) }
             ?: savedPublicKeyBase64
             ?: ""
     }
@@ -145,7 +144,7 @@ class CryptoIdentityManager(
             val signer = Signature.getInstance("SHA256withECDSA")
             signer.initSign(privateKey)
             signer.update(data)
-            Base64.encodeToString(signer.sign(), Base64.NO_WRAP)
+            E2eeCryptoEngine.Base64Helper.encode(signer.sign())
         } catch (e: Exception) {
             throw SecurityException("Não foi possível assinar desafio criptográfico", e)
         }
@@ -156,7 +155,7 @@ class CryptoIdentityManager(
         if (signatureBase64.isBlank() || signatureBase64.startsWith("sig-")) return false
         return try {
             val pubKey: PublicKey = if (!peerPublicKeyBase64.isNullOrBlank()) {
-                val pubBytes = Base64.decode(peerPublicKeyBase64, Base64.NO_WRAP)
+                val pubBytes = E2eeCryptoEngine.Base64Helper.decode(peerPublicKeyBase64)
                 KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(pubBytes))
             } else {
                 activeKeyPair?.public ?: return false
@@ -164,7 +163,7 @@ class CryptoIdentityManager(
             val verifier = Signature.getInstance("SHA256withECDSA")
             verifier.initVerify(pubKey)
             verifier.update(data)
-            val sigBytes = Base64.decode(signatureBase64, Base64.NO_WRAP)
+            val sigBytes = E2eeCryptoEngine.Base64Helper.decode(signatureBase64)
             verifier.verify(sigBytes)
         } catch (_: Exception) {
             false

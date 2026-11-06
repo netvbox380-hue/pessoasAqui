@@ -182,7 +182,9 @@ class BleTemporaryChatIntegrationTest {
             networkClient = testNetworkClient
         )
 
-        val permanentPeerId = "A1B2C3D4"
+        val peerManager = CryptoIdentityManager()
+        val permanentPeerId = peerManager.getTechnicalIdentity()
+        E2eeCryptoEngine.registerPeerPublicKey(permanentPeerId, peerManager.getPublicKeyBase64())
         // Estabelece conexão mútua legítima (Modo B)
         repo.setMarkPerson(permanentPeerId, mark = true, explicitMutual = true)
         repo.confirmMutualConnectionFromServer(permanentPeerId)
@@ -670,7 +672,9 @@ class BleTemporaryChatIntegrationTest {
             networkClient = testNetworkClient
         )
 
-        val permanentPeer = "PERMANENT_ADJACENT"
+        val peerManager = CryptoIdentityManager()
+        val permanentPeer = peerManager.getTechnicalIdentity()
+        E2eeCryptoEngine.registerPeerPublicKey(permanentPeer, peerManager.getPublicKeyBase64())
         repo.setMarkPerson(permanentPeer, mark = true, explicitMutual = true)
         repo.confirmMutualConnectionFromServer(permanentPeer)
         assertTrue(repo.isPeerPermanent(permanentPeer))

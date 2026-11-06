@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const auth=require('../src/inviteAuth');
-const src=fs.readFileSync(path.join(__dirname,'../src/server.js'),'utf8');
+const src=fs.readFileSync(path.join(__dirname,'../src/server.js'),'utf8').replace(/\r\n/g, '\n');
 const a=src.indexOf('function digestHttpParts('),b=src.indexOf('/**\n * Heartbeat de Presença',a);
 const c=src.indexOf("app.get('/api/messages/pending'"),d=src.indexOf('/**\n * Registro / Inicialização',c);
 assert.ok(a>=0&&b>a&&c>=0&&d>c);

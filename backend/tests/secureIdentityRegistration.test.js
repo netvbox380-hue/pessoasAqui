@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const auth=require('../src/inviteAuth'),{hashPin}=require('../src/crypto');
-const src=fs.readFileSync(path.join(__dirname,'../src/server.js'),'utf8');
+const src=fs.readFileSync(path.join(__dirname,'../src/server.js'),'utf8').replace(/\r\n/g, '\n');
 const start=src.indexOf("app.post('/api/identities/register'"),stop=src.indexOf('/**\n * Consulta de Status',start);
 assert.ok(start>=0 && stop>start);
 function fixture(){

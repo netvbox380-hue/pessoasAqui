@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const crypto=require('node:crypto');
-const src=fs.readFileSync(path.join(__dirname,'../src/server.js'),'utf8');
+const src=fs.readFileSync(path.join(__dirname,'../src/server.js'),'utf8').replace(/\r\n/g, '\n');
 
 function routeContext(startName,endName,extra={}){
   const start=src.indexOf(startName),end=src.indexOf(endName,start);

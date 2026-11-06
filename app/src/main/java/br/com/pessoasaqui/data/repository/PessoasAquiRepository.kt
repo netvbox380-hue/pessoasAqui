@@ -1280,7 +1280,11 @@ class PessoasAquiRepository(
         // sinalização de chamada. Não marcar o ID como processado antes de
         // validar a mensagem: uma retransmissão futura pode ter dados válidos.
         val payload = try {
-            E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, cryptoIdentityManager.getActivePrivateKey())
+            if (rawPayload.startsWith("ENC_ECDH:") || rawPayload.startsWith("ENC:")) {
+                E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, cryptoIdentityManager.getActivePrivateKey())
+            } else {
+                rawPayload
+            }
         } catch (_: SecurityException) {
             Log.w("PessoasAqui", "Envelope E2EE não autenticado; descartado sem exibir dados cifrados")
             return

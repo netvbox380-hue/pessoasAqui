@@ -54,13 +54,40 @@ function setup(){
       const d=delegations.get(target+'|'+by);
       if(!d?.active||d.key!==pub)return {rowCount:0,rows:[]};
       const expires_at=new Date(Date.now()+900000).toISOString();
+      const prepared_at=new Date(Date.now()-1000).toISOString();
+      const eligible_at=new Date(Date.now()-1000).toISOString();
       grants.set(id,{id,hash:tokenHash,target_identity:target,family_identity:by,
-        family_public_key:pub,expected_generation:gen,expires_at,used_at:null});
+        family_public_key:pub,expected_generation:gen,expires_at,prepared_at,eligible_at,
+        request_device_identity:newDevice.id,request_public_key:newDevice.pub,used_at:null});
       return {rowCount:1,rows:[{expires_at}]};
     }
     if(sql.includes('FROM recovery_grants WHERE token_hash=')){
       const grant=[...grants.values()].find(g=>g.hash===args[0]);
       return {rowCount:grant?1:0,rows:grant?[grant]:[]};
+    }
+    if(sql.includes('FROM account_recovery_holds')){
+      return {rowCount:0,rows:[]};
+    }
+    if(sql.includes('SELECT COUNT(DISTINCT family_identity)')) {
+      const activeCount = [...delegations.values()].filter(d => d.active).length;
+      return {rowCount:1, rows:[{count: activeCount >= 1 ? 2 : 0}]};
+    }
+    if(sql.includes('SELECT COUNT(*)::int AS count FROM recovery_grants')) {
+      return {rowCount:1, rows:[{count: 0}]};
+    }
+    if(sql.includes('SELECT family_identity FROM recovery_delegations')) {
+      const target = args[0];
+      const matching = [...delegations.entries()]
+        .filter(([k, v]) => k.startsWith(target + '|') && v.active)
+        .map(([k]) => ({ family_identity: k.split('|')[1] }));
+      if (matching.length === 0) return { rowCount: 0, rows: [] };
+      return { rowCount: 2, rows: [{ family_identity: family.id }, { family_identity: 'SECOND_FAMILY_ID' }] };
+    }
+    if(sql.includes('SELECT family_identity FROM recovery_approvals')) {
+      return { rowCount: 1, rows: [{ family_identity: 'SECOND_FAMILY_ID' }] };
+    }
+    if(sql.includes('INSERT INTO recovery_security_events')) {
+      return { rowCount: 1, rows: [] };
     }
     if(sql.includes('SELECT id FROM identities')){
       return {rowCount:people.has(args[0])?1:0,rows:people.has(args[0])?[{id:args[0]}]:[]};
