@@ -276,12 +276,14 @@ open class PessoasAquiNetworkClient(
     suspend fun issueFamilyRecovery(
         targetIdentity: String,
         familyIdentity: String,
-        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof,
+        method: String = "QR"
     ): Result<RecoveryIssueResponse> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("targetIdentity", targetIdentity)
                 put("familyIdentity", familyIdentity)
+                put("method", method)
                 put("identityProof", identityProof.toJson())
             }
             val request = Request.Builder().url("$baseUrl/api/family/recovery/issue")
@@ -295,6 +297,28 @@ open class PessoasAquiNetworkClient(
                         expiresAtEpochMs = obj.getLong("expiresAtEpochMs")
                     ))
                 } else Result.failure(IOException(obj.optString("error", "Falha ao gerar autorização")))
+            }
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
+    /** Segunda autorização: identidade distinta da que emitiu o QR/LINK. */
+    suspend fun approveFamilyRecovery(
+        targetIdentity: String, familyIdentity: String, recoveryKey: String,
+        identityProof: br.com.pessoasaqui.core.crypto.InviteIdentityProof
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("targetIdentity", targetIdentity)
+                put("familyIdentity", familyIdentity)
+                put("recoveryKey", recoveryKey)
+                put("identityProof", identityProof.toJson())
+            }
+            val request = Request.Builder().url("$baseUrl/api/family/recovery/approve")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val obj = JSONObject(response.body?.string() ?: "{}")
+                if (response.isSuccessful && obj.optBoolean("success")) Result.success(true)
+                else Result.failure(IOException(obj.optString("error", "Segunda autorização recusada")))
             }
         } catch (e: Exception) { Result.failure(e) }
     }
@@ -1068,6 +1092,35 @@ open class PessoasAquiNetworkClient(
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /** Reporta incidente em conta de familiar previamente credenciado pelo titular. */
+    suspend fun reportFamilySecurityIncident(
+        authorIdentity: String, authorAlias: String, affectedIdentity: String,
+        category: String, message: String
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("authorIdentity", authorIdentity)
+                put("authorAlias", authorAlias)
+                put("affectedIdentity", affectedIdentity)
+                put("category", category)
+                put("message", message)
+                put("identityProof", signedHttpProof(
+                    "FAMILY_INCIDENT", authorIdentity, affectedIdentity,
+                    br.com.pessoasaqui.core.crypto.InviteIdentityProof.digestParts(
+                        authorIdentity, affectedIdentity, category, message
+                    )
+                ))
+            }
+            val request = Request.Builder().url("$baseUrl/api/family/support/report")
+                .post(json.toString().toRequestBody(jsonMediaType)).build()
+            client.newCall(request).execute().use { response ->
+                val body = JSONObject(response.body?.string() ?: "{}")
+                if (response.isSuccessful && body.optBoolean("success")) Result.success(true)
+                else Result.failure(IOException(body.optString("error", "Falha ao registrar incidente")))
+            }
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     /**
