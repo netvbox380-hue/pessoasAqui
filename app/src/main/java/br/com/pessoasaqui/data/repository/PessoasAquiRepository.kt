@@ -3065,15 +3065,21 @@ class PessoasAquiRepository(
         } catch (e: Exception) { Result.failure(e) }
     }
 
-    suspend fun issueFamilyRecoveryRemote(targetIdentityHash: String): Result<RecoveryAuthorization> {
+    suspend fun issueFamilyRecoveryRemote(
+        targetIdentityHash: String,
+        method: String = "QR"
+    ): Result<RecoveryAuthorization> {
         val target = cleanId(targetIdentityHash).uppercase()
+        if (method !in setOf("QR", "LINK")) {
+            return Result.failure(IllegalArgumentException("Método de recuperação inválido."))
+        }
         if (!Regex("^[A-F0-9]{16}$").matches(target)) {
             return Result.failure(IllegalArgumentException("Identidade do familiar inválida."))
         }
         return try {
             val familyId = cryptoIdentityManager.getTechnicalIdentity()
             val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
-                operation = "RECOVERY_ISSUE",
+                operation = if (method == "LINK") "RECOVERY_ISSUE_LINK" else "RECOVERY_ISSUE",
                 identity = familyId, alias = target,
                 publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
                 signChallenge = cryptoIdentityManager::signChallenge
@@ -3081,7 +3087,8 @@ class PessoasAquiRepository(
             networkClient.issueFamilyRecovery(
                 targetIdentity = target,
                 familyIdentity = familyId,
-                identityProof = proof
+                identityProof = proof,
+                method = method
             ).map { response ->
                 RecoveryAuthorization(
                     targetIdentityHash = response.targetIdentity,
@@ -3091,6 +3098,56 @@ class PessoasAquiRepository(
                 )
             }
         } catch (e: Exception) { Result.failure(e) }
+    }
+
+    /**
+     * Segunda autorização familiar: somente o familiar DIFERENTE daquele
+     * que emitiu a primeira autorização pode assinar esta sessão.
+     */
+    suspend fun approveSecondFamilyRecovery(
+        targetIdentityHash: String,
+        recoveryKey: String
+    ): Result<Boolean> {
+        val target = cleanId(targetIdentityHash).uppercase()
+        val code = recoveryKey.trim().uppercase()
+        if (!Regex("^[A-F0-9]{16}$").matches(target) ||
+            !Regex("^PA-REC-[A-F0-9]{64}$").matches(code))
+            return Result.failure(IllegalArgumentException("Código ou identidade inválida."))
+        return try {
+            val family = getMyIdentity()
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "RECOVERY_APPROVE",
+                identity = family,
+                alias = target,
+                token = code,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            networkClient.approveFamilyRecovery(
+                targetIdentity = target,
+                familyIdentity = family,
+                recoveryKey = code,
+                identityProof = proof
+            )
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
+    /** Denúncia encaminhada pelo familiar, comprovando vínculo no servidor. */
+    suspend fun openFamilySecurityIncident(
+        familyIdentity: String, category: String, message: String
+    ): Result<Boolean> {
+        val affected=cleanId(familyIdentity).uppercase()
+        if(!Regex("^[A-F0-9]{16}$").matches(affected) || message.trim().length < 10)
+            return Result.failure(IllegalArgumentException("Familiar e descrição válidos são obrigatórios."))
+        val result=networkClient.reportFamilySecurityIncident(
+            authorIdentity=getMyIdentity(),
+            authorAlias=getMyAlias(),
+            affectedIdentity=affected,
+            category=category,
+            message=message.trim()
+        )
+        if(result.isSuccess) refreshMySupportTickets()
+        return result
     }
 
     fun transferIdentityToThisDevice(recoveredIdentityHash: String) {
