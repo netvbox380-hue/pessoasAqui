@@ -3502,6 +3502,103 @@ class PessoasAquiRepository(
         } catch (e: Exception) { Result.failure(e) }
     }
 
+    /**
+     * O familiar aprova, em gesto explícito, sua própria parte de recuperação.
+     * A autorização é assinada e validada no backend ANTES de liberar o dado.
+     */
+    suspend fun approvePendingFamilyShareRelease(): Result<Boolean> {
+        val request=_pendingFamilyShareRelease.value
+            ?: return Result.failure(IllegalStateException("Nenhum pedido pendente."))
+        val family=getMyIdentity().uppercase()
+        val target=request.targetIdentity
+        val saved=familyShareStore?.load(target)
+            ?: return Result.failure(IllegalStateException("Parte V3 não encontrada neste aparelho."))
+        if(!isPeerPermanent(target))
+            return Result.failure(SecurityException("Sem conexão permanente com o titular."))
+        return try {
+            networkClient.refreshAuthenticatedPeerKey(family,target).getOrThrow()
+            val proof=br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation="RECOVERY_SHARE_RELEASE",
+                identity=family, alias=target, token=request.recoveryKey,
+                publicKeyBase64=cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge=cryptoIdentityManager::signChallenge
+            )
+            networkClient.authorizeV3ShareRelease(
+                target,family,request.recoveryKey,request.originalNewDeviceId,proof
+            ).getOrThrow()
+            val tokenHash=java.security.MessageDigest.getInstance("SHA-256")
+                .digest(request.recoveryKey.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it.toInt() and 255) }
+            val payload="[VAULT_SHARE_RESPONSE_V1:${saved.first}:$tokenHash:${saved.second}]"
+            val result=sendPrivateMessage(target,payload)
+            if(!result.isAllowed) return Result.failure(
+                IllegalStateException("Envio cifrado pendente: ${result.reason}")
+            )
+            _pendingFamilyShareRelease.value=null
+            Result.success(true)
+        } catch(e:Exception) { Result.failure(e) }
+    }
+
+    /**
+     * Apenas DEPOIS do CLAIM assinado, o aparelho recuperado consulta os
+     * guardiões (excluindo emissor do QR) e solicita duas partes. O servidor
+     * nunca recebe PIN, segredo ou partes de Shamir.
+     */
+    suspend fun recoverV3MaterialFromFamily(
+        onStatus: (String) -> Unit = {}
+    ): Result<br.com.pessoasaqui.core.backup.RecoveryThresholdCodec.RecoveryMaterial> {
+        val owner=getMyIdentity().uppercase()
+        val session=recoveredSessionStore?.load(owner) ?: return Result.failure(
+            SecurityException("Sessão de recuperação expirada. Reinicie com novo QR/LINK.")
+        )
+        return try {
+            val proof=br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation="RECOVERY_GUARDIANS",identity=owner,alias="",
+                token=session.recoveryCode,
+                publicKeyBase64=cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge=cryptoIdentityManager::signChallenge
+            )
+            val guardians=networkClient.listV3RecoveryGuardians(
+                owner,session.recoveryCode,proof
+            ).getOrThrow().map { cleanId(it).uppercase() }.distinct()
+                .filter { it!=owner && it.matches(Regex("^[A-F0-9]{16}$")) }
+            if(guardians.size<2) return Result.failure(SecurityException(
+                "É necessário ter dois guardiões distintos do emissor do QR/LINK."
+            ))
+            expectedV3Guardians.clear()
+            expectedV3Guardians.addAll(guardians)
+            val request="[VAULT_SHARE_REQUEST_V1:${session.recoveryCode}:${session.originalDeviceId}]"
+            onStatus("Aguardando autorização explícita de dois familiares distintos...")
+            for(guardian in guardians) {
+                try {
+                    networkClient.refreshAuthenticatedPeerKey(owner,guardian).getOrThrow()
+                    sendPrivateMessage(guardian,request)
+                } catch (_: Exception) { /* Familiar pode estar offline. */ }
+            }
+            repeat(150) {
+                val available=_incomingV3Parts.value.filter {
+                    expectedV3Guardians.contains(it.sender)
+                }
+                val byVersion=available.groupBy { it.version }
+                val valid=byVersion.values.firstOrNull { set ->
+                    set.map { it.sender }.distinct().size>=2
+                }
+                if(valid!=null) {
+                    val first=valid[0]
+                    val second=valid.first { it.sender!=first.sender }
+                    val material=br.com.pessoasaqui.core.backup.RecoveryThresholdCodec
+                        .combine(first.bytes,second.bytes)
+                    return Result.success(material)
+                }
+                delay(200L)
+            }
+            Result.failure(IllegalStateException(
+                "Ainda não chegaram duas autorizações familiares. " +
+                "Peça aos guardiões que confirmem o pedido no aplicativo e tente novamente."
+            ))
+        } catch(e:Exception) { Result.failure(e) }
+    }
+
     /** Denúncia encaminhada pelo familiar, comprovando vínculo no servidor. */
     suspend fun openFamilySecurityIncident(
         familyIdentity: String, category: String, message: String
