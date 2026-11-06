@@ -718,12 +718,14 @@ function registerFamilyRecoveryRoutes(app, deps) {
           [family,proof.nonce]);
         if(nonce.rowCount!==1)
           throw Object.assign(Error('Prova de liberação reutilizada.'),{status:409});
+        if(!isRetry) {
         const inserted=await run(
           `INSERT INTO recovery_share_releases(grant_id,family_identity)
            VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING family_identity`,
           [grant.id,family]);
         if(inserted.rowCount!==1)
-          throw Object.assign(Error('Familiar já liberou sua parte nesta recuperação.'),{status:409});
+          throw Object.assign(Error('Liberação concorrente.'),{status:409});
+        }
         await run(
           `INSERT INTO recovery_security_events
            (target_identity,actor_identity,event_type,request_id)
