@@ -138,6 +138,10 @@ setTimeout(async () => {
         ADD COLUMN IF NOT EXISTS method VARCHAR(8) NOT NULL DEFAULT 'LINK'`);
       await query(`ALTER TABLE recovery_grants
         ADD COLUMN IF NOT EXISTS eligible_at TIMESTAMPTZ`);
+      await query(`ALTER TABLE recovery_grants ADD COLUMN IF NOT EXISTS request_device_identity VARCHAR(64)`);
+      await query(`ALTER TABLE recovery_grants ADD COLUMN IF NOT EXISTS request_public_key TEXT`);
+      await query(`ALTER TABLE recovery_grants ADD COLUMN IF NOT EXISTS prepared_at TIMESTAMPTZ`);
+
       await query(`CREATE TABLE IF NOT EXISTS recovery_approvals (
         grant_id VARCHAR(64) NOT NULL REFERENCES recovery_grants(id) ON DELETE CASCADE,
         family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
