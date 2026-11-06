@@ -606,6 +606,9 @@ fun PessoasAquiNavHost(
                 // Somente o servidor valida o código v2. Nunca aceitar
                 // autorização local do simulador como prova de titularidade.
                 onFindAuthorization = { _ -> null },
+                onBeginRecovery = { key ->
+                    repository.beginFamilyRecovery(key)
+                },
                 onClaimRecovery = { key, pin ->
                     repository.claimRecovery(key, pin)
                 },
