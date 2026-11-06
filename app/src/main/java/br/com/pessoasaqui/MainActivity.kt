@@ -270,7 +270,10 @@ fun PessoasAquiNavHost(
     }
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.AgeGate) }
-    var currentMainTab by remember { mutableIntStateOf(0) }
+    // Abertura em Conversas: evita entrar no Radar visual por padrão.
+    // A política de suspensão do scanner BLE será aplicada separadamente,
+    // pois o transporte de sessões temporárias ativas não pode ser interrompido.
+    var currentMainTab by remember { mutableIntStateOf(1) }
     var activeFamilyRecoveryAuth by remember { mutableStateOf<Pair<NearbyPerson, RecoveryAuthorization>?>(null) }
     var familyRecoveryError by remember { mutableStateOf<String?>(null) }
     var isCreatingInvite by remember { mutableStateOf(false) }
