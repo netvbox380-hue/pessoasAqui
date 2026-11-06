@@ -1081,8 +1081,14 @@ open class PessoasAquiNetworkClient(
                         )
                     )
                 } else {
-                    val err = try { JSONObject(bodyStr).optString("error", "Erro ao criar convite") } catch (_: Exception) { "Erro HTTP ${response.code}" }
-                    Result.failure(IOException(err))
+                    // Preservar a categoria HTTP para diagnóstico sem registrar
+                    // resposta integral, LINK ou token em logs externos.
+                    val err = try {
+                        JSONObject(bodyStr).optString("error", "Erro ao criar convite")
+                    } catch (_: Exception) {
+                        "Erro ao criar convite"
+                    }
+                    Result.failure(IOException("HTTP ${response.code}: ${err.take(180)}"))
                 }
             }
         } catch (e: Exception) {
