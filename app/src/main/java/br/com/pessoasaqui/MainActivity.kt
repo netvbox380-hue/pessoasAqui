@@ -664,6 +664,28 @@ fun PessoasAquiNavHost(
         )
     }
 
+    pendingFamilyShareRelease?.let { request ->
+        AlertDialog(
+            onDismissRequest = { repository.rejectFamilyShareRelease() },
+            title = { Text("Recuperação familiar V3") },
+            text = { Text("O titular ${request.targetIdentity.take(8)} solicitou sua parte. Confira com ele pessoalmente antes de autorizar.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        val result=repository.approvePendingFamilyShareRelease()
+                        familyRecoveryError=result.exceptionOrNull()?.message
+                            ?: "Parte liberada com autorização criptográfica."
+                    }
+                }) { Text("Autorizar parte") }
+            },
+            dismissButton = {
+                TextButton(onClick={ repository.rejectFamilyShareRelease() }) {
+                    Text("Recusar")
+                }
+            }
+        )
+    }
+
     // Diálogo de Solicitação Familiar Recebida com Confirmação Mútua
     pendingFamilyRequest?.let { req ->
         FamilyIncomingRequestDialog(
