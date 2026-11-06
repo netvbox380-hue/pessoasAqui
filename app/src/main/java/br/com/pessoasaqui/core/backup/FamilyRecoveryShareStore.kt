@@ -11,9 +11,9 @@ class FamilyRecoveryShareStore(context: Context) {
 
     fun store(owner: String, version: Long, payload: String): Boolean {
         require(owner.matches(Regex("^[A-F0-9]{16}$")))
-        require(version > 0)
+        require(version > 0 && payload.length <= 160)
         val part = E2eeCryptoEngine.Base64Helper.decode(payload)
-        require(part.size == RecoveryThresholdCodec.SHARE_SIZE)
+        require(part.size == RecoveryThresholdCodec.SHARE_SIZE && (part[0].toInt() and 255) > 0)
         val old = prefs.getString(owner, null)
         if (old != null) {
             val previous = try { crypto.decrypt(old) } catch (_: Exception) { return false }
@@ -28,10 +28,11 @@ class FamilyRecoveryShareStore(context: Context) {
     fun load(owner: String): Pair<Long, String>? {
         if (!owner.matches(Regex("^[A-F0-9]{16}$"))) return null
         val encrypted = prefs.getString(owner, null) ?: return null
+        if (!encrypted.startsWith("ENC_V2:")) return null
         val plain = try { crypto.decrypt(encrypted) } catch (_: Exception) { return null }
         val version = plain.substringBefore(':').toLongOrNull() ?: return null
         val payload = plain.substringAfter(':', "")
-        if (version <= 0 || payload.isBlank()) return null
+        if (version <= 0 || payload.length > 160 || payload.isBlank()) return null
         return version to payload
     }
 }
