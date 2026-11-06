@@ -37,5 +37,10 @@ class FamilyRecoveryShareStore(context: Context) {
         val payload = plain.substringAfter(':', "")
         if (version <= 0 || payload.length > 160 || payload.isBlank()) return null
         return version to payload
+    }    @Synchronized
+    fun remove(owner: String): Boolean {
+        if (!owner.matches(Regex("^[A-F0-9]{16}$"))) return false
+        return prefs.edit().remove(owner).commit()
     }
+
 }
