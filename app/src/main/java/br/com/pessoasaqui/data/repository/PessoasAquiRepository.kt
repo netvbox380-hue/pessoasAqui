@@ -3161,6 +3161,21 @@ class PessoasAquiRepository(
      * Segunda autorização familiar: somente o familiar DIFERENTE daquele
      * que emitiu a primeira autorização pode assinar esta sessão.
      */
+    /** Acionável apenas pelo próprio titular autenticado no aparelho ativo. */
+    suspend fun contestSuspiciousRecovery(): Result<Int> {
+        return try {
+            val identity = getMyIdentity()
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation="RECOVERY_CONTEST",
+                identity=identity,
+                alias="",
+                publicKeyBase64=cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge=cryptoIdentityManager::signChallenge
+            )
+            networkClient.contestFamilyRecovery(identity,proof)
+        } catch(e:Exception) { Result.failure(e) }
+    }
+
     suspend fun approveSecondFamilyRecovery(
         targetIdentityHash: String,
         recoveryKey: String
