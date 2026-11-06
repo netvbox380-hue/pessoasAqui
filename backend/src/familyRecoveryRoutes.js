@@ -731,7 +731,7 @@ function registerFamilyRecoveryRoutes(app, deps) {
            (target_identity,actor_identity,event_type,request_id)
            VALUES($1,$2,'V3_SHARE_RELEASE_AUTHORIZED',$3)`,
           [target,family,grant.id]);
-        return {authorized:true,releaseIndex:alreadyReleased.length+1};
+        return {authorized:true,releaseIndex:isRetry ? alreadyReleased.indexOf(family)+1 : alreadyReleased.length+1};
       });
       return res.json({success:true,...result,
         notice:'Autorização registrada. Libere SOMENTE sua parte cifrada para a chave ativa da identidade recuperada.'});
