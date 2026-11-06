@@ -250,3 +250,24 @@ revogada, aparelho trocado, revogação simultânea, falha do banco, PIN
 errado, cópia V2 legada, exportação/importação V3, ACK duplicado/perdido,
 suporte familiar sem vínculo (403), suporte com vínculo, consulta admin
 sem autenticação (401), holds e reativação.
+
+
+### Atualização adicional: estado do pedido, alerta e LINK web
+
+- Após receber QR/LINK, o novo aparelho pode escolher **Iniciar recuperação**
+  para vincular, com prova P-256, a autorização ao novo dispositivo ANTES de
+  pedir o aval do segundo familiar. Após isto, pode consultar **Estado da
+  recuperação** autenticado (`/api/family/recovery/status`): aguardando outro
+  familiar, aguardando 1h, pronto, expirado, suspenso ou utilizado.
+- O antigo aparelho conectado recebe `RECOVERY_ALERT` sem segredo; pode
+  **Contestar** assinando `RECOVERY_CONTEST`. Isto invalida pedidos pendentes
+  e suspende novas recuperações por 24 horas, sem apagar a conta.
+- LINK remoto usa `/recover#key=PA-REC-...`, página web com
+  `Cache-Control: no-store` e `Referrer-Policy: no-referrer`. O Android
+  aceita App Link HTTPS ou esquema próprio. Testar a verificação de domínios,
+  a abertura automática e o retorno ao app em aparelho real.
+- **Bloqueadores ainda presentes:** recuperação com PIN esquecido sem segredo
+  V3 previamente salvo, custódia de segredo por múltiplos familiares,
+  suporte sem famílias e PIN de emergência ainda não implementados;
+  compilação Android, testes Node, banco PostgreSQL real e testes em
+  aparelhos também não foram executados. Não declarar homologado.
