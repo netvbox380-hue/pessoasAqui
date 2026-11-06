@@ -368,7 +368,7 @@ class TemporaryProximitySessionTest {
         assertFalse("Par não é permanente", repo.isPeerPermanent(peerId))
 
         // 2. Uma mensagem atrasada chega da fila do backend após a sessão ter sido encerrada
-        repo.processIncomingPayload(peerId, "Pessoa Efêmera", "Mensagem atrasada que chegou depois de expirar", "", "delayed_msg_14")
+        repo.processVerifiedNetworkPayload(peerId, "Pessoa Efêmera", "Mensagem atrasada que chegou depois de expirar", "delayed_msg_14")
 
         // 3. Comprova que a mensagem atrasada foi DESCARTADA
         val memoryChats = repo.proximitySimulator.privateChats.value[peerId] ?: emptyList()
@@ -397,7 +397,7 @@ class TemporaryProximitySessionTest {
         assertTrue("Conexão permanente nunca expira por afastamento", repo.isPeerPermanent(permanentId))
 
         // 3. Chega uma mensagem legítima pela internet (sem presença BLE)
-        repo.processIncomingPayload(permanentId, "Amigo Distante", "Mensagem legítima pela internet à distância", "", "net_msg_15")
+        repo.processVerifiedNetworkPayload(permanentId, "Amigo Distante", "Mensagem legítima pela internet à distância", "net_msg_15")
 
         // 4. Comprova que conexões permanentes recebem mensagens normalmente pela internet
         val memoryChats = repo.proximitySimulator.privateChats.value[permanentId] ?: emptyList()
