@@ -385,3 +385,32 @@ revisão independente do protocolo e validação de recuperação em falhas de r
 e migração de backups. Backend `share-release`, `guardians` e tabela
 `recovery_share_releases` ainda não estão no Render/Supabase de produção.
 A presença de código integrado não constitui homologação de segurança.
+
+
+### Reabertura obrigatória do gate após relatório Antigravity 1.3.2 — 06/11/2026
+
+O relatório de build `b97f25a` declarou 265 testes Android + 64 backend
+aprovados. Esse resultado **não homologa automaticamente commits posteriores**.
+
+Uma regressão foi identificada em `processIncomingPayload`: o código
+passou a aceitar controles sem envelope criptográfico, para satisfazer
+fixtures de testes. Foi corrigido: **somente `ENC_ECDH:` é aceito na
+entrada WebSocket/HTTP**; `ENC:` legado (chave previsível) e texto puro
+são recusados sem decodificar ou executar comandos. Os testes da máquina
+de estados chamam `processVerifiedNetworkPayload` diretamente como
+fixture interna, preservando a validação de chamadas sem abrir caminho
+não autenticado para a rede. Novos testes cobrem controles falsificados,
+envelopes adulterados e uma chamada válida realmente cifrada por ECDH.
+
+Backup V3 agora também consulta a lista de delegações ativas assinada
+pela chave do proprietário em `/api/family/recovery/delegates`, para não
+distribuir partes Shamir a pessoas marcadas como família apenas pelo cache
+local. A rota utiliza PostgreSQL, nonce de uso único e autenticação P-256.
+
+**Gate permanece FECHADO** até que o Antigravity compile a versão mais
+recente da `main`, execute todos os testes unitários Android/backend
+(incluindo `NetworkE2eeBoundaryTest` e `recoveryDelegates.test.js`),
+avalie restauração V2→V3 e faça testes físicos de BLE e recuperação
+com cinco aparelhos distintos em ambiente isolado. As 265/64 aprovações
+anteriores não se estendem às novas alterações. O deploy Render/Supabase
+e a publicação AAB continuam NÃO autorizados.
