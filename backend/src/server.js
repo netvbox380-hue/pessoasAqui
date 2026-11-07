@@ -919,6 +919,11 @@ app.post('/api/identities/register', async (req, res) => {
       });
     }catch(err){
       if(err.status===409)return res.status(409).json({error:err.message==='Chave ativa divergente'?'Chave não autorizada.':'Prova já utilizada.'});
+      // Diagnóstico sem registrar chaves privadas, assinaturas nem dados pessoais.
+      console.error('[DB] Registro de identidade não persistido:', {
+        code: err.code || 'UNKNOWN', constraint: err.constraint || null,
+        table: err.table || null
+      });
       return res.status(503).json({error:'Registro não confirmado no banco.'});
     }
   }
