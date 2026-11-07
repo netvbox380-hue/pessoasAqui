@@ -80,10 +80,19 @@ class ProximitySimulator(
 
     var shouldPersistPrivateChat: ((peerId: String) -> Boolean)? = null
 
-    private fun persistPrivateChatIfEligible(cleanId: String, messages: List<ChatMessage>) {
+    fun persistPrivateChatIfEligible(cleanId: String, messages: List<ChatMessage>): Boolean {
         if (shouldPersistPrivateChat == null || shouldPersistPrivateChat?.invoke(cleanId) == true) {
-            persistenceManager?.savePrivateChat(cleanId, messages)
+            return persistenceManager?.savePrivateChat(cleanId, messages) ?: true
         }
+        return true
+    }
+
+    fun isMessagePersistedOrPresent(cleanPeerId: String, messageId: String): Boolean {
+        if (messageId.isBlank()) return false
+        val clean = cleanPeerId.removePrefix("peer-")
+        val list = _privateChats.value[clean] ?: _privateChats.value["peer-$clean"] ?: emptyList()
+        if (list.any { it.id == messageId }) return true
+        return persistenceManager?.hasMessage(clean, messageId) == true
     }
 
     fun setPersistenceManager(pm: ChatMessagePersistenceManager) {
@@ -453,10 +462,10 @@ class ProximitySimulator(
     /**
      * Recebe mensagem privada entregue de outro dispositivo
      */
-    fun receivePrivateMessage(senderId: String, senderAlias: String, text: String, messageId: String = "") {
+    fun receivePrivateMessage(senderId: String, senderAlias: String, text: String, messageId: String = ""): Boolean {
         // Defesa adicional: mesmo que outro fluxo ignore o roteador de controle,
         // envelopes cifrados e sinais de chamada nunca se tornam mensagens.
-        if (text.startsWith("ENC_ECDH:") || text.startsWith("ENC:") || text.startsWith("[CALL_")) return
+        if (text.startsWith("ENC_ECDH:") || text.startsWith("ENC:") || text.startsWith("[CALL_")) return false
         val cleanId = senderId.removePrefix("peer-")
         val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
 
@@ -472,8 +481,7 @@ class ProximitySimulator(
             updatedMap[cleanId] = updatedList
             updatedMap["peer-$cleanId"] = updatedList
             _privateChats.value = updatedMap
-            persistPrivateChatIfEligible(cleanId, updatedList)
-            return
+            return persistPrivateChatIfEligible(cleanId, updatedList)
         }
 
         // Reconhecimento de confirmação de leitura recebida (Read Receipts)
@@ -491,8 +499,7 @@ class ProximitySimulator(
             updatedMap[cleanId] = updatedList
             updatedMap["peer-$cleanId"] = updatedList
             _privateChats.value = updatedMap
-            persistPrivateChatIfEligible(cleanId, updatedList)
-            return
+            return persistPrivateChatIfEligible(cleanId, updatedList)
         }
 
         // Reconhecimento de edição remota de mensagem recebida
@@ -511,9 +518,9 @@ class ProximitySimulator(
                 updatedMap[cleanId] = updatedList
                 updatedMap["peer-$cleanId"] = updatedList
                 _privateChats.value = updatedMap
-                persistPrivateChatIfEligible(cleanId, updatedList)
+                return persistPrivateChatIfEligible(cleanId, updatedList)
             }
-            return
+            return false
         }
 
         // Reconhecimento de exclusão remota de mensagem recebida (Apagar para todos)
@@ -532,19 +539,18 @@ class ProximitySimulator(
             updatedMap[cleanId] = updatedList
             updatedMap["peer-$cleanId"] = updatedList
             _privateChats.value = updatedMap
-            persistPrivateChatIfEligible(cleanId, updatedList)
-            return
+            return persistPrivateChatIfEligible(cleanId, updatedList)
         }
 
-        // Deduplicação 1: Checa por ID único da mensagem
+        // Deduplicação 1: Checa por ID único da mensagem (idempotência: já persistido anteriormente)
         if (messageId.isNotBlank() && currentList.any { it.id == messageId }) {
-            return
+            return true
         }
 
         // Deduplicação 2: Se a última mensagem for idêntica e tiver chegado em menos de 4 segundos
         val lastMsg = currentList.lastOrNull()
         if (lastMsg != null && lastMsg.senderId == cleanId && lastMsg.text == text && (System.currentTimeMillis() - lastMsg.timestampMs < 4000)) {
-            return
+            return true
         }
 
         val isAudio = text.startsWith("[AUDIO:")
@@ -599,12 +605,19 @@ class ProximitySimulator(
             fileSizeBytes = docSize
         )
 
-        val updatedMap = _privateChats.value.toMutableMap()
         val newList = currentList + msg
+        // Tenta persistir no disco com integridade atômica
+        val persisted = persistPrivateChatIfEligible(cleanId, newList)
+        if (!persisted) {
+            android.util.Log.e("ProximitySimulator", "Falha de persistência atômica ao gravar mensagem de $cleanId")
+            return false
+        }
+
+        val updatedMap = _privateChats.value.toMutableMap()
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
         _privateChats.value = updatedMap
-        persistPrivateChatIfEligible(cleanId, newList)
+        return true
     }
 
     fun sendAudioMessage(

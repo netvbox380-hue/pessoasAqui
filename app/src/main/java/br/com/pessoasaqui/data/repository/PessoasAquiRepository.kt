@@ -1326,7 +1326,22 @@ class PessoasAquiRepository(
         }
     }
 
-    private val processedMessageIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    enum class MessageProcessingStatus {
+        RECEIVED,
+        PROCESSING,
+        PROCESSED,
+        ACK_SENT,
+        FAILED_RETRYABLE,
+        FAILED_TERMINAL
+    }
+
+    private val messageProcessingStates = java.util.Collections.synchronizedMap(
+        object : java.util.LinkedHashMap<String, MessageProcessingStatus>(128, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MessageProcessingStatus>?): Boolean {
+                return size > 2000
+            }
+        }
+    )
 
     /**
      * Única entrada de mensagens da REDE: aceita exclusivamente o envelope
@@ -1389,8 +1404,7 @@ class PessoasAquiRepository(
                 return false
             }
         }
-        processVerifiedNetworkPayload(cleanSender, senderAlias, payload, messageId)
-        return true
+        return processVerifiedNetworkPayload(cleanSender, senderAlias, payload, messageId)
     }
 
     /**
@@ -1400,17 +1414,35 @@ class PessoasAquiRepository(
      */
     internal fun processVerifiedNetworkPayload(
         senderHash: String, senderAlias: String, payload: String, messageId: String = ""
-    ) {
+    ): Boolean {
         val cleanSender = cleanId(senderHash)
         if (payload.startsWith("ENC_ECDH:") || payload.startsWith("ENC:")) {
             Log.w("PessoasAqui", "Envelope cifrado inesperado após decifragem; descartado")
-            return
+            return false
         }
-        if (messageId.isNotBlank()) {
-            synchronized(processedMessageIds) {
-                if (!processedMessageIds.add(messageId)) return
-            networkClient.sendServerMessageAck(messageId)
-                if (processedMessageIds.size > 2000) processedMessageIds.clear()
+
+        val contextKey = if (messageId.isNotBlank()) "${cleanSender}_${messageId}" else ""
+
+        if (contextKey.isNotBlank()) {
+            synchronized(messageProcessingStates) {
+                val currentState = messageProcessingStates[contextKey]
+                val alreadyPersisted = currentState in listOf(MessageProcessingStatus.PROCESSED, MessageProcessingStatus.ACK_SENT) ||
+                        proximitySimulator.isMessagePersistedOrPresent(cleanSender, messageId)
+
+                if (alreadyPersisted) {
+                    // Mensagem duplicada já persistida: confirmação idempotente sem reprocessar no chat
+                    if (!payload.startsWith("[DELIVERY_ACK:") && payload != "[READ_ACK]") {
+                        networkClient.sendServerMessageAck(messageId)
+                    }
+                    return true
+                }
+
+                if (currentState == MessageProcessingStatus.PROCESSING) {
+                    // Concorrência ativa: ignora payload duplicado em processamento
+                    return false
+                }
+
+                messageProcessingStates[contextKey] = MessageProcessingStatus.PROCESSING
             }
         }
 
@@ -1419,7 +1451,7 @@ class PessoasAquiRepository(
                 // Envelope já foi autenticado/decifrado por E2EE.
                 // Nunca aceitar foto privada de desconhecidos no Modo A.
                 if (!isPeerMutualById(cleanSender) || !payload.endsWith("]") ||
-                    payload.length > 160030) return
+                    payload.length > 160030) return false
                 val data = payload.removePrefix("[PA_REAL_PHOTO_V1:").dropLast(1)
                 val saved = if (data == "NONE") profilePhotoStore?.savePhoto(cleanSender,null)
                     else profilePhotoStore?.savePhoto(cleanSender,data)
@@ -1449,7 +1481,7 @@ class PessoasAquiRepository(
             payload.startsWith("[CALL_INIT:") -> {
                 // Chamadas são exclusivas de vínculos permanentes. Retransmissões
                 // CALL_INIT não podem reiniciar o toque nem o timer da ligação.
-                if (!isPeerPermanent(cleanSender)) return
+                if (!isPeerPermanent(cleanSender)) return false
                 val candidate = CallSignalingProtocol.invitationCallId(payload)
                 if (_activeCallState.value != null || callCleanupInProgress) {
                     // Convite duplicado da mesma ligação: ignorar sem afetar
@@ -1460,7 +1492,7 @@ class PessoasAquiRepository(
                                 CallSignalingProtocol.Command.END, candidate,
                                 CallSignalingProtocol.EndReason.BUSY))
                     }
-                    return
+                    return false
                 }
 
                 val parts = payload.removePrefix("[CALL_INIT:").removeSuffix("]").split(":")
@@ -1470,9 +1502,9 @@ class PessoasAquiRepository(
                 // O histórico do Modo B é persistido criptografado. Impede
                 // reabrir uma chamada concluída após morte/reinício do processo.
                 if (proximitySimulator.privateChats.value[cleanSender].orEmpty()
-                        .any { it.id == "call-$generation" }) return
+                        .any { it.id == "call-$generation" }) return false
                 synchronized(callStateLock) {
-                    if (!callLifecycle.begin(generation, cleanSender, isVideo, incoming = true)) return
+                    if (!callLifecycle.begin(generation, cleanSender, isVideo, incoming = true)) return false
                     activeCallGeneration = generation
                     callConnectedAtMs = 0L
                 }
@@ -1557,7 +1589,7 @@ class PessoasAquiRepository(
                 val expected = pendingOutgoingFamilyRequests.remove(cleanSender.uppercase())
                 if (expected != role) {
                     Log.w("PessoasAqui", "FAMILY_ACCEPT não solicitado ignorado para $cleanSender")
-                    return
+                    return false
                 }
                 setFamilyRole(cleanSender, role)
                 proximitySimulator.receivePrivateMessage(
@@ -1672,15 +1704,15 @@ class PessoasAquiRepository(
                 // O titular já deve ter recuperado sua identidade. O familiar
                 // decide expressamente se libera SUA parte; jamais automaticamente.
                 if (!isPeerPermanent(cleanSender) || !payload.endsWith("]") ||
-                    payload.length > 140) return
+                    payload.length > 140) return false
                 val data=payload.removePrefix("[VAULT_SHARE_REQUEST_V1:")
                     .dropLast(1).split(":", limit=2)
                 val code=data.getOrNull(0).orEmpty()
                 val newDevice=data.getOrNull(1).orEmpty().uppercase()
                 if (!code.matches(Regex("^PA-REC-[A-F0-9]{64}$")) ||
-                    !newDevice.matches(Regex("^[A-F0-9]{16}$"))) return
-                val saved=familyShareStore?.load(cleanSender.uppercase()) ?: return
-                if (saved.first <= 0L) return
+                    !newDevice.matches(Regex("^[A-F0-9]{16}$"))) return false
+                val saved=familyShareStore?.load(cleanSender.uppercase()) ?: return false
+                if (saved.first <= 0L) return false
                 _pendingFamilyShareRelease.value=PendingFamilyShareRelease(
                     cleanSender.uppercase(), code, newDevice
                 )
@@ -1690,21 +1722,21 @@ class PessoasAquiRepository(
                 // assinada, e com vínculo permanente E2EE, entram na RAM.
                 if (!isPeerPermanent(cleanSender) ||
                     !expectedV3Guardians.contains(cleanSender.uppercase()) ||
-                    !payload.endsWith("]") || payload.length > 250) return
-                val session=recoveredSessionStore?.load(getMyIdentity().uppercase()) ?: return
+                    !payload.endsWith("]") || payload.length > 250) return false
+                val session=recoveredSessionStore?.load(getMyIdentity().uppercase()) ?: return false
                 val parts=payload.removePrefix("[VAULT_SHARE_RESPONSE_V1:")
                     .dropLast(1).split(":", limit=3)
-                val version=parts.getOrNull(0)?.toLongOrNull() ?: return
+                val version=parts.getOrNull(0)?.toLongOrNull() ?: return false
                 val digest=parts.getOrNull(1).orEmpty()
                 val expected=java.security.MessageDigest.getInstance("SHA-256")
                     .digest(session.recoveryCode.toByteArray(Charsets.UTF_8))
                     .joinToString("") { "%02x".format(it.toInt() and 255) }
-                if (digest != expected || version <= 0L) return
+                if (digest != expected || version <= 0L) return false
                 val bytes=try {
                     E2eeCryptoEngine.Base64Helper.decode(parts.getOrNull(2) ?: "")
-                } catch (_: Exception) { return }
+                } catch (_: Exception) { return false }
                 if (bytes.size != br.com.pessoasaqui.core.backup.RecoveryThresholdCodec.SHARE_SIZE)
-                    return
+                    return false
                 synchronized(_incomingV3Parts) {
                     val current=_incomingV3Parts.value.filterNot {
                         it.sender.equals(cleanSender, ignoreCase=true)
@@ -1810,19 +1842,34 @@ class PessoasAquiRepository(
             }
             else -> {
                 // Um comando interno de versão futura ou malformado não é texto.
-                if (payload.startsWith("[CALL_") || payload.startsWith("[VAULT_")) return
+                if (payload.startsWith("[CALL_") || payload.startsWith("[VAULT_")) return false
                 val isPermanent = isPeerPermanent(cleanSender)
                 // Este método recebe somente payloads da INTERNET. Mensagens do Modo A
                 // devem chegar por onTemporaryMessageReceived (BLE), nunca pelo Render,
                 // mesmo que o contato esteja fisicamente presente no Radar.
                 if (!isPermanent) {
                     Log.d("PessoasAqui", "Descartando mensagem de rede para contato temporário $cleanSender")
-                    return
+                    if (contextKey.isNotBlank()) messageProcessingStates[contextKey] = MessageProcessingStatus.FAILED_TERMINAL
+                    return false
                 }
-                proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload, messageId)
-                callRingtoneWakeManager?.notifyIncomingMessageIfBackground(senderAlias, payload)
 
-                // Emite confirmação criptográfica de entrega (ACK) automática para o remetente
+                val persisted = proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload, messageId)
+                if (!persisted) {
+                    Log.e("PessoasAqui", "Falha ao persistir mensagem $messageId no armazenamento local. ACK retido.")
+                    if (contextKey.isNotBlank()) messageProcessingStates[contextKey] = MessageProcessingStatus.FAILED_RETRYABLE
+                    return false
+                }
+
+                callRingtoneWakeManager?.notifyIncomingMessageIfBackground(senderAlias, payload)
+                if (contextKey.isNotBlank()) messageProcessingStates[contextKey] = MessageProcessingStatus.PROCESSED
+
+                // Emite ACK de transporte ao servidor após comprovação de persistência
+                if (messageId.isNotBlank()) {
+                    networkClient.sendServerMessageAck(messageId)
+                    if (contextKey.isNotBlank()) messageProcessingStates[contextKey] = MessageProcessingStatus.ACK_SENT
+                }
+
+                // Emite confirmação criptográfica de entrega (ACK E2EE) automática para o remetente
                 if (messageId.isNotBlank() && !payload.startsWith("[DELIVERY_ACK:") &&
                     payload != "[READ_ACK]" && !payload.startsWith("[MSG_EDIT:") && !payload.startsWith("[MSG_DELETE:")) {
                     scope.launch {
@@ -1833,8 +1880,19 @@ class PessoasAquiRepository(
                         }
                     }
                 }
+                return true
             }
         }
+
+        // Para os demais comandos de sinalização ou controle processados no when
+        if (contextKey.isNotBlank()) {
+            messageProcessingStates[contextKey] = MessageProcessingStatus.PROCESSED
+            if (messageId.isNotBlank()) {
+                networkClient.sendServerMessageAck(messageId)
+                messageProcessingStates[contextKey] = MessageProcessingStatus.ACK_SENT
+            }
+        }
+        return true
     }
 
     /**

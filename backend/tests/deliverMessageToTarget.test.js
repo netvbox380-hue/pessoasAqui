@@ -57,7 +57,7 @@ function setupTestEnvironment() {
   };
 }
 
-test('1. Envio de texto permanente para destinatário online via WS', () => {
+test('1. Envio de texto permanente para destinatário online via WS', async () => {
   const env = setupTestEnvironment();
   const receivedWs = [];
   const fakeSocket = {
@@ -68,7 +68,7 @@ test('1. Envio de texto permanente para destinatário online via WS', () => {
   env.activePresence.set('bob', { identityHash: 'BOB_1234567890AB', alias: 'Bob' });
   env.activeSockets.set('bob_1234567890ab', fakeSocket);
 
-  const delivered = env.deliver(
+  const delivered = await await env.deliver(
     'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
     'ENC_ECDH:ciphertext_texto_secreto', 'iv123', 'msg_txt_01', false
   );
@@ -83,12 +83,12 @@ test('1. Envio de texto permanente para destinatário online via WS', () => {
   assert.equal(env.pendingMessages.has('bob_1234567890ab'), true);
 });
 
-test('2. Envio de texto permanente para destinatário offline (armazenado em pendingMessages)', () => {
+test('2. Envio de texto permanente para destinatário offline (armazenado em pendingMessages)', async () => {
   const env = setupTestEnvironment();
   env.activePresence.set('bob', { identityHash: 'BOB_1234567890AB', alias: 'Bob' });
   // Sem socket ativo para Bob
 
-  const delivered = env.deliver(
+  const delivered = await await env.deliver(
     'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
     'ENC_ECDH:ciphertext_texto_offline', 'iv123', 'msg_txt_02', false
   );
@@ -101,13 +101,13 @@ test('2. Envio de texto permanente para destinatário offline (armazenado em pen
   assert.equal(queue[0].isEphemeral, false);
 });
 
-test('3. Envio de mídia criptografada (imagem/áudio) preserva integridade e fila offline', () => {
+test('3. Envio de mídia criptografada (imagem/áudio) preserva integridade e fila offline', async () => {
   const env = setupTestEnvironment();
   env.activePresence.set('bob', { identityHash: 'BOB_1234567890AB', alias: 'Bob' });
 
   // Mídia em Modo B trafega cifrada no envelope E2EE
   const mediaPayload = 'ENC_ECDH:base64_imagem_cifrada_aes_gcm';
-  const delivered = env.deliver(
+  const delivered = await await env.deliver(
     'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
     mediaPayload, 'ivMedia', 'msg_img_01', false
   );
@@ -120,7 +120,7 @@ test('3. Envio de mídia criptografada (imagem/áudio) preserva integridade e fi
   assert.equal(queue[0].isEphemeral, false);
 });
 
-test('4. Quadros de chamada e frames efêmeros entregues via WS sem acumular em fila offline', () => {
+test('4. Quadros de chamada e frames efêmeros entregues via WS sem acumular em fila offline', async () => {
   const env = setupTestEnvironment();
   const receivedWs = [];
   const fakeSocket = {
@@ -132,7 +132,7 @@ test('4. Quadros de chamada e frames efêmeros entregues via WS sem acumular em 
   env.activeSockets.set('bob_1234567890ab', fakeSocket);
 
   // Frame de chamada com identificador call_frame_
-  const delivered = env.deliver(
+  const delivered = await await env.deliver(
     'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
     'ENC_ECDH:audio_frame_cifrado', 'ivFrame1', 'call_frame_1001', true
   );
@@ -143,14 +143,14 @@ test('4. Quadros de chamada e frames efêmeros entregues via WS sem acumular em 
   assert.equal(env.pendingMessages.has('bob_1234567890ab'), false);
 });
 
-test('5. Quadros de chamada descartados se destinatário estiver offline (NÃO poluem fila)', () => {
+test('5. Quadros de chamada descartados se destinatário estiver offline (NÃO poluem fila)', async () => {
   const env = setupTestEnvironment();
   env.activePresence.set('bob', { identityHash: 'BOB_1234567890AB', alias: 'Bob' });
   // Sem socket ativo
 
   // 10 frames de chamada enviados enquanto Bob está offline
   for (let i = 0; i < 10; i++) {
-    const delivered = env.deliver(
+    const delivered = await await env.deliver(
       'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
       `ENC_ECDH:audio_frame_${i}`, 'ivFrame', `call_frame_${i}`, true
     );
@@ -161,13 +161,13 @@ test('5. Quadros de chamada descartados se destinatário estiver offline (NÃO p
   assert.equal(env.pendingMessages.has('bob_1234567890ab'), false);
 });
 
-test('6. Fila offline respeita o teto de 50 mensagens e não sofre overflow com frames efêmeros', () => {
+test('6. Fila offline respeita o teto de 50 mensagens e não sofre overflow com frames efêmeros', async () => {
   const env = setupTestEnvironment();
   env.activePresence.set('bob', { identityHash: 'BOB_1234567890AB', alias: 'Bob' });
 
   // Envia 60 mensagens de texto normais enquanto Bob está offline
   for (let i = 0; i < 60; i++) {
-    env.deliver(
+    await env.deliver(
       'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
       `ENC_ECDH:texto_${i}`, 'iv', `msg_id_${i}`, false
     );
@@ -182,7 +182,7 @@ test('6. Fila offline respeita o teto de 50 mensagens e não sofre overflow com 
 
   // Envia 30 frames de chamada com isEphemeral=true
   for (let j = 0; j < 30; j++) {
-    env.deliver(
+    await env.deliver(
       'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
       `ENC_ECDH:call_frame_${j}`, 'iv', `call_frame_${j}`, true
     );
@@ -194,7 +194,7 @@ test('6. Fila offline respeita o teto de 50 mensagens e não sofre overflow com 
   assert.equal(queue[49].messageId, 'msg_id_59');
 });
 
-test('7. Rate limiting separa mensagens discretas (25/s) de streaming contínuo (120/s)', () => {
+test('7. Rate limiting separa mensagens discretas (25/s) de streaming contínuo (120/s)', async () => {
   const env = setupTestEnvironment();
   const identity = 'ALICE_TEST_RATE';
 
@@ -213,7 +213,7 @@ test('7. Rate limiting separa mensagens discretas (25/s) de streaming contínuo 
   assert.equal(env.checkRateLimit(identity, true), false, 'Frame 121 deve ser bloqueado por anti-flood');
 });
 
-test('8. Deduplicação bloqueia retransmissão de mensagens com mesmo ID', () => {
+test('8. Deduplicação bloqueia retransmissão de mensagens com mesmo ID', async () => {
   const env = setupTestEnvironment();
   const msgId = 'unique_message_uuid_1234';
 
@@ -222,21 +222,21 @@ test('8. Deduplicação bloqueia retransmissão de mensagens com mesmo ID', () =
   assert.equal(env.isDuplicateMessage(msgId), true, 'Terceira ocorrência deve continuar como duplicada');
 });
 
-test('9. Destinatário com identificador inválido é rejeitado com segurança', () => {
+test('9. Destinatário com identificador inválido é rejeitado com segurança', async () => {
   const env = setupTestEnvironment();
-  assert.equal(env.deliver('ALICE', 'Alice', '', 'payload', 'iv', 'id_01', false), false);
-  assert.equal(env.deliver('ALICE', 'Alice', 'ab', 'payload', 'iv', 'id_02', false), false); // muito curto
-  assert.equal(env.deliver('ALICE', 'Alice', 'invalid@recipient!', 'payload', 'iv', 'id_03', false), false); // caracteres ilegais
+  assert.equal(await env.deliver('ALICE', 'Alice', '', 'payload', 'iv', 'id_01', false), false);
+  assert.equal(await env.deliver('ALICE', 'Alice', 'ab', 'payload', 'iv', 'id_02', false), false); // muito curto
+  assert.equal(await env.deliver('ALICE', 'Alice', 'invalid@recipient!', 'payload', 'iv', 'id_03', false), false); // caracteres ilegais
 });
 
-test('10. Reconexão: mensagens pendentes são entregues e a fila é esvaziada', () => {
+test('10. Reconexão: mensagens pendentes são entregues e a fila é esvaziada', async () => {
   const env = setupTestEnvironment();
   env.activePresence.set('bob', { identityHash: 'BOB_1234567890AB', alias: 'Bob' });
 
   // Alice envia 3 mensagens enquanto Bob está offline
-  env.deliver('ALICE_1', 'Alice', 'BOB_1234567890AB', 'ENC:1', 'iv1', 'm1', false);
-  env.deliver('ALICE_1', 'Alice', 'BOB_1234567890AB', 'ENC:2', 'iv2', 'm2', false);
-  env.deliver('ALICE_1', 'Alice', 'BOB_1234567890AB', 'ENC:3', 'iv3', 'm3', false);
+  await env.deliver('ALICE_1', 'Alice', 'BOB_1234567890AB', 'ENC:1', 'iv1', 'm1', false);
+  await env.deliver('ALICE_1', 'Alice', 'BOB_1234567890AB', 'ENC:2', 'iv2', 'm2', false);
+  await env.deliver('ALICE_1', 'Alice', 'BOB_1234567890AB', 'ENC:3', 'iv3', 'm3', false);
 
   const kBob = 'bob_1234567890ab';
   const pending = env.pendingMessages.get(kBob) || [];

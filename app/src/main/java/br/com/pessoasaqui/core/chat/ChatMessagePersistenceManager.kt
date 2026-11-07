@@ -73,12 +73,12 @@ class ChatMessagePersistenceManager(
      * Salva as mensagens de um chat privado com um contato específico.
      * Utiliza gravação com arquivo temporário para evitar corrupção em caso de fechamento brusco.
      */
-    fun savePrivateChat(peerId: String, messages: List<ChatMessage>) {
+    fun savePrivateChat(peerId: String, messages: List<ChatMessage>): Boolean {
         val cleanKey = cleanKey(peerId)
-        if (cleanKey.isBlank()) return
-        val targetFile = getFileForPeer(cleanKey) ?: return
+        if (cleanKey.isBlank()) return false
+        val targetFile = getFileForPeer(cleanKey) ?: return false
 
-        try {
+        return try {
             // Limita histórico a 500 mensagens mais recentes por contato para otimização de espaço
             val toSave = if (messages.size > 500) messages.takeLast(500) else messages
             val serialized = json.encodeToString(ListSerializer(ChatMessage.serializer()), toSave)
@@ -87,12 +87,35 @@ class ChatMessagePersistenceManager(
             targetFile.parentFile?.mkdirs()
             val tempFile = File(targetFile.parentFile, "${targetFile.name}.tmp")
             tempFile.writeText(encrypted, Charsets.UTF_8)
-            if (!tempFile.renameTo(targetFile)) {
+            val renamed = tempFile.renameTo(targetFile)
+            if (!renamed) {
                 targetFile.writeText(encrypted, Charsets.UTF_8)
                 try { tempFile.delete() } catch (_: Exception) {}
             }
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao salvar chat do peer $cleanKey: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Verifica se uma mensagem específica já se encontra gravada em disco para o contato.
+     */
+    fun hasMessage(peerId: String, messageId: String): Boolean {
+        if (messageId.isBlank()) return false
+        val clean = cleanKey(peerId)
+        if (clean.isBlank()) return false
+        val file = getFileForPeer(clean) ?: return false
+        if (!file.exists() || file.length() == 0L) return false
+
+        return try {
+            val raw = file.readText(Charsets.UTF_8)
+            val content = diskCrypto.decrypt(raw)
+            val list = json.decodeFromString(ListSerializer(ChatMessage.serializer()), content)
+            list.any { it.id == messageId }
+        } catch (_: Exception) {
+            false
         }
     }
 

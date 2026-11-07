@@ -969,7 +969,7 @@ open class PessoasAquiNetworkClient(
     /**
      * Confirma o recebimento de mensagem (ACK de transporte) para o servidor via WebSocket.
      */
-    fun sendServerMessageAck(messageId: String) {
+    open fun sendServerMessageAck(messageId: String) {
         if (messageId.isBlank()) return
         try {
             val json = org.json.JSONObject().apply {

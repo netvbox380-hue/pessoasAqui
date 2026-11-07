@@ -489,6 +489,7 @@ function unwrapE2eeIfCompatible(payload) {
 }
 
 function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, ciphertextPayload, ivNonce, msgId, isEphemeralParam) {
+  return (async () => {
   const cleanRecipient = cleanId(rawRecipient);
   if (!cleanRecipient || !/^[A-Za-z0-9_-]{8,64}$/.test(cleanRecipient)) {
     return false;
@@ -503,17 +504,42 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
   // Garante compatibilidade total entre aparelhos com APK novo (AES-256-GCM) e APK anterior
   const compatiblePayload = unwrapE2eeIfCompatible(ciphertextPayload, ivNonce, cleanSender, cleanRecipient);
 
-  // Calcula isEphemeral ANTES de qualquer uso no loop ou objeto de mensagem (corrige TDZ ReferenceError)
+  // Classificação estrita de mensagens efêmeras (áudio/vídeo frames em tempo real, sinalização de chamada, etc.)
+  // Mensagens de texto, áudio gravado, imagem, documentos, fotos reais, edições, exclusões, vínculos familiares
+  // e compartilhamento de cofre Shamir NÃO são efêmeras e DEVEM ser persistidas duravelmente!
   const payloadStr = String(compatiblePayload || '');
+  const isCallFrame = String(msgId || '').startsWith('call_frame_') ||
+                      payloadStr.startsWith('[CALL_AUDIO_FRAME:') ||
+                      payloadStr.startsWith('[CALL_VIDEO_FRAME:');
+  const isCallSignaling = payloadStr.startsWith('[CALL_INIT:') ||
+                          payloadStr.startsWith('[CALL_ACCEPT]') ||
+                          payloadStr.startsWith('[CALL_ACK]') ||
+                          payloadStr.startsWith('[CALL_END]') ||
+                          payloadStr.startsWith('[ICE_CANDIDATE:');
   const isEphemeral = Boolean(isEphemeralParam) ||
-                      String(msgId || '').startsWith('call_frame_') ||
                       String(msgId || '').startsWith('ephem_') ||
-                      payloadStr.startsWith('[CALL_') ||
-                      payloadStr.startsWith('[FAMILY_') ||
-                      payloadStr === '[READ_ACK]' ||
-                      payloadStr.startsWith('[DELIVERY_ACK:') ||
-                      payloadStr.startsWith('[MSG_DELETE:') ||
-                      payloadStr.startsWith('[MSG_EDIT:');
+                      isCallFrame ||
+                      isCallSignaling;
+
+  // PERSISTÊNCIA DURÁVEL NO POSTGRESQL ANTES DO DESPACHO
+  // Se a mensagem for durável e o PostgreSQL estiver ativo,
+  // comprova a gravação atômica antes de entregar aos WebSockets ou filas de leitura!
+  let persistedInDb = false;
+  if (!isEphemeral && isPostgres()) {
+    try {
+      await query(
+        `INSERT INTO e2ee_messages (id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, is_delivered)
+         VALUES ($1, $2, $3, $4, $5, $6, FALSE)
+         ON CONFLICT (id) DO NOTHING`,
+        [msgId, cleanSender, cleanRecipient, resolvedSenderAlias, compatiblePayload, ivNonce || '']
+      );
+      persistedInDb = true;
+    } catch (dbErr) {
+      console.error('[DB] Erro de persistência durável no PostgreSQL:', dbErr.message);
+      // Política de falha fechada: Não simular sucesso durável se o PostgreSQL falhou!
+      return false;
+    }
+  }
 
   // Resolve destinatário tanto pelo identityHash quanto pelo apelido ativo (caso o remetente tenha ID antigo do contato)
   const targetKeys = new Set([kRecip]);
@@ -548,9 +574,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
       } catch (_) {}
     }
 
-    // Também armazena na fila pendente HTTP (com limite de 50 mensagens) para garantir entrega
-    // mesmo se o WebSocket do destinatário estiver em transição de rede (o cliente deduplica por messageId).
-    // Mensagens efêmeras / de sinalização como [READ_ACK] ou frames de áudio/vídeo não devem ser acumuladas em fila.
+    // Armazena na fila pendente em memória para mensagens não-efêmeras
     if (!isEphemeral) {
       if (!pendingMessages.has(tk)) {
         pendingMessages.set(tk, []);
@@ -560,27 +584,20 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
         queue.push(msgObj);
         if (queue.length > 50) queue.shift();
       }
-      if (isPostgres()) {
-        query(
-          `INSERT INTO e2ee_messages (id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, is_delivered)
-           VALUES ($1, $2, $3, $4, $5, $6, FALSE)
-           ON CONFLICT (id) DO NOTHING`,
-          [msgId, cleanSender, cleanRecipient, resolvedSenderAlias, compatiblePayload, ivNonce || '']
-        ).catch(() => {});
-      }
     }
   }
 
   // Log resumido (ignora frames contínuos de chamada ou acks em lote para não poluir o console)
   const isContinuous = isEphemeral ||
-                       String(compatiblePayload).startsWith('[CALL_AUDIO_FRAME:') ||
-                       String(compatiblePayload).startsWith('[CALL_VIDEO_FRAME:') ||
+                       payloadStr.startsWith('[CALL_AUDIO_FRAME:') ||
+                       payloadStr.startsWith('[CALL_VIDEO_FRAME:') ||
                        compatiblePayload === '[READ_ACK]' ||
-                       String(compatiblePayload).startsWith('[DELIVERY_ACK:');
+                       payloadStr.startsWith('[DELIVERY_ACK:');
   if (!isContinuous) {
     console.log(`[MSG] De ${resolvedSenderAlias} (${cleanSender}) -> ${cleanRecipient} (WS=${deliveredWs})`);
   }
   return deliveredWs;
+  })();
 }
 
 wss.on('connection', (ws, req) => {
@@ -785,7 +802,12 @@ wss.on('connection', (ws, req) => {
         }
 
         const senderAlias = activePresence.get(kAuth)?.alias || 'Usuário';
-        deliverMessageToTarget(authenticatedIdentity, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isStream);
+        const deliveryResult = await deliverMessageToTarget(authenticatedIdentity, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isStream);
+        if (!deliveryResult.success && deliveryResult.error) {
+          try {
+            ws.send(JSON.stringify({ type: 'MESSAGE_ERROR', messageId: msgId, error: deliveryResult.error }));
+          } catch (_) {}
+        }
       }
 
       if (msg.type === 'MESSAGE_ACK' && authenticatedIdentity) {
@@ -1040,8 +1062,11 @@ app.post('/api/messages/send', async (req, res) => {
     return res.json({ success: true, delivered: true, duplicate: true });
   }
 
-  const delivered = deliverMessageToTarget(cleanSender, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isStream);
-  res.json({ success: true, delivered });
+  const deliveryResult = await deliverMessageToTarget(cleanSender, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isStream);
+  if (!deliveryResult.success && deliveryResult.error) {
+    return res.status(503).json({ error: 'Erro de persistência durável no banco de dados.', details: deliveryResult.error });
+  }
+  res.json({ success: true, delivered: deliveryResult.delivered });
 });
 
 /**
