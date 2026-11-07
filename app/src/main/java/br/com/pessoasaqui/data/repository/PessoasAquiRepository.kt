@@ -1757,6 +1757,13 @@ class PessoasAquiRepository(
                     val myAlias = _currentAlias.value
                     val myIntent = _currentIntent.value.name
 
+                    // O banco pode ter sido restaurado ou o cadastro inicial falhado.
+                    // Nunca confundir heartbeat/WS com identidade persistida.
+                    if (ensureIdentityRegistered().getOrNull() != true) {
+                        delay(4000)
+                        continue
+                    }
+
                     // 1. Envia Heartbeat HTTP para manter a presença viva no Render / Supabase
                     networkClient.sendPresenceHeartbeat(myId, myAlias, myIntent)
 
@@ -2194,31 +2201,64 @@ class PessoasAquiRepository(
         setDemoMode(false)
     }
 
+    // A presença WebSocket não equivale a cadastro no PostgreSQL. Serializar
+    // o registro evita corridas entre onboarding, polling e marcações.
+    private val identityRegistrationMutex = kotlinx.coroutines.sync.Mutex()
+    private var confirmedIdentityRegistration: String? = null
+    private var confirmedIdentityAlias: String? = null
+    private var lastIdentityRegistrationAtMs = 0L
+
+    private suspend fun ensureIdentityRegistered(force: Boolean = false): Result<Boolean> {
+        identityRegistrationMutex.lock()
+        try {
+            val identity = cryptoIdentityManager.getTechnicalIdentity()
+            val alias = _currentAlias.value.trim().take(64).ifBlank { "Eu" }
+            val now = System.currentTimeMillis()
+            if (!force && identity == confirmedIdentityRegistration &&
+                alias == confirmedIdentityAlias &&
+                now - lastIdentityRegistrationAtMs in 0..60_000L) {
+                return Result.success(true)
+            }
+            val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
+                operation = "IDENTITY_REGISTER", identity = identity, alias = alias,
+                publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
+                signChallenge = cryptoIdentityManager::signChallenge
+            )
+            val result = networkClient.registerIdentity(
+                identityHash = identity,
+                publicKeyEd25519 = cryptoIdentityManager.getPublicKeyBase64(),
+                publicKeyX25519 = "",
+                pin = "",
+                alias = alias,
+                identityProof = proof
+            )
+            if (result.getOrNull() == true) {
+                confirmedIdentityRegistration = identity
+                confirmedIdentityAlias = alias
+                lastIdentityRegistrationAtMs = System.currentTimeMillis()
+            } else {
+                confirmedIdentityRegistration = null
+                Log.w("PessoasAqui", "Cadastro de identidade não confirmado: ${result.exceptionOrNull()?.message}")
+            }
+            return result
+        } catch (e: Exception) {
+            confirmedIdentityRegistration = null
+            Log.e("PessoasAqui", "Falha no registro seguro da identidade: ${e.message}")
+            return Result.failure(e)
+        } finally {
+            identityRegistrationMutex.unlock()
+        }
+    }
+
     private fun registerIdentityOnBackend() {
         scope.launch {
-            try {
-                val alias = _currentAlias.value.trim().take(64).ifBlank { "Eu" }
-                val identity = cryptoIdentityManager.getTechnicalIdentity()
-                val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
-                    operation = "IDENTITY_REGISTER", identity = identity, alias = alias,
-                    publicKeyBase64 = cryptoIdentityManager.getPublicKeyBase64(),
-                    signChallenge = cryptoIdentityManager::signChallenge
-                )
-                networkClient.registerIdentity(
-                    identityHash = identity,
-                    publicKeyEd25519 = cryptoIdentityManager.getPublicKeyBase64(),
-                    publicKeyX25519 = "",
-                    pin = "",
-                    alias = alias,
-                    identityProof = proof
-                )
+            val result = ensureIdentityRegistered(force = true)
+            if (result.getOrNull() == true) {
                 networkClient.sendPresenceHeartbeat(
                     identityHash = cryptoIdentityManager.getTechnicalIdentity(),
                     alias = _currentAlias.value,
                     intent = _currentIntent.value.name
                 )
-            } catch (e: Exception) {
-                Log.e("PessoasAqui", "Erro ao registrar identidade no backend: ${e.message}")
             }
         }
     }
@@ -2542,11 +2582,29 @@ class PessoasAquiRepository(
                             pendingUnmarkPeople.remove(targetId)
                             saveConnectionsToPrefs()
                         }
+                        // FK connections -> identities: a solicitação só pode sair
+                        // depois do registro criptográfico confirmado do remetente.
+                        val registration = ensureIdentityRegistered(force = true)
+                        if (registration.getOrNull() != true) {
+                            Log.w("PessoasAqui", "Marcação interrompida: identidade não registrada")
+                            if (targetId in savedMarkedPeople) {
+                                savedMarkedPeople.remove(targetId)
+                                saveConnectionsToPrefs()
+                                updateUnifiedData()
+                            }
+                            return@launch
+                        }
                         val result = networkClient.markConnection(myId, targetId)
                         if (result.getOrNull() == true && targetId !in revokedMutualPeople && targetId in savedMarkedPeople) {
                             confirmMutualConnectionFromServer(targetId)
                         } else if (result.isFailure) {
                             Log.w("PessoasAqui", "Marcação não confirmada pelo servidor: ${result.exceptionOrNull()?.message}")
+                            // Não deixar o estado local afirmar que o pedido chegou.
+                            if (targetId in savedMarkedPeople) {
+                                savedMarkedPeople.remove(targetId)
+                                saveConnectionsToPrefs()
+                                updateUnifiedData()
+                            }
                         }
                     } else {
                         val result = networkClient.unmarkConnection(myId, targetId)
