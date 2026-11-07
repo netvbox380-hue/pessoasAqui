@@ -13,7 +13,7 @@ assert.ok(handlerSection.startsWith('app.get('));
 const ID_A = 'A1A1A1A1A1A1A1A1';
 const ID_B = 'B2B2B2B2B2B2B2B2';
 
-function fixture({postgres=false, databaseError=false} = {}) {
+function fixture({postgres=false, databaseError=false, registeredIdentities=[]} = {}) {
   const routes = new Map();
   const conns = new Map();
   const sent = [];
@@ -21,7 +21,15 @@ function fixture({postgres=false, databaseError=false} = {}) {
   const app = {get: (route, handler) => routes.set(`GET ${route}`, handler),post: (route, handler) => routes.set(`POST ${route}`, handler)};
   const cleanId = v => String(v || '').replace(/^peer-/i,'').trim().toUpperCase();
   const context = {app, localStore:{connections:conns}, isPostgres:()=>postgres,
-    query:async (sql,args)=> {dbOps.push({sql,args}); if(databaseError)throw Error('DB down');return {rows:[]}},
+    query:async (sql,args)=> {
+      dbOps.push({sql,args});
+      if(databaseError)throw Error('DB down');
+      if(sql.includes('SELECT id FROM identities WHERE id = ANY')) {
+        const rows=args[0].filter(id=>registeredIdentities.includes(id)).map(id=>({id}));
+        return {rows,rowCount:rows.length};
+      }
+      return {rows:[],rowCount:0};
+    },
     cleanId, keyId:cleanId,
     activePresence:new Map(), activeSockets:new Map(), pendingMessages:new Map(),
     WebSocket:{OPEN:1}, console, Date, process:{env:{}}, verifySignedHttp:async()=>true};
@@ -94,4 +102,33 @@ test('com DATABASE_URL configurada e PostgreSQL desconectado, relações não s�
   assert.equal(mark.code,503);
   assert.equal(revoke.code,503);
   assert.equal(f.conns.size,0);
+});
+
+test('PostgreSQL refuses a mark if sender is not registered; no FK write or phantom connection',async()=>{
+  const f=fixture({postgres:true,registeredIdentities:[ID_B]});
+  const r=await f.call('POST','/api/connections/mark',{fromIdentity:ID_A,toIdentity:ID_B});
+  assert.equal(r.code,409);
+  assert.equal(r.payload.code,'SENDER_IDENTITY_NOT_REGISTERED');
+  assert.equal(f.conns.size,0);
+  assert.ok(!f.dbOps.some(op=>/INSERT INTO connections/i.test(op.sql)));
+});
+
+test('PostgreSQL refuses a mark if target is not registered; no FK write or phantom connection',async()=>{
+  const f=fixture({postgres:true,registeredIdentities:[ID_A]});
+  const r=await f.call('POST','/api/connections/mark',{fromIdentity:ID_A,toIdentity:ID_B});
+  assert.equal(r.code,409);
+  assert.equal(r.payload.code,'TARGET_IDENTITY_NOT_REGISTERED');
+  assert.equal(f.conns.size,0);
+  assert.ok(!f.dbOps.some(op=>/INSERT INTO connections/i.test(op.sql)));
+});
+
+test('PostgreSQL permits reciprocal consent with both identities registered',async()=>{
+  const f=fixture({postgres:true,registeredIdentities:[ID_A,ID_B]});
+  const a=await f.call('POST','/api/connections/mark',{fromIdentity:ID_A,toIdentity:ID_B});
+  const b=await f.call('POST','/api/connections/mark',{fromIdentity:ID_B,toIdentity:ID_A});
+  assert.equal(a.code,200);
+  assert.equal(a.payload.isMutualConnection,false);
+  assert.equal(b.code,200);
+  assert.equal(b.payload.isMutualConnection,true);
+  assert.ok(f.dbOps.some(op=>/INSERT INTO connections/i.test(op.sql)));
 });
