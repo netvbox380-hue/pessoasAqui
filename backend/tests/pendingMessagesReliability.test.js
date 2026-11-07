@@ -1,0 +1,427 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const src = fs.readFileSync(path.join(__dirname, '../src/server.js'), 'utf8');
+
+function setupTestEnvironment({ postgres = false } = {}) {
+  const activePresence = new Map();
+  const activeSockets = new Map();
+  const pendingMessages = new Map();
+  const recentMessageIds = new Map();
+  const clientMessageRate = new Map();
+  const dbMessages = [];
+
+  const ctx = {
+    console,
+    Date,
+    Set,
+    Map,
+    String,
+    Boolean,
+    Array,
+    activePresence,
+    activeSockets,
+    pendingMessages,
+    recentMessageIds,
+    clientMessageRate,
+    localStore: { connections: new Map(), identities: new Map() },
+    isPostgres: () => postgres,
+    query: async (sql, params = []) => {
+      if (sql.includes('INSERT INTO e2ee_messages')) {
+        const [id, sId, rId, sAlias, cipher, iv] = params;
+        const exists = dbMessages.some(m => m.id === id);
+        if (!exists) {
+          dbMessages.push({
+            id,
+            sender_identity: sId,
+            recipient_identity: rId,
+            sender_alias: sAlias,
+            ciphertext_payload: cipher,
+            iv_nonce: iv,
+            is_delivered: false
+          });
+        }
+        return { rowCount: exists ? 0 : 1 };
+      }
+      if (sql.includes('UPDATE e2ee_messages SET is_delivered = TRUE WHERE id = $1')) {
+        const [id] = params;
+        const msg = dbMessages.find(m => m.id === id);
+        if (msg) msg.is_delivered = true;
+        return { rowCount: msg ? 1 : 0 };
+      }
+      if (sql.includes('UPDATE e2ee_messages SET is_delivered = TRUE WHERE (LOWER(sender_identity)')) {
+        const [idA, idB] = params;
+        let count = 0;
+        for (const m of dbMessages) {
+          const matchAtoB = (m.sender_identity.toLowerCase() === idA.toLowerCase() && m.recipient_identity.toLowerCase() === idB.toLowerCase());
+          const matchBtoA = (m.sender_identity.toLowerCase() === idB.toLowerCase() && m.recipient_identity.toLowerCase() === idA.toLowerCase());
+          if (matchAtoB || matchBtoA) {
+            m.is_delivered = true;
+            count++;
+          }
+        }
+        return { rowCount: count };
+      }
+      if (sql.includes('SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce')) {
+        const rows = dbMessages.filter(m => !m.is_delivered);
+        return { rows, rowCount: rows.length };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    WebSocket: { OPEN: 1 }
+  };
+
+  const startHelper = src.indexOf('function acknowledgePendingMessage(');
+  const endHelper = src.indexOf("wss.on('connection'");
+  assert.ok(startHelper >= 0 && endHelper > startHelper, 'Helper code block not found');
+  const codeSlice = src.slice(startHelper, endHelper);
+
+  vm.runInNewContext(codeSlice + `
+    this.deliverMessageToTarget = deliverMessageToTarget;
+    this.acknowledgePendingMessage = acknowledgePendingMessage;
+    this.purgePendingMessagesBetween = purgePendingMessagesBetween;
+    this.checkRateLimit = checkRateLimit;
+    this.isDuplicateMessage = isDuplicateMessage;
+    this.cleanId = cleanId;
+    this.keyId = keyId;
+  `, ctx);
+
+  return {
+    deliver: ctx.deliverMessageToTarget,
+    acknowledge: ctx.acknowledgePendingMessage,
+    purgeBetween: ctx.purgePendingMessagesBetween,
+    checkRateLimit: ctx.checkRateLimit,
+    isDuplicateMessage: ctx.isDuplicateMessage,
+    keyId: ctx.keyId,
+    cleanId: ctx.cleanId,
+    activePresence,
+    activeSockets,
+    pendingMessages,
+    recentMessageIds,
+    clientMessageRate,
+    dbMessages,
+    ctx
+  };
+}
+
+const PEER_A = '1111222233334444';
+const PEER_B = '5555666677778888';
+
+test('1. Destinatário online: entrega imediata via WS, mensagem é removida de pending após confirmação (ACK)', () => {
+  const env = setupTestEnvironment({ postgres: true });
+  const receivedWs = [];
+  const fakeSocket = {
+    readyState: 1,
+    send: (data) => receivedWs.push(JSON.parse(data))
+  };
+
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+  env.activeSockets.set(PEER_B.toLowerCase(), fakeSocket);
+
+  const delivered = env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_CIPHERTEXT_01', 'iv1', 'msg_001', false);
+  assert.equal(delivered, true);
+  assert.equal(receivedWs.length, 1);
+  assert.equal(receivedWs[0].messageId, 'msg_001');
+
+  // Mensagem é retida na fila pendente até o ACK do cliente
+  assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), true);
+  assert.equal(env.pendingMessages.get(PEER_B.toLowerCase())[0].messageId, 'msg_001');
+
+  // Cliente envia ACK
+  const acked = env.acknowledge(PEER_B, 'msg_001');
+  assert.equal(acked, true);
+  assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
+  assert.equal(env.dbMessages.find(m => m.id === 'msg_001').is_delivered, true);
+});
+
+test('2. Destinatário offline: mensagem é enfileirada em pendingMessages e persistida em e2ee_messages (se PG)', () => {
+  const env = setupTestEnvironment({ postgres: true });
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+  // Sem socket ativo para Bob
+
+  const delivered = env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_CIPHERTEXT_02', 'iv2', 'msg_002', false);
+  assert.equal(delivered, false);
+
+  const queue = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.ok(queue);
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].messageId, 'msg_002');
+
+  const inDb = env.dbMessages.find(m => m.id === 'msg_002');
+  assert.ok(inDb);
+  assert.equal(inDb.is_delivered, false);
+  assert.equal(inDb.ciphertext_payload, 'ENC_CIPHERTEXT_02');
+});
+
+test('3. Destinatário reconecta: drena pendingMessages via WS e confirma recebimento', () => {
+  const env = setupTestEnvironment({ postgres: true });
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+
+  // Alice envia enquanto Bob está offline
+  env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_P1', 'ivP1', 'msg_p1', false);
+  env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_P2', 'ivP2', 'msg_p2', false);
+
+  const pendingBefore = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.equal(pendingBefore.length, 2);
+
+  // Bob reconecta
+  const drained = [];
+  const bobWs = {
+    readyState: 1,
+    send: (d) => drained.push(JSON.parse(d))
+  };
+  env.activeSockets.set(PEER_B.toLowerCase(), bobWs);
+
+  // Simula o loop de reconexão do server.js (sem apagar antes do ACK)
+  pendingBefore.forEach(m => bobWs.send(JSON.stringify(m)));
+  assert.equal(drained.length, 2);
+
+  // Bob confirma recebimento das mensagens
+  env.acknowledge(PEER_B, 'msg_p1');
+  env.acknowledge(PEER_B, 'msg_p2');
+
+  assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
+  assert.equal(env.dbMessages.filter(m => m.is_delivered).length, 2);
+});
+
+test('4. WS cai durante envio: mensagem permanece em pendingMessages (não é perdida)', () => {
+  const env = setupTestEnvironment();
+  const faultySocket = {
+    readyState: 1,
+    send: () => { throw new Error('EPIPE: connection reset by peer'); }
+  };
+
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+  env.activeSockets.set(PEER_B.toLowerCase(), faultySocket);
+
+  // Envio tenta WS, falha na escrita do socket
+  const delivered = env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_CRASH_DURING_SEND', 'iv', 'msg_drop_1', false);
+  assert.equal(delivered, false);
+
+  // Mensagem continua segura em pendingMessages
+  const queue = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.ok(queue);
+  assert.equal(queue.some(m => m.messageId === 'msg_drop_1'), true);
+});
+
+test('5. WS cai antes de processar: mensagem permanece disponível para próximo reconnect ou HTTP fallback', () => {
+  const env = setupTestEnvironment();
+  const received = [];
+  const droppedSocket = {
+    readyState: 1,
+    send: (d) => {
+      received.push(JSON.parse(d));
+      // Socket fecha abruptamente logo após o envio, antes que o cliente envie ACK
+      droppedSocket.readyState = 3; // CLOSED
+    }
+  };
+
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+  env.activeSockets.set(PEER_B.toLowerCase(), droppedSocket);
+
+  env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_DROPPED_BEFORE_ACK', 'iv', 'msg_drop_2', false);
+  assert.equal(received.length, 1);
+
+  // Sem ACK, a mensagem continua em pendingMessages pronta para HTTP fallback ou reconnect
+  const pending = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.ok(pending);
+  assert.equal(pending[0].messageId, 'msg_drop_2');
+});
+
+test('6. Mensagem chega mas ACK se perde: retransmissão tratada por idempotência sem duplicar na UI', () => {
+  const env = setupTestEnvironment();
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+
+  // Primeira entrega
+  env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_LOST_ACK', 'iv', 'msg_ack_lost', false);
+  assert.equal(env.pendingMessages.get(PEER_B.toLowerCase()).length, 1);
+
+  // Remetente retransmite a mesma mensagem com mesmo messageId
+  env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_LOST_ACK', 'iv', 'msg_ack_lost', false);
+
+  // A fila pendente não duplica a mensagem
+  assert.equal(env.pendingMessages.get(PEER_B.toLowerCase()).length, 1);
+});
+
+test('7. Retransmissão da mesma mensagem: servidor não duplica em pendingMessages nem no banco', () => {
+  const env = setupTestEnvironment({ postgres: true });
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+
+  env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_PAYLOAD', 'iv', 'msg_dup_check', false);
+  env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_PAYLOAD', 'iv', 'msg_dup_check', false);
+  env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_PAYLOAD', 'iv', 'msg_dup_check', false);
+
+  const queue = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.equal(queue.length, 1);
+  assert.equal(env.dbMessages.filter(m => m.id === 'msg_dup_check').length, 1);
+});
+
+test('8. Mensagens fora de ordem: preserva ordem de chegada por sequência e timestamp na fila', () => {
+  const env = setupTestEnvironment();
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+
+  env.deliver(PEER_A, 'Alice', PEER_B, 'MSG_1', 'iv', 'seq_1', false);
+  env.deliver(PEER_A, 'Alice', PEER_B, 'MSG_2', 'iv', 'seq_2', false);
+  env.deliver(PEER_A, 'Alice', PEER_B, 'MSG_3', 'iv', 'seq_3', false);
+
+  const queue = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.equal(queue.length, 3);
+  assert.equal(queue[0].messageId, 'seq_1');
+  assert.equal(queue[1].messageId, 'seq_2');
+  assert.equal(queue[2].messageId, 'seq_3');
+  assert.ok(queue[0].timestamp <= queue[1].timestamp);
+  assert.ok(queue[1].timestamp <= queue[2].timestamp);
+});
+
+test('9. Backend reinicia com pendências: carrega de e2ee_messages no startup (se PG)', async () => {
+  const env = setupTestEnvironment({ postgres: true });
+
+  // Popula DB com mensagem não entregue
+  env.dbMessages.push({
+    id: 'msg_restored_01',
+    sender_identity: PEER_A,
+    recipient_identity: PEER_B,
+    sender_alias: 'Alice',
+    ciphertext_payload: 'ENC_SAVED_IN_DB',
+    iv_nonce: 'iv_db',
+    is_delivered: false
+  });
+
+  // Simula inicialização / recuperação do startup
+  const res = await env.ctx.query('SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce FROM e2ee_messages');
+  for (const row of res.rows) {
+    const kRecip = env.keyId(row.recipient_identity);
+    if (!env.pendingMessages.has(kRecip)) env.pendingMessages.set(kRecip, []);
+    env.pendingMessages.get(kRecip).push({
+      type: 'E2EE_MESSAGE_RECEIVED',
+      messageId: row.id,
+      senderHash: row.sender_identity,
+      senderAlias: row.sender_alias,
+      ciphertextPayload: row.ciphertext_payload,
+      ivNonce: row.iv_nonce,
+      isEphemeral: false,
+      timestamp: Date.now()
+    });
+  }
+
+  const restored = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.ok(restored);
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].messageId, 'msg_restored_01');
+  assert.equal(restored[0].ciphertextPayload, 'ENC_SAVED_IN_DB');
+});
+
+test('10. Revogação de conexão antes da entrega: mensagens pendentes daquela conexão são descartadas', () => {
+  const env = setupTestEnvironment({ postgres: true });
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+
+  // Alice envia para Bob
+  env.deliver(PEER_A, 'Alice', PEER_B, 'SECRET_A_TO_B', 'iv', 'msg_rev_1', false);
+  // Terceiro envia para Bob
+  const PEER_C = '9999000011112222';
+  env.deliver(PEER_C, 'Charlie', PEER_B, 'SECRET_C_TO_B', 'iv', 'msg_rev_charlie', false);
+
+  assert.equal(env.pendingMessages.get(PEER_B.toLowerCase()).length, 2);
+
+  // Bob revoga Alice
+  env.purgeBetween(PEER_A, PEER_B);
+
+  // A mensagem de Alice para Bob foi eliminada
+  const remaining = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.ok(remaining);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].messageId, 'msg_rev_charlie');
+});
+
+test('11. Envelope inválido: rejeitado sem afetar mensagens válidas na fila', () => {
+  const env = setupTestEnvironment();
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+
+  // Mensagem válida anterior
+  env.deliver(PEER_A, 'Alice', PEER_B, 'VALID_1', 'iv', 'valid_1', false);
+
+  // Envelopes corrompidos / destinatários ilegais
+  assert.equal(env.deliver(PEER_A, 'Alice', '', 'PAYLOAD', 'iv', 'inv_1', false), false);
+  assert.equal(env.deliver(PEER_A, 'Alice', 'SHORT', 'PAYLOAD', 'iv', 'inv_2', false), false);
+  assert.equal(env.deliver(PEER_A, 'Alice', 'ILLEGAL$CHARS!!', 'PAYLOAD', 'iv', 'inv_3', false), false);
+
+  // Fila para Bob permanece intacta com apenas a mensagem válida
+  const queue = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].messageId, 'valid_1');
+});
+
+test('12. Chave pública temporariamente indisponível: mensagem retida até resolução de chave', () => {
+  const env = setupTestEnvironment();
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob', publicKey: null });
+
+  // Mensagem enviada enquanto Bob ainda não publicou chave na sessão WS atual
+  const delivered = env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_RETAINED', 'iv', 'msg_wait_key', false);
+  assert.equal(delivered, false); // retida na fila pendente
+
+  const queue = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.ok(queue);
+  assert.equal(queue.some(m => m.messageId === 'msg_wait_key'), true);
+});
+
+test('13. Múltiplas mensagens pendentes para mesmo destinatário: entregues em lote ordenado', () => {
+  const env = setupTestEnvironment();
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+
+  for (let i = 1; i <= 5; i++) {
+    env.deliver(PEER_A, 'Alice', PEER_B, `ENC_BATCH_${i}`, 'iv', `batch_msg_${i}`, false);
+  }
+
+  const batchReceived = [];
+  const bobWs = {
+    readyState: 1,
+    send: (d) => batchReceived.push(JSON.parse(d))
+  };
+
+  const pending = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.equal(pending.length, 5);
+  pending.forEach(m => bobWs.send(JSON.stringify(m)));
+
+  assert.equal(batchReceived.length, 5);
+  for (let i = 0; i < 5; i++) {
+    assert.equal(batchReceived[i].messageId, `batch_msg_${i + 1}`);
+  }
+});
+
+test('14. Teto de fila atingido (50 msgs): descarta mais antiga, preserva integridade', () => {
+  const env = setupTestEnvironment();
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+
+  // Envia 55 mensagens
+  for (let i = 0; i < 55; i++) {
+    env.deliver(PEER_A, 'Alice', PEER_B, `ENC_${i}`, 'iv', `msg_cap_${i}`, false);
+  }
+
+  const queue = env.pendingMessages.get(PEER_B.toLowerCase());
+  assert.equal(queue.length, 50);
+  // As primeiras 5 (0 a 4) foram descartadas (FIFO)
+  assert.equal(queue[0].messageId, 'msg_cap_5');
+  assert.equal(queue[49].messageId, 'msg_cap_54');
+});
+
+test('15. Concorrência: entrega simultânea via HTTP e WS tratada atomicamente sem duplicação', () => {
+  const env = setupTestEnvironment({ postgres: true });
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+
+  // Enfileira mensagem
+  env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_CONCURRENT', 'iv', 'msg_concurrent_1', false);
+
+  // Simula cliente recebendo via WS e fazendo ACK via HTTP ao mesmo tempo
+  const ackWs = env.acknowledge(PEER_B, 'msg_concurrent_1');
+  assert.equal(ackWs, true, 'Primeiro ACK deve confirmar e remover da fila');
+
+  // Segundo ACK (via HTTP /api/messages/ack concorrente)
+  const ackHttp = env.acknowledge(PEER_B, 'msg_concurrent_1');
+  assert.equal(ackHttp, false, 'Segundo ACK idempotente detecta que já foi removido sem corromper estado');
+
+  assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
+});

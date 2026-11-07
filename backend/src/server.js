@@ -244,6 +244,17 @@ setTimeout(async () => {
         replied_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )`);
+
+      await query(`CREATE TABLE IF NOT EXISTS e2ee_messages (
+        id VARCHAR(64) PRIMARY KEY,
+        sender_identity VARCHAR(64),
+        recipient_identity VARCHAR(64),
+        sender_alias VARCHAR(64),
+        ciphertext_payload TEXT NOT NULL,
+        iv_nonce VARCHAR(64) NOT NULL,
+        is_delivered BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )`);
       await query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS affected_identity VARCHAR(64)`);
       await query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS verified_family_report BOOLEAN NOT NULL DEFAULT FALSE`);
 
@@ -269,6 +280,49 @@ const activeOffers = new Map();
 const activeInvites = new Map();
 // Fila de mensagens pendentes para entrega garantida: recipientHash -> [messages]
 const pendingMessages = new Map();
+
+function acknowledgePendingMessage(recipientId, messageId) {
+  if (!recipientId || !messageId) return false;
+  const kRecip = keyId(recipientId);
+  const queue = pendingMessages.get(kRecip);
+  let removed = false;
+  if (queue) {
+    const idx = queue.findIndex(m => m.messageId === messageId);
+    if (idx !== -1) {
+      queue.splice(idx, 1);
+      if (queue.length === 0) pendingMessages.delete(kRecip);
+      removed = true;
+    }
+  }
+  if (isPostgres()) {
+    query(`UPDATE e2ee_messages SET is_delivered = TRUE WHERE id = $1`, [messageId]).catch(() => {});
+  }
+  return removed;
+}
+
+function purgePendingMessagesBetween(idA, idB) {
+  const kA = keyId(idA), kB = keyId(idB);
+  const qA = pendingMessages.get(kA);
+  if (qA) {
+    const filtered = qA.filter(m => keyId(m.senderHash) !== kB);
+    if (filtered.length > 0) pendingMessages.set(kA, filtered);
+    else pendingMessages.delete(kA);
+  }
+  const qB = pendingMessages.get(kB);
+  if (qB) {
+    const filtered = qB.filter(m => keyId(m.senderHash) !== kA);
+    if (filtered.length > 0) pendingMessages.set(kB, filtered);
+    else pendingMessages.delete(kB);
+  }
+  if (isPostgres()) {
+    query(
+      `UPDATE e2ee_messages SET is_delivered = TRUE
+       WHERE (LOWER(sender_identity) = LOWER($1) AND LOWER(recipient_identity) = LOWER($2))
+          OR (LOWER(sender_identity) = LOWER($2) AND LOWER(recipient_identity) = LOWER($1))`,
+      [cleanId(idA), cleanId(idB)]
+    ).catch(() => {});
+  }
+}
 // Cache de deduplicação de mensagens (evita mensagens repetidas/duplicadas)
 const recentMessageIds = new Map();
 // Controle anti-flood / taxa de envio de mensagens por cliente (max 25 msg/s para mensagens discretas)
@@ -444,6 +498,14 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
         queue.push(msgObj);
         if (queue.length > 50) queue.shift();
       }
+      if (isPostgres()) {
+        query(
+          `INSERT INTO e2ee_messages (id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, is_delivered)
+           VALUES ($1, $2, $3, $4, $5, $6, FALSE)
+           ON CONFLICT (id) DO NOTHING`,
+          [msgId, cleanSender, tk, resolvedSenderAlias, compatiblePayload, ivNonce || '']
+        ).catch(() => {});
+      }
     }
   }
 
@@ -543,13 +605,13 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'AUTH_SUCCESS', identityHash: authenticatedIdentity }));
         console.log(`[WS] Dispositivo conectado para identidade: ${authenticatedIdentity} (${incomingAlias})`);
 
-        // Entrega mensagens pendentes para este dispositivo
+        // Entrega mensagens pendentes para este dispositivo sem apagá-las precipitadamente.
+        // A remoção da fila ocorre sob confirmação explícita de processamento (ACK).
         if (pendingMessages.has(kAuth)) {
           const pending = pendingMessages.get(kAuth) || [];
           pending.forEach((pm) => {
             ws.send(JSON.stringify(pm));
           });
-          pendingMessages.delete(kAuth);
         }
 
         // Envia lista atual de usuários presentes para o novo cliente (excluindo a si mesmo por id e por apelido)
@@ -626,8 +688,21 @@ wss.on('connection', (ws, req) => {
           return;
         }
 
+        // Reconhecimento de ACK de entrega: quando o destinatário responde com [DELIVERY_ACK:id],
+        // o servidor confirma o recebimento e expurga a mensagem pendente confirmada.
+        if (typeof ciphertextPayload === 'string' && ciphertextPayload.startsWith('[DELIVERY_ACK:')) {
+          const ackTargetId = ciphertextPayload.replace(/^\[DELIVERY_ACK:/, '').replace(/\]$/, '').trim();
+          acknowledgePendingMessage(authenticatedIdentity, ackTargetId);
+        }
+
         const senderAlias = activePresence.get(kAuth)?.alias || 'Usuário';
         deliverMessageToTarget(authenticatedIdentity, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isStream);
+      }
+
+      if (msg.type === 'MESSAGE_ACK' && authenticatedIdentity) {
+        const { messageId } = msg;
+        acknowledgePendingMessage(authenticatedIdentity, messageId);
+        return;
       }
     } catch (e) {
       console.error('[WS] Erro no processamento de mensagem:', e.message);
@@ -878,6 +953,21 @@ app.post('/api/messages/send', async (req, res) => {
 });
 
 /**
+ * Confirmação de Entrega (ACK) de Mensagens Pendentes via HTTP
+ */
+app.post('/api/messages/ack', async (req, res) => {
+  const rawId = req.body?.identityHash;
+  const messageId = req.body?.messageId;
+  if (!rawId || !messageId) {
+    return res.status(400).json({ error: 'identityHash e messageId obrigatórios.' });
+  }
+  const cleanKey = keyId(rawId);
+  if (!await verifySignedHttp(req, res, 'MESSAGE_ACK', cleanId(rawId))) return;
+  const acknowledged = acknowledgePendingMessage(cleanKey, messageId);
+  res.json({ success: true, acknowledged: messageId, removed: acknowledged });
+});
+
+/**
  * Consulta de Mensagens Pendentes via HTTP
  */
 app.get('/api/messages/pending',(_req,res)=>res.status(401).json({error:'A leitura requer assinatura. Atualize o aplicativo.'}));
@@ -888,8 +978,17 @@ app.post('/api/messages/pending', async (req, res) => {
   }
   const cleanKey = keyId(rawId);
   if(!await verifySignedHttp(req,res,'MESSAGE_PENDING',cleanId(rawId)))return;
+  if (Array.isArray(req.body?.ackMessageIds)) {
+    for (const mid of req.body.ackMessageIds) {
+      acknowledgePendingMessage(cleanKey, mid);
+    }
+  } else if (req.body?.clearOnRead === true) {
+    pendingMessages.delete(cleanKey);
+    if (isPostgres()) {
+      query(`UPDATE e2ee_messages SET is_delivered = TRUE WHERE LOWER(recipient_identity) = LOWER($1)`, [cleanKey]).catch(() => {});
+    }
+  }
   const pending = pendingMessages.get(cleanKey) || [];
-  pendingMessages.delete(cleanKey);
   res.json({ success: true, messages: pending });
 });
 
@@ -1268,6 +1367,9 @@ app.post('/api/connections/unmark', async (req, res) => {
   }
   localStore.connections.delete(`${kFrom}->${kTo}`);
   localStore.connections.delete(`${kTo}->${kFrom}`);
+  if (typeof purgePendingMessagesBetween === 'function') {
+    purgePendingMessagesBetween(from, to);
+  }
 
   const myAlias = senderAlias || activePresence.get(kFrom)?.alias || 'Alguém';
   const targetWs = activeSockets.get(kTo);

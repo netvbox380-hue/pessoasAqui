@@ -1151,6 +1151,12 @@ class PessoasAquiRepository(
     init {
         networkClient.configureIdentityCredentials(
             cryptoIdentityManager.getPublicKeyBase64(), cryptoIdentityManager::signChallenge)
+        cryptoIdentityManager.getActivePublicKey()?.let { pubKey ->
+            br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.setLocalIdentityContext(
+                cryptoIdentityManager.getTechnicalIdentity(),
+                pubKey
+            )
+        }
         br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.initialize(context)
         // Revogações não podem ser apagadas ao reiniciar, evitando ressuscitar vínculos antigos.
         chatPersistence?.let { cp ->
@@ -1349,9 +1355,10 @@ class PessoasAquiRepository(
         }
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         val myKey = cryptoIdentityManager.getActivePrivateKey()
+        val myPublicKey = cryptoIdentityManager.getActivePublicKey()
         val payload: String
         try {
-            payload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, myKey)
+            payload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, myKey, myPublicKey)
         } catch (e: Exception) {
             if (E2eeCryptoEngine.getPeerPublicKeyBase64(cleanSender) == null) {
                 scope.launch {
@@ -1366,7 +1373,7 @@ class PessoasAquiRepository(
                             }
                             if (cleanSender in revokedMutualPeople) return@withTimeoutOrNull
                             try {
-                                val retriedPayload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, myKey)
+                                val retriedPayload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, myKey, myPublicKey)
                                 processVerifiedNetworkPayload(cleanSender, senderAlias, retriedPayload, messageId)
                             } catch (retryEx: Exception) {
                                 Log.w("PessoasAqui", "Falha de autenticação E2EE após sincronização de chave; mensagem descartada: ${retryEx.message}")
@@ -3191,6 +3198,7 @@ class PessoasAquiRepository(
         // Nunca utiliza Bluetooth BLE para conversas permanentes.
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         val myKey = cryptoIdentityManager.getActivePrivateKey()
+        val myPublicKey = cryptoIdentityManager.getActivePublicKey()
 
         // Hidratação a partir dos pinos confiáveis salvos, se ainda não estiver na memória
         if (E2eeCryptoEngine.getPeerPublicKeyBase64(cleanRecipient) == null) {
@@ -3226,7 +3234,7 @@ class PessoasAquiRepository(
                             return@withTimeoutOrNull
                         }
                         if (success && E2eeCryptoEngine.getPeerPublicKeyBase64(cleanRecipient) != null) {
-                            val (delayedCiphertext, delayedIv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, myKey)
+                            val (delayedCiphertext, delayedIv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, myKey, myPublicKey)
                             networkClient.sendE2eeEnvelope(
                                 recipientHash = cleanRecipient,
                                 ciphertext = delayedCiphertext,
@@ -3272,7 +3280,7 @@ class PessoasAquiRepository(
 
         // Criptografia de Ponta a Ponta com AES-256-GCM e ECDH Zero-Knowledge
         val (ciphertext, iv) = try {
-            E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, myKey)
+            E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, myKey, myPublicKey)
         } catch (e: Exception) {
             Log.e("PessoasAqui", "Falha na cifragem da mensagem permanente; envio cancelado", e)
             if (!isSignaling && !isAudio && !isImage && !isDoc) {
@@ -3937,6 +3945,12 @@ class PessoasAquiRepository(
 
         // 1. Atualiza e persiste a identidade criptográfica neste aparelho
         cryptoIdentityManager.setRecoveredIdentity(cleanHash)
+        cryptoIdentityManager.getActivePublicKey()?.let { pubKey ->
+            br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.setLocalIdentityContext(
+                cleanHash,
+                pubKey
+            )
+        }
         networkClient.configureIdentityCredentials(
             cryptoIdentityManager.getPublicKeyBase64(), cryptoIdentityManager::signChallenge)
         bleTransportCoordinator.onLocalIdentityRecovered()

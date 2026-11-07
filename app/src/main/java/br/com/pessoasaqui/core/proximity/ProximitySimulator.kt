@@ -377,6 +377,37 @@ class ProximitySimulator(
     }
 
     /**
+     * Valida transições legítimas na máquina de estados de entrega para evitar regressões indevidas.
+     */
+    fun canTransitionDeliveryStatus(
+        current: br.com.pessoasaqui.domain.model.MessageDeliveryStatus,
+        target: br.com.pessoasaqui.domain.model.MessageDeliveryStatus
+    ): Boolean {
+        if (current == target) return true
+        return when (current) {
+            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.PENDING -> true
+            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT ->
+                target in listOf(
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED,
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ,
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                )
+            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED ->
+                target in listOf(
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ,
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                )
+            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ -> false // READ é terminal
+            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED ->
+                target in listOf(
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT,
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED,
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ
+                )
+        }
+    }
+
+    /**
      * Atualiza o status de entrega de uma mensagem (PENDENTE -> ENTREGUE ou FALHA).
      */
     fun updateMessageDeliveryStatus(
@@ -388,6 +419,10 @@ class ProximitySimulator(
         val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: return
         val idx = currentList.indexOfFirst { it.id == messageId }
         if (idx != -1) {
+            val currentStatus = currentList[idx].deliveryStatus
+            if (!canTransitionDeliveryStatus(currentStatus, status)) {
+                return
+            }
             val updated = currentList.toMutableList()
             updated[idx] = updated[idx].copy(deliveryStatus = status)
             val updatedMap = _privateChats.value.toMutableMap()

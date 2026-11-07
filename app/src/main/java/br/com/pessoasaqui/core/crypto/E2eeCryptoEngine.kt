@@ -41,6 +41,26 @@ object E2eeCryptoEngine {
     // Cache de segredos compartilhados derivados para streaming contínuo (elimina recalcular ECDH a cada frame)
     private val ecdhDerivedSecretCache = ConcurrentHashMap<String, ByteArray>()
 
+    // Contexto criptográfico do titular local (identidade, chave pública e geração)
+    @Volatile private var activeLocalIdentity: String? = null
+    @Volatile private var activeLocalPublicKey: PublicKey? = null
+    @Volatile private var activeLocalGeneration: Long = 1L
+
+    /**
+     * Define ou atualiza o contexto criptográfico da identidade local ativa.
+     * Qualquer alteração invalida imediatamente o cache de sessões derivadas.
+     */
+    fun setLocalIdentityContext(identity: String, publicKey: PublicKey, generation: Long = 1L) {
+        val clean = identity.removePrefix("peer-").trim().uppercase()
+        val isDifferent = (activeLocalIdentity != clean || activeLocalPublicKey != publicKey || activeLocalGeneration != generation)
+        activeLocalIdentity = clean
+        activeLocalPublicKey = publicKey
+        activeLocalGeneration = generation
+        if (isDifferent) {
+            clearSessionCache()
+        }
+    }
+
     /**
      * Registra ou atualiza a chave pública recebida de um contato remoto.
      */
@@ -146,14 +166,46 @@ object E2eeCryptoEngine {
         return md.digest(sharedSecret)
     }
 
-    fun getOrDeriveEcdhSharedKey(myPrivateKey: PrivateKey, cleanPeer: String, peerPublicKey: PublicKey): ByteArray {
+    fun getOrDeriveEcdhSharedKey(
+        myPrivateKey: PrivateKey,
+        cleanPeer: String,
+        peerPublicKey: PublicKey,
+        localId: String? = null,
+        localPublicKey: PublicKey? = null,
+        generation: Long? = null
+    ): ByteArray {
+        val resolvedLocalId = localId?.removePrefix("peer-")?.trim()?.uppercase() ?: activeLocalIdentity ?: "LOCAL"
+        val resolvedLocalPub = localPublicKey ?: activeLocalPublicKey
+        val resolvedGen = generation ?: activeLocalGeneration
+
+        val md = MessageDigest.getInstance("SHA-256")
         val peerFingerprint = try {
-            val md = MessageDigest.getInstance("SHA-256")
             Base64Helper.encode(md.digest(peerPublicKey.encoded))
         } catch (_: Exception) {
             Base64Helper.encode(peerPublicKey.encoded)
         }
-        val cacheKey = "$cleanPeer:$peerFingerprint"
+
+        val localFingerprint = if (resolvedLocalPub != null) {
+            try {
+                Base64Helper.encode(md.digest(resolvedLocalPub.encoded))
+            } catch (_: Exception) {
+                Base64Helper.encode(resolvedLocalPub.encoded)
+            }
+        } else {
+            try {
+                val domainSep = "PESSOASAQUI_LOCAL_KEY_V1_BINDING:".toByteArray(StandardCharsets.UTF_8)
+                val privBytes = myPrivateKey.encoded
+                if (privBytes != null) {
+                    Base64Helper.encode(md.digest(domainSep + privBytes))
+                } else {
+                    "NON_EXPORTABLE_KEYSTORE_SLOT"
+                }
+            } catch (_: Exception) {
+                "KEYSTORE_PROTECTED"
+            }
+        }
+
+        val cacheKey = "PESSOASAQUI_ECDH_V1:g$resolvedGen:$resolvedLocalId:$localFingerprint:$cleanPeer:$peerFingerprint"
 
         // Limita o tamanho do cache a 200 entradas para evitar vazamento ou exaustão de memória
         if (ecdhDerivedSecretCache.size >= MAX_ECDH_CACHE_ENTRIES && !ecdhDerivedSecretCache.containsKey(cacheKey)) {
@@ -192,7 +244,9 @@ object E2eeCryptoEngine {
         plaintext: String,
         senderId: String,
         recipientId: String,
-        myPrivateKey: PrivateKey? = null
+        myPrivateKey: PrivateKey? = null,
+        myPublicKey: PublicKey? = null,
+        generation: Long? = null
     ): Pair<String, String> {
         return try {
             val cleanA = senderId.removePrefix("peer-").trim().uppercase()
@@ -205,7 +259,10 @@ object E2eeCryptoEngine {
                 ?: throw SecurityException("Chave pública do destinatário indisponível")
             val senderPrivateKey = myPrivateKey
                 ?: throw SecurityException("Chave privada do remetente indisponível")
-            val keyBytes = getOrDeriveEcdhSharedKey(senderPrivateKey, cleanB, peerPubKey)
+            val keyBytes = getOrDeriveEcdhSharedKey(
+                senderPrivateKey, cleanB, peerPubKey,
+                localId = cleanA, localPublicKey = myPublicKey, generation = generation
+            )
             val prefix = PREFIX_ECDH
 
             val iv = ByteArray(IV_LENGTH_BYTES)
@@ -238,7 +295,9 @@ object E2eeCryptoEngine {
         ivBase64: String,
         senderId: String,
         recipientId: String,
-        myPrivateKey: PrivateKey? = null
+        myPrivateKey: PrivateKey? = null,
+        myPublicKey: PublicKey? = null,
+        generation: Long? = null
     ): String {
         val isEcdh = payload.startsWith(PREFIX_ECDH)
         val isLegacy = payload.startsWith(PREFIX)
@@ -250,6 +309,7 @@ object E2eeCryptoEngine {
         val rawCiphertext = if (isEcdh) payload.removePrefix(PREFIX_ECDH) else payload.removePrefix(PREFIX)
 
         val cleanSender = senderId.removePrefix("peer-").trim().uppercase()
+        val cleanRecipient = recipientId.removePrefix("peer-").trim().uppercase()
         val peerPubKey = peerPublicKeys[cleanSender]
 
         // Nunca permitir downgrade de ENC_ECDH para a chave legada previsível.
@@ -258,7 +318,10 @@ object E2eeCryptoEngine {
                 throw SecurityException("Chave ECDH do interlocutor indisponível")
             }
             try {
-                val keyBytes = getOrDeriveEcdhSharedKey(myPrivateKey, cleanSender, peerPubKey)
+                val keyBytes = getOrDeriveEcdhSharedKey(
+                    myPrivateKey, cleanSender, peerPubKey,
+                    localId = cleanRecipient, localPublicKey = myPublicKey, generation = generation
+                )
                 val ciphertextBytes = Base64Helper.decode(rawCiphertext)
                 val ivBytes = Base64Helper.decode(pureIvB64)
                 val cipher = Cipher.getInstance(ALGORITHM)

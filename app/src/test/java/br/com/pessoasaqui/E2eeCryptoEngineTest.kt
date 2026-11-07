@@ -151,16 +151,173 @@ class E2eeCryptoEngineTest {
         assertNull("Chave de Bob deve ser nula após clearPeerPublicKey", E2eeCryptoEngine.getPeerPublicKeyBase64(bobId))
     }
 
+    // =========================================================================
+    // TESTES OBRIGATÓRIOS DA SEÇÃO 4: CACHE ECDH DETERMINÍSTICO E BOUNDED
+    // =========================================================================
+
     @Test
-    fun testEcdhCacheBoundingDoesNotExceedMaxLimit() {
+    fun testScenarioA_SameKeyPairProducesConsistentResult() {
+        val aliceId = "1111222233334444"
+        val bobId = "5555666677778888"
+        val (alice, bob) = setupPeers(aliceId, bobId)
+
+        val sec1 = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            alice.private, bobId, bob.public, localId = aliceId, localPublicKey = alice.public
+        )
+        val sec2 = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            alice.private, bobId, bob.public, localId = aliceId, localPublicKey = alice.public
+        )
+        assertArrayEquals("Mesmo par de chaves deve produzir resultado idêntico e consistente", sec1, sec2)
+    }
+
+    @Test
+    fun testScenarioB_SameRemoteIdentityWithNewLocalPrivateKeyYieldsDifferentSecret() {
+        val aliceId = "A1A1A1A1A1A1A1A1"
+        val bobId = "B1B1B1B1B1B1B1B1"
+        val (alice1, bob) = setupPeers(aliceId, bobId)
+
+        val gen = KeyPairGenerator.getInstance("EC").apply { initialize(256) }
+        val alice2 = gen.generateKeyPair()
+
+        val sec1 = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            alice1.private, bobId, bob.public, localId = aliceId, localPublicKey = alice1.public
+        )
+        val sec2 = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            alice2.private, bobId, bob.public, localId = aliceId, localPublicKey = alice2.public
+        )
+
+        assertFalse(
+            "Mesma identidade remota com nova chave local DEVE gerar segredo diferente",
+            sec1.contentEquals(sec2)
+        )
+    }
+
+    @Test
+    fun testScenarioC_RemotePublicKeyRotationDoesNotReuseOldCache() {
+        val aliceId = "A2A2A2A2A2A2A2A2"
+        val bobId = "B2B2B2B2B2B2B2B2"
+        val (alice, bob1) = setupPeers(aliceId, bobId)
+
+        val sec1 = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            alice.private, bobId, bob1.public, localId = aliceId, localPublicKey = alice.public
+        )
+
+        // Rotação da chave pública de Bob
+        val gen = KeyPairGenerator.getInstance("EC").apply { initialize(256) }
+        val bob2 = gen.generateKeyPair()
+        val bob2B64 = Base64.getEncoder().encodeToString(bob2.public.encoded)
+        TrustedIdentityKeys.acceptAuthenticatedBinding(bobId, bob2B64, 3L)
+        E2eeCryptoEngine.registerPeerPublicKey(bobId, bob2B64)
+
+        val sec2 = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            alice.private, bobId, bob2.public, localId = aliceId, localPublicKey = alice.public
+        )
+
+        assertFalse(
+            "Rotação da chave remota não pode reutilizar segredo antigo",
+            sec1.contentEquals(sec2)
+        )
+    }
+
+    @Test
+    fun testScenarioD_FamilyRecoveryV3NewCryptographicGeneration() {
+        val myId = "A3A3A3A3A3A3A3A3"
+        val guardianId = "B3B3B3B3B3B3B3B3"
+        val (titular, guardian) = setupPeers(myId, guardianId)
+
+        val secGen1 = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            titular.private, guardianId, guardian.public,
+            localId = myId, localPublicKey = titular.public, generation = 1L
+        )
+        val secGen2 = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            titular.private, guardianId, guardian.public,
+            localId = myId, localPublicKey = titular.public, generation = 2L
+        )
+
+        assertEquals(32, secGen1.size)
+        assertEquals(32, secGen2.size)
+    }
+
+    @Test
+    fun testScenarioE_SimultaneousCallsStateIsolation() {
+        val aliceId = "A4A4A4A4A4A4A4A4"
+        val bobId = "B4B4B4B4B4B4B4B4"
+        val carolId = "C4C4C4C4C4C4C4C4"
+
+        val (alice, bob) = setupPeers(aliceId, bobId)
+        val gen = KeyPairGenerator.getInstance("EC").apply { initialize(256) }
+        val carol = gen.generateKeyPair()
+        val carolB64 = Base64.getEncoder().encodeToString(carol.public.encoded)
+        TrustedIdentityKeys.acceptAuthenticatedBinding(carolId, carolB64, 2L)
+        E2eeCryptoEngine.registerPeerPublicKey(carolId, carolB64)
+
+        val secBob = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            alice.private, bobId, bob.public, localId = aliceId, localPublicKey = alice.public
+        )
+        val secCarol = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            alice.private, carolId, carol.public, localId = aliceId, localPublicKey = alice.public
+        )
+
+        assertFalse("Duas chamadas para destinatários distintos devem ter segredos e estados estritamente isolados",
+            secBob.contentEquals(secCarol))
+    }
+
+    @Test
+    fun testScenarioF_ConcurrencyWithoutIncorrectAssociations() {
+        val aliceId = "A5A5A5A5A5A5A5A5"
+        val gen = KeyPairGenerator.getInstance("EC").apply { initialize(256) }
+        val alice = gen.generateKeyPair()
+
+        val peers = (1..10).map { i ->
+            val pid = "F0000000000000%02d".format(i)
+            val kp = gen.generateKeyPair()
+            pid to kp
+        }
+
+        // Execução concorrente em múltiplas threads
+        val threads = peers.map { (pid, kp) ->
+            Thread {
+                for (step in 1..20) {
+                    val sec = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+                        alice.private, pid, kp.public, localId = aliceId, localPublicKey = alice.public
+                    )
+                    assertNotNull(sec)
+                    assertEquals(32, sec.size)
+                }
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+    }
+
+    @Test
+    fun testScenarioG_RevocationInvalidatesRelatedState() {
+        val aliceId = "A6A6A6A6A6A6A6A6"
+        val bobId = "B6B6B6B6B6B6B6B6"
+        val (alice, bob) = setupPeers(aliceId, bobId)
+
+        val sec = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+            alice.private, bobId, bob.public, localId = aliceId, localPublicKey = alice.public
+        )
+        assertNotNull(sec)
+
+        // Revoga Bob
+        E2eeCryptoEngine.clearPeerPublicKey(bobId)
+        assertNull("Chave de Bob deve ser nula após clearPeerPublicKey", E2eeCryptoEngine.getPeerPublicKeyBase64(bobId))
+    }
+
+    @Test
+    fun testScenarioH_BoundedCacheLimit200Entries() {
         val gen = KeyPairGenerator.getInstance("EC").apply { initialize(256) }
         val myKey = gen.generateKeyPair()
 
         // Deriva segredos para 250 identidades distintas
         for (i in 0 until 250) {
             val peerKey = gen.generateKeyPair()
-            val peerId = "PEER_%04d".format(i)
-            E2eeCryptoEngine.getOrDeriveEcdhSharedKey(myKey.private, peerId, peerKey.public)
+            val peerId = "H00000000000%04d".format(i)
+            E2eeCryptoEngine.getOrDeriveEcdhSharedKey(
+                myKey.private, peerId, peerKey.public, localId = "A7A7A7A7A7A7A7A7", localPublicKey = myKey.public
+            )
         }
 
         // Limpa o cache global após o teste para manter idempotência
