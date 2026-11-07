@@ -965,6 +965,71 @@ open class PessoasAquiNetworkClient(
      * fonte de verdade autenticada do PostgreSQL. Nunca usar somente
      * a chave não autenticada de um anúncio WS para aceitar rotação.
      */
+    
+    /**
+     * Confirma o recebimento de mensagem (ACK de transporte) para o servidor via WebSocket.
+     */
+    fun sendServerMessageAck(messageId: String) {
+        if (messageId.isBlank()) return
+        try {
+            val json = org.json.JSONObject().apply {
+                put("type", "MESSAGE_ACK")
+                put("messageId", messageId)
+            }
+            activeWebSocket?.send(json.toString())
+        } catch (e: Exception) {
+            android.util.Log.w("PessoasAqui", "Falha ao enviar MESSAGE_ACK via WebSocket: ${e.message}")
+        }
+    }
+
+    /**
+     * Confirmação de recebimento (ACK de transporte) de mensagem pendente via HTTP.
+     */
+    suspend fun sendHttpMessageAck(identityHash: String, messageId: String): Result<Boolean> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        if (messageId.isBlank()) return@withContext Result.success(true)
+        try {
+            val json = org.json.JSONObject().apply {
+                put("identityHash", identityHash)
+                put("messageId", messageId)
+                put("identityProof", signedHttpProof("MESSAGE_ACK", identityHash))
+            }
+            val request = okhttp3.Request.Builder()
+                .url("$baseUrl/api/messages/ack")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                Result.success(response.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Confirmação em lote de mensagens recebidas via HTTP (/api/messages/pending).
+     */
+    suspend fun sendHttpBatchAcks(identityHash: String, messageIds: List<String>): Result<Boolean> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        if (messageIds.isEmpty()) return@withContext Result.success(true)
+        try {
+            val json = org.json.JSONObject().apply {
+                put("identityHash", identityHash)
+                put("ackMessageIds", org.json.JSONArray(messageIds))
+                put("identityProof", signedHttpProof("MESSAGE_PENDING", identityHash))
+            }
+            val request = okhttp3.Request.Builder()
+                .url("$baseUrl/api/messages/pending")
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                Result.success(response.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun refreshAuthenticatedPeerKey(
         requesterIdentity: String, targetIdentity: String
     ): Result<Boolean> = withContext(Dispatchers.IO) {

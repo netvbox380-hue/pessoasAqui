@@ -255,8 +255,45 @@ setTimeout(async () => {
         is_delivered BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_e2ee_messages_recipient_undelivered ON e2ee_messages (recipient_identity, is_delivered) WHERE is_delivered = FALSE`);
       await query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS affected_identity VARCHAR(64)`);
       await query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS verified_family_report BOOLEAN NOT NULL DEFAULT FALSE`);
+
+      // Restauração de mensagens pendentes do PostgreSQL na subida do backend
+      try {
+        const pendingRows = await query(
+          `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
+           FROM e2ee_messages
+           WHERE is_delivered = FALSE
+           ORDER BY created_at ASC`
+        );
+        for (const row of pendingRows.rows) {
+          const kRecip = keyId(row.recipient_identity);
+          if (!pendingMessages.has(kRecip)) {
+            pendingMessages.set(kRecip, []);
+          }
+          const q = pendingMessages.get(kRecip);
+          if (!q.some(m => m.messageId === row.id)) {
+            q.push({
+              type: 'E2EE_MESSAGE_RECEIVED',
+              messageId: row.id,
+              senderHash: cleanId(row.sender_identity),
+              senderAlias: row.sender_alias || 'Usuário',
+              recipientHash: cleanId(row.recipient_identity),
+              ciphertextPayload: row.ciphertext_payload,
+              ivNonce: row.iv_nonce || '',
+              isEphemeral: false,
+              timestamp: row.created_at ? new Date(row.created_at).getTime() : Date.now()
+            });
+            if (q.length > 50) q.shift();
+          }
+        }
+        if (pendingRows.rows.length > 0) {
+          console.log(`[DB] Mensagens pendentes restauradas do banco: ${pendingRows.rows.length}`);
+        }
+      } catch (errPending) {
+        console.warn('[DB] Nota ao restaurar mensagens pendentes:', errPending.message);
+      }
 
 
       const bannedRes = await query(`SELECT id FROM identities WHERE is_banned = TRUE`);
@@ -281,23 +318,47 @@ const activeInvites = new Map();
 // Fila de mensagens pendentes para entrega garantida: recipientHash -> [messages]
 const pendingMessages = new Map();
 
-function acknowledgePendingMessage(recipientId, messageId) {
-  if (!recipientId || !messageId) return false;
-  const kRecip = keyId(recipientId);
+async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
+  if (!authenticatedRecipientId || !messageId) return false;
+  const cleanRecip = cleanId(authenticatedRecipientId);
+  if (!/^[A-F0-9]{16}$/i.test(cleanRecip)) return false;
+  const kRecip = keyId(cleanRecip);
+
+  let removedFromMemory = false;
   const queue = pendingMessages.get(kRecip);
-  let removed = false;
   if (queue) {
     const idx = queue.findIndex(m => m.messageId === messageId);
     if (idx !== -1) {
-      queue.splice(idx, 1);
-      if (queue.length === 0) pendingMessages.delete(kRecip);
-      removed = true;
+      const targetMsg = queue[idx];
+      const targetRecip = targetMsg.recipientHash ? cleanId(targetMsg.recipientHash) : cleanRecip;
+      if (targetRecip.toLowerCase() === cleanRecip.toLowerCase()) {
+        queue.splice(idx, 1);
+        if (queue.length === 0) pendingMessages.delete(kRecip);
+        removedFromMemory = true;
+      }
     }
   }
+
+  let markedInDb = false;
   if (isPostgres()) {
-    query(`UPDATE e2ee_messages SET is_delivered = TRUE WHERE id = $1`, [messageId]).catch(() => {});
+    try {
+      const res = await query(
+        `UPDATE e2ee_messages
+         SET is_delivered = TRUE
+         WHERE id = $1
+           AND LOWER(recipient_identity) = LOWER($2)
+           AND is_delivered = FALSE`,
+        [messageId, cleanRecip]
+      );
+      if (res && res.rowCount > 0) {
+        markedInDb = true;
+      }
+    } catch (e) {
+      console.warn('[DB] Erro ao registrar ACK no PostgreSQL:', e.message);
+    }
   }
-  return removed;
+
+  return removedFromMemory || markedInDb;
 }
 
 function purgePendingMessagesBetween(idA, idB) {
@@ -472,6 +533,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
       messageId: msgId,
       senderHash: cleanSender,
       senderAlias: resolvedSenderAlias,
+      recipientHash: cleanRecipient,
       ciphertextPayload: compatiblePayload,
       ivNonce: ivNonce || '',
       isEphemeral: isEphemeral,
@@ -503,7 +565,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
           `INSERT INTO e2ee_messages (id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, is_delivered)
            VALUES ($1, $2, $3, $4, $5, $6, FALSE)
            ON CONFLICT (id) DO NOTHING`,
-          [msgId, cleanSender, tk, resolvedSenderAlias, compatiblePayload, ivNonce || '']
+          [msgId, cleanSender, cleanRecipient, resolvedSenderAlias, compatiblePayload, ivNonce || '']
         ).catch(() => {});
       }
     }
@@ -607,8 +669,35 @@ wss.on('connection', (ws, req) => {
 
         // Entrega mensagens pendentes para este dispositivo sem apagá-las precipitadamente.
         // A remoção da fila ocorre sob confirmação explícita de processamento (ACK).
-        if (pendingMessages.has(kAuth)) {
-          const pending = pendingMessages.get(kAuth) || [];
+        let pending = [];
+        if (isPostgres()) {
+          try {
+            const dbRes = await query(
+              `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
+               FROM e2ee_messages
+               WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE
+               ORDER BY created_at ASC LIMIT 100`,
+              [kAuth]
+            );
+            pending = dbRes.rows.map(r => ({
+              type: 'E2EE_MESSAGE_RECEIVED',
+              messageId: r.id,
+              senderHash: cleanId(r.sender_identity),
+              senderAlias: r.sender_alias || 'Usuário',
+              recipientHash: cleanId(r.recipient_identity),
+              ciphertextPayload: r.ciphertext_payload,
+              ivNonce: r.iv_nonce || '',
+              isEphemeral: false,
+              timestamp: r.created_at ? new Date(r.created_at).getTime() : Date.now()
+            }));
+          } catch (_) {
+            pending = pendingMessages.get(kAuth) || [];
+          }
+        } else {
+          pending = pendingMessages.get(kAuth) || [];
+        }
+
+        if (pending.length > 0) {
           pending.forEach((pm) => {
             ws.send(JSON.stringify(pm));
           });
@@ -701,7 +790,10 @@ wss.on('connection', (ws, req) => {
 
       if (msg.type === 'MESSAGE_ACK' && authenticatedIdentity) {
         const { messageId } = msg;
-        acknowledgePendingMessage(authenticatedIdentity, messageId);
+        const ackSuccess = await acknowledgePendingMessage(authenticatedIdentity, messageId);
+        try {
+          ws.send(JSON.stringify({ type: 'MESSAGE_ACK_CONFIRMED', messageId, success: Boolean(ackSuccess) }));
+        } catch (_) {}
         return;
       }
     } catch (e) {
@@ -963,8 +1055,8 @@ app.post('/api/messages/ack', async (req, res) => {
   }
   const cleanKey = keyId(rawId);
   if (!await verifySignedHttp(req, res, 'MESSAGE_ACK', cleanId(rawId))) return;
-  const acknowledged = acknowledgePendingMessage(cleanKey, messageId);
-  res.json({ success: true, acknowledged: messageId, removed: acknowledged });
+  const acknowledged = await acknowledgePendingMessage(cleanKey, messageId);
+  res.json({ success: true, acknowledged: messageId, removed: Boolean(acknowledged) });
 });
 
 /**
@@ -980,15 +1072,42 @@ app.post('/api/messages/pending', async (req, res) => {
   if(!await verifySignedHttp(req,res,'MESSAGE_PENDING',cleanId(rawId)))return;
   if (Array.isArray(req.body?.ackMessageIds)) {
     for (const mid of req.body.ackMessageIds) {
-      acknowledgePendingMessage(cleanKey, mid);
-    }
-  } else if (req.body?.clearOnRead === true) {
-    pendingMessages.delete(cleanKey);
-    if (isPostgres()) {
-      query(`UPDATE e2ee_messages SET is_delivered = TRUE WHERE LOWER(recipient_identity) = LOWER($1)`, [cleanKey]).catch(() => {});
+      await acknowledgePendingMessage(cleanKey, mid);
     }
   }
-  const pending = pendingMessages.get(cleanKey) || [];
+
+  // ATENÇÃO: clearOnRead foi descontinuado para eliminar perda silenciosa de mensagens.
+  // A leitura da fila não confirma entrega nem processamento.
+
+  let pending = [];
+  if (isPostgres()) {
+    try {
+      const dbRes = await query(
+        `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
+         FROM e2ee_messages
+         WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE
+         ORDER BY created_at ASC LIMIT 100`,
+        [cleanKey]
+      );
+      pending = dbRes.rows.map(r => ({
+        type: 'E2EE_MESSAGE_RECEIVED',
+        messageId: r.id,
+        senderHash: cleanId(r.sender_identity),
+        senderAlias: r.sender_alias || 'Usuário',
+        recipientHash: cleanId(r.recipient_identity),
+        ciphertextPayload: r.ciphertext_payload,
+        ivNonce: r.iv_nonce || '',
+        isEphemeral: false,
+        timestamp: r.created_at ? new Date(r.created_at).getTime() : Date.now()
+      }));
+    } catch (e) {
+      console.warn('[DB] Fallback para fila em memória:', e.message);
+      pending = pendingMessages.get(cleanKey) || [];
+    }
+  } else {
+    pending = pendingMessages.get(cleanKey) || [];
+  }
+
   res.json({ success: true, messages: pending });
 });
 

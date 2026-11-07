@@ -1334,24 +1334,24 @@ class PessoasAquiRepository(
      * nunca são interpretados como instruções. Compatibilidade de arquivo
      * histórico V1/V2 pertence ao módulo de leitura de backups, não à rede.
      */
-    internal fun processIncomingPayload(senderHash: String, senderAlias: String, rawPayload: String, iv: String = "", messageId: String = "") {
+    internal fun processIncomingPayload(senderHash: String, senderAlias: String, rawPayload: String, iv: String = "", messageId: String = ""): Boolean {
         if (!rawPayload.startsWith("ENC_ECDH:")) {
             Log.w("PessoasAqui", "Mensagem de rede sem envelope ECDH autenticado descartada")
-            return
+            return false
         }
         if (iv.isBlank() || iv.length > 128 ||
             rawPayload.length > 24 * 1024 * 1024) {
             Log.w("PessoasAqui", "Envelope E2EE inválido ou acima do limite; descartado")
-            return
+            return false
         }
         val cleanSender = cleanId(senderHash)
         if (!Regex("^[A-Fa-f0-9]{16}$").matches(cleanSender)) {
             Log.w("PessoasAqui", "Remetente de rede sem identidade válida")
-            return
+            return false
         }
         if (cleanSender in revokedMutualPeople) {
             Log.d("PessoasAqui", "Mensagem de rede descartada: remetente $cleanSender revogado")
-            return
+            return false
         }
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         val myKey = cryptoIdentityManager.getActivePrivateKey()
@@ -1383,13 +1383,14 @@ class PessoasAquiRepository(
                         Log.w("PessoasAqui", "Timeout ou erro ao processar mensagem pendente de $cleanSender: ${tEx.message}")
                     }
                 }
-                return
+                return false
             } else {
                 Log.w("PessoasAqui", "Falha de autenticação E2EE; mensagem descartada: ${e.message}")
-                return
+                return false
             }
         }
         processVerifiedNetworkPayload(cleanSender, senderAlias, payload, messageId)
+        return true
     }
 
     /**
@@ -1408,6 +1409,7 @@ class PessoasAquiRepository(
         if (messageId.isNotBlank()) {
             synchronized(processedMessageIds) {
                 if (!processedMessageIds.add(messageId)) return
+            networkClient.sendServerMessageAck(messageId)
                 if (processedMessageIds.size > 2000) processedMessageIds.clear()
             }
         }
@@ -1901,8 +1903,21 @@ class PessoasAquiRepository(
 
                     // 4. Busca mensagens pendentes na fila do servidor
                     val pendingResult = networkClient.fetchPendingMessages(myId)
+                    val deliveredIds = mutableListOf<String>()
                     pendingResult.getOrNull()?.forEach { pm ->
-                        processIncomingPayload(pm.senderHash, pm.senderAlias, pm.ciphertext, pm.ivNonce, pm.messageId)
+                        val accepted = processIncomingPayload(pm.senderHash, pm.senderAlias, pm.ciphertext, pm.ivNonce, pm.messageId)
+                        if (accepted && pm.messageId.isNotBlank()) {
+                            deliveredIds.add(pm.messageId)
+                        }
+                    }
+                    if (deliveredIds.isNotEmpty()) {
+                        scope.launch {
+                            try {
+                                networkClient.sendHttpBatchAcks(myId, deliveredIds)
+                            } catch (e: Exception) {
+                                android.util.Log.w("PessoasAqui", "Falha ao enviar batch ACK via HTTP: ${e.message}")
+                            }
+                        }
                     }
 
                     // 5. Busca ofertas e divulgações de outros usuários próximos

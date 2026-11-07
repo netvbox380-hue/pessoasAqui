@@ -31,7 +31,8 @@ function setupTestEnvironment({ postgres = false } = {}) {
     localStore: { connections: new Map(), identities: new Map() },
     isPostgres: () => postgres,
     query: async (sql, params = []) => {
-      if (sql.includes('INSERT INTO e2ee_messages')) {
+      const cleanSql = sql.replace(/\s+/g, ' ');
+      if (cleanSql.includes('INSERT INTO e2ee_messages')) {
         const [id, sId, rId, sAlias, cipher, iv] = params;
         const exists = dbMessages.some(m => m.id === id);
         if (!exists) {
@@ -47,13 +48,25 @@ function setupTestEnvironment({ postgres = false } = {}) {
         }
         return { rowCount: exists ? 0 : 1 };
       }
-      if (sql.includes('UPDATE e2ee_messages SET is_delivered = TRUE WHERE id = $1')) {
-        const [id] = params;
-        const msg = dbMessages.find(m => m.id === id);
-        if (msg) msg.is_delivered = true;
-        return { rowCount: msg ? 1 : 0 };
+      if (cleanSql.includes('UPDATE e2ee_messages') && cleanSql.includes('recipient_identity')) {
+        const [id, recip] = params;
+        const msg = dbMessages.find(m => m.id === id && m.recipient_identity.toLowerCase() === recip.toLowerCase() && !m.is_delivered);
+        if (msg) {
+          msg.is_delivered = true;
+          return { rowCount: 1 };
+        }
+        return { rowCount: 0 };
       }
-      if (sql.includes('UPDATE e2ee_messages SET is_delivered = TRUE WHERE (LOWER(sender_identity)')) {
+      if (cleanSql.includes('UPDATE e2ee_messages') && cleanSql.includes('WHERE id = $1')) {
+        const [id] = params;
+        const msg = dbMessages.find(m => m.id === id && !m.is_delivered);
+        if (msg) {
+          msg.is_delivered = true;
+          return { rowCount: 1 };
+        }
+        return { rowCount: 0 };
+      }
+      if (cleanSql.includes('UPDATE e2ee_messages') && cleanSql.includes('LOWER(sender_identity)')) {
         const [idA, idB] = params;
         let count = 0;
         for (const m of dbMessages) {
@@ -66,7 +79,7 @@ function setupTestEnvironment({ postgres = false } = {}) {
         }
         return { rowCount: count };
       }
-      if (sql.includes('SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce')) {
+      if (cleanSql.includes('SELECT') && cleanSql.includes('e2ee_messages')) {
         const rows = dbMessages.filter(m => !m.is_delivered);
         return { rows, rowCount: rows.length };
       }
@@ -75,7 +88,8 @@ function setupTestEnvironment({ postgres = false } = {}) {
     WebSocket: { OPEN: 1 }
   };
 
-  const startHelper = src.indexOf('function acknowledgePendingMessage(');
+  const startIdx = src.indexOf('async function acknowledgePendingMessage(');
+  const startHelper = startIdx !== -1 ? startIdx : src.indexOf('function acknowledgePendingMessage(');
   const endHelper = src.indexOf("wss.on('connection'");
   assert.ok(startHelper >= 0 && endHelper > startHelper, 'Helper code block not found');
   const codeSlice = src.slice(startHelper, endHelper);
@@ -110,8 +124,9 @@ function setupTestEnvironment({ postgres = false } = {}) {
 
 const PEER_A = '1111222233334444';
 const PEER_B = '5555666677778888';
+const STRANGER_C = '9999888877776666';
 
-test('1. Destinatário online: entrega imediata via WS, mensagem é removida de pending após confirmação (ACK)', () => {
+test('1. Destinatário online: entrega imediata via WS, mensagem é removida de pending após confirmação (ACK)', async () => {
   const env = setupTestEnvironment({ postgres: true });
   const receivedWs = [];
   const fakeSocket = {
@@ -132,7 +147,7 @@ test('1. Destinatário online: entrega imediata via WS, mensagem é removida de 
   assert.equal(env.pendingMessages.get(PEER_B.toLowerCase())[0].messageId, 'msg_001');
 
   // Cliente envia ACK
-  const acked = env.acknowledge(PEER_B, 'msg_001');
+  const acked = await env.acknowledge(PEER_B, 'msg_001');
   assert.equal(acked, true);
   assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
   assert.equal(env.dbMessages.find(m => m.id === 'msg_001').is_delivered, true);
@@ -157,7 +172,7 @@ test('2. Destinatário offline: mensagem é enfileirada em pendingMessages e per
   assert.equal(inDb.ciphertext_payload, 'ENC_CIPHERTEXT_02');
 });
 
-test('3. Destinatário reconecta: drena pendingMessages via WS e confirma recebimento', () => {
+test('3. Destinatário reconecta: drena pendingMessages via WS e confirma recebimento', async () => {
   const env = setupTestEnvironment({ postgres: true });
   env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
 
@@ -181,8 +196,8 @@ test('3. Destinatário reconecta: drena pendingMessages via WS e confirma recebi
   assert.equal(drained.length, 2);
 
   // Bob confirma recebimento das mensagens
-  env.acknowledge(PEER_B, 'msg_p1');
-  env.acknowledge(PEER_B, 'msg_p2');
+  await env.acknowledge(PEER_B, 'msg_p1');
+  await env.acknowledge(PEER_B, 'msg_p2');
 
   assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
   assert.equal(env.dbMessages.filter(m => m.is_delivered).length, 2);
@@ -301,6 +316,7 @@ test('9. Backend reinicia com pendências: carrega de e2ee_messages no startup (
       messageId: row.id,
       senderHash: row.sender_identity,
       senderAlias: row.sender_alias,
+      recipientHash: row.recipient_identity,
       ciphertextPayload: row.ciphertext_payload,
       ivNonce: row.iv_nonce,
       isEphemeral: false,
@@ -392,7 +408,7 @@ test('13. Múltiplas mensagens pendentes para mesmo destinatário: entregues em 
   }
 });
 
-test('14. Teto de fila atingido (50 msgs): descarta mais antiga, preserva integridade', () => {
+test('14. Teto de fila atingido (50 msgs): descarta mais antiga na RAM, preserva integridade', () => {
   const env = setupTestEnvironment();
   env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
 
@@ -408,7 +424,7 @@ test('14. Teto de fila atingido (50 msgs): descarta mais antiga, preserva integr
   assert.equal(queue[49].messageId, 'msg_cap_54');
 });
 
-test('15. Concorrência: entrega simultânea via HTTP e WS tratada atomicamente sem duplicação', () => {
+test('15. Concorrência: entrega simultânea via HTTP e WS tratada atomicamente sem duplicação', async () => {
   const env = setupTestEnvironment({ postgres: true });
   env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
 
@@ -416,12 +432,83 @@ test('15. Concorrência: entrega simultânea via HTTP e WS tratada atomicamente 
   env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_CONCURRENT', 'iv', 'msg_concurrent_1', false);
 
   // Simula cliente recebendo via WS e fazendo ACK via HTTP ao mesmo tempo
-  const ackWs = env.acknowledge(PEER_B, 'msg_concurrent_1');
+  const ackWs = await env.acknowledge(PEER_B, 'msg_concurrent_1');
   assert.equal(ackWs, true, 'Primeiro ACK deve confirmar e remover da fila');
 
   // Segundo ACK (via HTTP /api/messages/ack concorrente)
-  const ackHttp = env.acknowledge(PEER_B, 'msg_concurrent_1');
+  const ackHttp = await env.acknowledge(PEER_B, 'msg_concurrent_1');
   assert.equal(ackHttp, false, 'Segundo ACK idempotente detecta que já foi removido sem corromper estado');
 
+  assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
+});
+
+// =========================================================================
+// TESTES NEGATIVOS E DE BLINDAGEM DE ACK (PRIORIDADES 1, 3 e 4)
+// =========================================================================
+
+test('16. Blindagem de ACK: Terceiro C não consegue confirmar nem remover mensagem de B', async () => {
+  const env = setupTestEnvironment({ postgres: true });
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+  env.activePresence.set(STRANGER_C.toLowerCase(), { identityHash: STRANGER_C, alias: 'Carlos' });
+
+  // Alice envia mensagem confidencial para Bob
+  env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_SECRETO_A_B', 'ivSecret', 'msg_bob_confidential', false);
+
+  assert.equal(env.pendingMessages.get(PEER_B.toLowerCase()).length, 1);
+  assert.equal(env.dbMessages.find(m => m.id === 'msg_bob_confidential').is_delivered, false);
+
+  // Terceiro Carlos (STRANGER_C) tenta confirmar mensagem que pertence a Bob
+  const fraudAck = await env.acknowledge(STRANGER_C, 'msg_bob_confidential');
+  assert.equal(fraudAck, false, 'Carlos não pode confirmar mensagem endereçada a Bob');
+
+  // A mensagem de Bob continua 100% intacta na fila e no banco
+  assert.equal(env.pendingMessages.get(PEER_B.toLowerCase()).length, 1);
+  assert.equal(env.pendingMessages.get(PEER_B.toLowerCase())[0].messageId, 'msg_bob_confidential');
+  assert.equal(env.dbMessages.find(m => m.id === 'msg_bob_confidential').is_delivered, false);
+
+  // Agora Bob confirma legitimamente
+  const legitAck = await env.acknowledge(PEER_B, 'msg_bob_confidential');
+  assert.equal(legitAck, true, 'Bob confirma legitimamente sua própria mensagem');
+  assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
+  assert.equal(env.dbMessages.find(m => m.id === 'msg_bob_confidential').is_delivered, true);
+});
+
+test('17. Blindagem de ACK: Identidade inválida ou nula é rejeitada imediatamente', async () => {
+  const env = setupTestEnvironment({ postgres: true });
+  assert.equal(await env.acknowledge('', 'msg_1'), false);
+  assert.equal(await env.acknowledge(null, 'msg_1'), false);
+  assert.equal(await env.acknowledge('INVALID_CHARS!!', 'msg_1'), false);
+  assert.equal(await env.acknowledge('12345', 'msg_1'), false); // menor que 16 chars hex
+  assert.equal(await env.acknowledge(PEER_B, ''), false);
+});
+
+test('18. Blindagem de ACK: ACK com identificador inexistente retorna false sem erros', async () => {
+  const env = setupTestEnvironment({ postgres: true });
+  const result = await env.acknowledge(PEER_B, 'msg_inexistente_9999');
+  assert.equal(result, false);
+});
+
+test('19. T03 & T04: Consistência PostgreSQL com 100 mensagens (memória com teto 50, DB retém todas)', async () => {
+  const env = setupTestEnvironment({ postgres: true });
+  env.activePresence.set(PEER_B.toLowerCase(), { identityHash: PEER_B, alias: 'Bob' });
+
+  // Envia 100 mensagens para Bob enquanto ele está offline
+  for (let i = 1; i <= 100; i++) {
+    env.deliver(PEER_A, 'Alice', PEER_B, `ENC_PAYLOAD_${i}`, `iv_${i}`, `msg_100_${i}`, false);
+  }
+
+  // Fila em RAM retém 50 itens (política de memória protegida)
+  assert.equal(env.pendingMessages.get(PEER_B.toLowerCase()).length, 50);
+
+  // Banco de dados PostgreSQL retém todas as 100 mensagens não entregues com integridade total
+  assert.equal(env.dbMessages.length, 100);
+  assert.equal(env.dbMessages.filter(m => !m.is_delivered).length, 100);
+
+  // Bob confirma todas uma a uma
+  for (let j = 1; j <= 100; j++) {
+    await env.acknowledge(PEER_B, `msg_100_${j}`);
+  }
+
+  assert.equal(env.dbMessages.filter(m => !m.is_delivered).length, 0);
   assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
 });
