@@ -40,7 +40,13 @@ object TrustedIdentityKeys {
         pins.clear()
         pins.putAll(loaded)
         prefs = storage
+        // Hidratação durável do E2eeCryptoEngine a partir dos pins autenticados e persistidos
+        loaded.forEach { (id, pin) ->
+            E2eeCryptoEngine.registerPeerPublicKey(id, pin.spki)
+        }
     }
+
+    fun getPinSpki(identity: String): String? = pins[normalized(identity)]?.spki
 
     private fun normalized(identity: String): String =
         identity.removePrefix("peer-").trim().uppercase(java.util.Locale.ROOT)
@@ -92,11 +98,15 @@ object TrustedIdentityKeys {
         if (previous != null &&
             (generation < previous.generation ||
                 (generation == previous.generation && previous.spki != canonical))) return false
-        if (previous?.generation == generation && previous.spki == canonical) return true
+        if (previous?.generation == generation && previous.spki == canonical) {
+            E2eeCryptoEngine.registerPeerPublicKey(id, canonical)
+            return true
+        }
         val storage = prefs
         if (storage != null && !storage.edit()
                 .putString("pin_$id", "$generation|$canonical").commit()) return false
         pins[id] = Pin(generation, canonical)
+        E2eeCryptoEngine.registerPeerPublicKey(id, canonical)
         return true
     }
 }

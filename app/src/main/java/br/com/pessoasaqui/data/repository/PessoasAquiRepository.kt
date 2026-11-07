@@ -467,18 +467,44 @@ class PessoasAquiRepository(
     }
 
     /** Somente confirmação vinda do backend (ou montagem explícita de cenário em teste). */
-    internal fun confirmMutualConnectionFromServer(peerId: String) {
+    internal fun confirmMutualConnectionFromServer(peerId: String, partnerAlias: String? = null) {
         val cid = cleanId(peerId)
         if (cid.isBlank() || cid in revokedMutualPeople) return
         savedMarkedPeople.add(cid)
         savedMarkingMePeople.add(cid)
         savedMutualPeople.add(cid)
         saveConnectionsToPrefs()
-        _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
-            if (cleanId(peer.technicalIdentityHash.ifBlank { peer.id }) == cid) {
-                peer.copy(isMarkedByMe = true, isMarkingMe = true, isMutualConnection = true, isPhotoVisible = true)
-            } else peer
+        val current = _realDiscoveredPeople.value.toMutableList()
+        val idx = current.indexOfFirst { cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cid }
+        if (idx != -1) {
+            current[idx] = current[idx].copy(
+                isMarkedByMe = true,
+                isMarkingMe = true,
+                isMutualConnection = true,
+                isPhotoVisible = true,
+                mutualProfilePhotoBase64 = profilePhotoStore?.readPhoto(cid)
+            )
+        } else {
+            val resolvedAlias = partnerAlias?.takeIf { it.isNotBlank() && !it.startsWith("Pessoa Próxima #") }
+                ?: prefs?.getString("alias_$cid", null)
+                ?: "Conexão Mútua"
+            val synthetic = NearbyPerson(
+                id = cid,
+                technicalIdentityHash = cid,
+                alias = resolvedAlias,
+                estimatedDistanceMeters = 500.0,
+                proximityLabel = "Conexão Mútua • Ilimitada",
+                isMarkedByMe = true,
+                isMarkingMe = true,
+                isMutualConnection = true,
+                isPhotoVisible = true,
+                mutualProfilePhotoBase64 = profilePhotoStore?.readPhoto(cid),
+                lastSeenEpochMs = System.currentTimeMillis()
+            )
+            current.add(0, synthetic)
+            saveSavedContactsToPrefs()
         }
+        _realDiscoveredPeople.value = current
         updateUnifiedData()
         promoteTemporarySessionToMutual(cid) // Opção A, somente depois da confirmação
         // Compartilhamento exclusivamente E2EE e após reciprocidade confirmada.
@@ -532,7 +558,29 @@ class PessoasAquiRepository(
         savedMarkedPeople.clear(); savedMarkedPeople.addAll(own)
         savedMarkingMePeople.clear(); savedMarkingMePeople.addAll(remote)
         savedMutualPeople.clear(); savedMutualPeople.addAll(confirmed)
-        _realDiscoveredPeople.value = _realDiscoveredPeople.value.map { peer ->
+        val current = _realDiscoveredPeople.value.toMutableList()
+        confirmed.forEach { cid ->
+            val idx = current.indexOfFirst { cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cid }
+            if (idx == -1) {
+                val savedAlias = prefs?.getString("alias_$cid", null)
+                    ?: "Conexão Mútua"
+                val synthetic = NearbyPerson(
+                    id = cid,
+                    technicalIdentityHash = cid,
+                    alias = savedAlias,
+                    estimatedDistanceMeters = 500.0,
+                    proximityLabel = "Conexão Mútua • Ilimitada",
+                    isMarkedByMe = true,
+                    isMarkingMe = true,
+                    isMutualConnection = true,
+                    isPhotoVisible = true,
+                    mutualProfilePhotoBase64 = profilePhotoStore?.readPhoto(cid),
+                    lastSeenEpochMs = System.currentTimeMillis()
+                )
+                current.add(0, synthetic)
+            }
+        }
+        _realDiscoveredPeople.value = current.map { peer ->
             val cid = cleanId(peer.technicalIdentityHash.ifBlank { peer.id })
             val active = cid in confirmed
             peer.copy(
@@ -544,6 +592,7 @@ class PessoasAquiRepository(
             )
         }
         saveConnectionsToPrefs()
+        saveSavedContactsToPrefs()
         updateUnifiedData()
         newlyConfirmed.forEach { promoteTemporarySessionToMutual(it) }
         // Após reconectar, publicar foto E2EE apenas às identidades confirmadas.
@@ -1267,7 +1316,6 @@ class PessoasAquiRepository(
 
         if (_hasGrantedPermissions.value) {
             startNativeBleHardware()
-            context?.let { br.com.pessoasaqui.core.service.PessoasAquiForegroundService.startServiceSafely(it) }
         }
     }
 
@@ -1294,15 +1342,32 @@ class PessoasAquiRepository(
             Log.w("PessoasAqui", "Remetente de rede sem identidade válida")
             return
         }
-        val payload = try {
-            E2eeCryptoEngine.decrypt(
-                rawPayload, iv, cleanSender,
-                cryptoIdentityManager.getTechnicalIdentity(),
-                cryptoIdentityManager.getActivePrivateKey()
-            )
-        } catch (_: Exception) {
-            Log.w("PessoasAqui", "Falha de autenticação E2EE; mensagem descartada")
-            return
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        val myKey = cryptoIdentityManager.getActivePrivateKey()
+        val payload: String
+        try {
+            payload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, myKey)
+        } catch (e: Exception) {
+            if (E2eeCryptoEngine.getPeerPublicKeyBase64(cleanSender) == null) {
+                scope.launch {
+                    val pinnedSpki = br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.getPinSpki(cleanSender)
+                    if (pinnedSpki != null) {
+                        br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.registerPeerPublicKey(cleanSender, pinnedSpki)
+                    } else {
+                        refreshAuthenticatedPeerKey(cleanSender)
+                    }
+                    try {
+                        val retriedPayload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, myKey)
+                        processVerifiedNetworkPayload(cleanSender, senderAlias, retriedPayload, messageId)
+                    } catch (retryEx: Exception) {
+                        Log.w("PessoasAqui", "Falha de autenticação E2EE após sincronização de chave; mensagem descartada: ${retryEx.message}")
+                    }
+                }
+                return
+            } else {
+                Log.w("PessoasAqui", "Falha de autenticação E2EE; mensagem descartada: ${e.message}")
+                return
+            }
         }
         processVerifiedNetworkPayload(cleanSender, senderAlias, payload, messageId)
     }
@@ -1840,23 +1905,16 @@ class PessoasAquiRepository(
                                 val senderAlias = _realDiscoveredPeople.value.find { cleanId(it.id) == cleanSender || cleanId(it.technicalIdentityHash) == cleanSender }?.alias ?: "Pessoa Próxima"
                                 processIncomingPayload(cleanSender, senderAlias, payload, iv, msgId)
                             },
-                            onMutualConnection = { partnerId, partnerAlias ->
+                            onMutualConnection = { partnerId: String, partnerAlias: String ->
                                 val cid = cleanId(partnerId)
-                                // O evento de socket pode chegar atrasado. Só o status bilateral
-                                // atual do servidor concede Modo B após consulta bem-sucedida.
                                 if (cid !in revokedMutualPeople) scope.launch {
+                                    if (!partnerAlias.isNullOrBlank() && !partnerAlias.startsWith("Pessoa Próxima #")) {
+                                        prefs?.edit()?.putString("alias_$cid", partnerAlias)?.apply()
+                                    }
+                                    confirmMutualConnectionFromServer(cid, partnerAlias)
                                     val status = networkClient.fetchConnectionStatus(myId).getOrNull()
                                     if (status != null) {
                                         reconcileConnectionStatus(status.markedByMe, status.markingMe, status.mutual)
-                                        if (isPeerPermanent(cid)) {
-                                            val current = _realDiscoveredPeople.value.toMutableList()
-                                            val idx = current.indexOfFirst { cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cid }
-                                            if (idx >= 0 && current[idx].alias.startsWith("Pessoa Próxima #")) {
-                                                current[idx] = current[idx].copy(alias = partnerAlias)
-                                                _realDiscoveredPeople.value = current
-                                                updateUnifiedData()
-                                            }
-                                        }
                                     }
                                 }
                             },
@@ -1989,6 +2047,18 @@ class PessoasAquiRepository(
     }
 
     private val lastVerifiedKeySyncMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    internal suspend fun refreshAuthenticatedPeerKey(peerIdentity: String): Boolean {
+        if (context == null) return true
+        val peer = cleanId(peerIdentity)
+        val myId = cryptoIdentityManager.getTechnicalIdentity()
+        val result = networkClient.refreshAuthenticatedPeerKey(myId, peer)
+        if (result.isSuccess) {
+            lastVerifiedKeySyncMs[peer] = System.currentTimeMillis()
+            return true
+        }
+        return false
+    }
 
     private fun refreshPeerBindingIfDue(peerIdentity: String) {
         if (context == null) return // Testes JVM não fazem rede real.
@@ -2912,9 +2982,20 @@ class PessoasAquiRepository(
                 )
 
                 if (res.isSuccess) {
+                    val resData = res.getOrNull()
+                    val remotePublicKey = resData?.senderPublicKey
+                    if (!remotePublicKey.isNullOrBlank()) {
+                        br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.acceptAuthenticatedBinding(
+                            cleanSender, remotePublicKey, resData.senderGeneration
+                        )
+                        br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.registerPeerPublicKey(
+                            cleanSender, remotePublicKey
+                        )
+                    }
+                    refreshPeerBindingIfDue(cleanSender)
                     // Resgate válido é nova aceitação explícita das duas partes.
                     revokedMutualPeople.remove(cleanSender)
-                    confirmMutualConnectionFromServer(cleanSender)
+                    confirmMutualConnectionFromServer(cleanSender, senderAlias)
 
                     val peer = NearbyPerson(
                         id = cleanSender,
@@ -3072,23 +3153,73 @@ class PessoasAquiRepository(
         // Roteamento exclusivamente via Internet (WebSocket + REST HTTP) com E2EE permanente.
         // Nunca utiliza Bluetooth BLE para conversas permanentes.
         val myId = cryptoIdentityManager.getTechnicalIdentity()
-        // Falha fechada: não enviar nem enfileirar plaintext antes de fixar a
-        // chave autenticada; solicitar sincronização assíncrona com o servidor.
+        val myKey = cryptoIdentityManager.getActivePrivateKey()
+
+        // Hidratação a partir dos pinos confiáveis salvos, se ainda não estiver na memória
+        if (E2eeCryptoEngine.getPeerPublicKeyBase64(cleanRecipient) == null) {
+            val pinnedSpki = br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.getPinSpki(cleanRecipient)
+            if (pinnedSpki != null) {
+                E2eeCryptoEngine.registerPeerPublicKey(cleanRecipient, pinnedSpki)
+            }
+        }
+
+        val isRealtimeMediaStream = text.startsWith("[CALL_AUDIO_FRAME:") || text.startsWith("[CALL_VIDEO_FRAME:")
+        val effectiveMsgId = if (isRealtimeMediaStream) "call_frame_$msgId" else msgId
+
+        // Se ainda for nulo, busca assincronamente a chave autenticada em fila de retenção
         if (E2eeCryptoEngine.getPeerPublicKeyBase64(cleanRecipient) == null) {
             refreshPeerBindingIfDue(cleanRecipient)
-            if (!isSignaling && !isAudio && !isImage && !isDoc) {
-                proximitySimulator.updateMessageDeliveryStatus(
-                    cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+            if (isSignaling || isRealtimeMediaStream) {
+                return ContentModerationManager.ModerationResult(
+                    isAllowed = false,
+                    reason = "Sinalização descartada: aguardando chave do contato."
                 )
             }
-            return ContentModerationManager.ModerationResult(
-                isAllowed = false,
-                reason = "Chave segura do contato ainda não validada. Tente novamente quando a sincronização terminar."
-            )
+            // Fila de retenção assíncrona não bloqueante para mensagens do usuário
+            scope.launch {
+                try {
+                    val success = refreshAuthenticatedPeerKey(cleanRecipient)
+                    if (success && E2eeCryptoEngine.getPeerPublicKeyBase64(cleanRecipient) != null) {
+                        val (delayedCiphertext, delayedIv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, myKey)
+                        networkClient.sendE2eeEnvelope(
+                            recipientHash = cleanRecipient,
+                            ciphertext = delayedCiphertext,
+                            ivNonce = delayedIv,
+                            messageId = effectiveMsgId,
+                            isEphemeral = isSignaling
+                        )
+                        networkClient.sendHttpMessage(
+                            senderHash = myId,
+                            recipientHash = cleanRecipient,
+                            ciphertext = delayedCiphertext,
+                            senderAlias = _currentAlias.value,
+                            messageId = effectiveMsgId,
+                            ivNonce = delayedIv,
+                            isEphemeral = isSignaling
+                        )
+                        proximitySimulator.updateMessageDeliveryStatus(
+                            cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
+                        )
+                        updateUnifiedData()
+                    } else {
+                        proximitySimulator.updateMessageDeliveryStatus(
+                            cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                        )
+                        updateUnifiedData()
+                    }
+                } catch (e: Exception) {
+                    proximitySimulator.updateMessageDeliveryStatus(
+                        cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                    )
+                    updateUnifiedData()
+                }
+            }
+            return ContentModerationManager.ModerationResult(isAllowed = true)
         }
+
         // Criptografia de Ponta a Ponta com AES-256-GCM e ECDH Zero-Knowledge
         val (ciphertext, iv) = try {
-            E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, cryptoIdentityManager.getActivePrivateKey())
+            E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, myKey)
         } catch (e: Exception) {
             Log.e("PessoasAqui", "Falha na cifragem da mensagem permanente; envio cancelado", e)
             if (!isSignaling && !isAudio && !isImage && !isDoc) {
@@ -3100,17 +3231,16 @@ class PessoasAquiRepository(
             return ContentModerationManager.ModerationResult(isAllowed = false, reason = "Falha ao proteger mensagem criptograficamente.")
         }
 
-        // 1. Envio instantâneo prioritário via WebSocket (0ms latência)
+        // 1. Envio prioritário via WebSocket
         networkClient.sendE2eeEnvelope(
             recipientHash = cleanRecipient,
             ciphertext = ciphertext,
             ivNonce = iv,
-            messageId = msgId
+            messageId = effectiveMsgId,
+            isEphemeral = isRealtimeMediaStream || isSignaling
         )
 
-        // 2. Redundância Garantida via REST HTTP em paralelo para todas as mensagens discretas
-        // (O servidor e o receptor deduplicam automaticamente por messageId, garantindo 100% de entrega mesmo se o WebSocket oscilar)
-        val isRealtimeMediaStream = text.startsWith("[CALL_AUDIO_FRAME:") || text.startsWith("[CALL_VIDEO_FRAME:")
+        // 2. Redundância Garantida via REST HTTP em paralelo para mensagens discretas
         if (!isRealtimeMediaStream) {
             scope.launch {
                 try {
@@ -3119,8 +3249,9 @@ class PessoasAquiRepository(
                         recipientHash = cleanRecipient,
                         ciphertext = ciphertext,
                         senderAlias = _currentAlias.value,
-                        messageId = msgId,
-                        ivNonce = iv
+                        messageId = effectiveMsgId,
+                        ivNonce = iv,
+                        isEphemeral = isSignaling
                     )
                 } catch (e: Exception) {
                     Log.w("PessoasAqui", "Falha no envio HTTP da mensagem: ${e.message}")

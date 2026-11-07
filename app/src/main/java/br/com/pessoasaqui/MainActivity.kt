@@ -107,6 +107,9 @@ class MainActivity : ComponentActivity() {
         repo?.callRingtoneWakeManager?.isAppInForeground = true
         repo?.playBillingManager?.queryActivePurchases()
         repo?.ensureBleHealthOnForeground()
+        if (repo?.hasGrantedPermissions?.value == true) {
+            br.com.pessoasaqui.core.service.PessoasAquiForegroundService.startServiceSafely(this)
+        }
     }
 
     override fun onPause() {

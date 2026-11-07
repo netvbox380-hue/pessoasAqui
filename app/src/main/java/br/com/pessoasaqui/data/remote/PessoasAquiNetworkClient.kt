@@ -609,7 +609,13 @@ open class PessoasAquiNetworkClient(
                         "MUTUAL_CONNECTION_ESTABLISHED" -> {
                             val partnerId = obj.optString("partnerIdentity")
                             val partnerAlias = obj.optString("partnerAlias", "Conexão Mútua")
+                            val partnerPublicKey = obj.optString("partnerPublicKey").takeIf { it.isNotBlank() }
                             if (partnerId.isNotBlank()) {
+                                if (partnerPublicKey != null) {
+                                    val cleanPartner = partnerId.removePrefix("peer-").trim().uppercase(java.util.Locale.ROOT)
+                                    br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.acceptAuthenticatedBinding(cleanPartner, partnerPublicKey, 1L)
+                                    br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.registerPeerPublicKey(cleanPartner, partnerPublicKey)
+                                }
                                 onMutualConnection?.invoke(partnerId, partnerAlias)
                             }
                         }
@@ -748,7 +754,12 @@ open class PessoasAquiNetworkClient(
     /**
      * Envia envelope cifrado E2EE pelo WebSocket
      */
-    open fun sendE2eeEnvelope(recipientHash: String, ciphertext: String, ivNonce: String, messageId: String = java.util.UUID.randomUUID().toString()): Boolean {
+    open fun sendE2eeEnvelope(
+        recipientHash: String,
+        ciphertext: String,
+        ivNonce: String,
+        messageId: String = java.util.UUID.randomUUID().toString()
+    ): Boolean {
         if (!isWsConnected) return false
         val ws = activeWebSocket ?: return false
         val envelope = JSONObject().apply {
@@ -757,6 +768,29 @@ open class PessoasAquiNetworkClient(
             put("ciphertextPayload", ciphertext)
             put("ivNonce", ivNonce)
             put("messageId", messageId)
+        }
+        return ws.send(envelope.toString())
+    }
+
+    open fun sendE2eeEnvelope(
+        recipientHash: String,
+        ciphertext: String,
+        ivNonce: String,
+        messageId: String,
+        isEphemeral: Boolean
+    ): Boolean {
+        if (!isEphemeral) {
+            return sendE2eeEnvelope(recipientHash, ciphertext, ivNonce, messageId)
+        }
+        if (!isWsConnected) return false
+        val ws = activeWebSocket ?: return false
+        val envelope = JSONObject().apply {
+            put("type", "E2EE_MESSAGE")
+            put("recipientHash", recipientHash)
+            put("ciphertextPayload", ciphertext)
+            put("ivNonce", ivNonce)
+            put("messageId", messageId)
+            put("isEphemeral", true)
         }
         return ws.send(envelope.toString())
     }
@@ -849,7 +883,8 @@ open class PessoasAquiNetworkClient(
         ciphertext: String,
         senderAlias: String,
         messageId: String = java.util.UUID.randomUUID().toString(),
-        ivNonce: String = ""
+        ivNonce: String = "",
+        isEphemeral: Boolean = false
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
@@ -859,6 +894,7 @@ open class PessoasAquiNetworkClient(
                 put("senderAlias", senderAlias)
                 put("ivNonce", ivNonce)
                 put("messageId", messageId)
+                if (isEphemeral) put("isEphemeral", true)
                 val digest = br.com.pessoasaqui.core.crypto.InviteIdentityProof.digestParts(
                     senderHash, recipientHash, ciphertext, ivNonce, messageId, senderAlias
                 )
@@ -1216,6 +1252,8 @@ open class PessoasAquiNetworkClient(
                         RedeemInviteResponse(
                             senderIdentity = obj.optString("senderIdentity", senderIdentity ?: ""),
                             senderAlias = obj.optString("senderAlias", senderAlias?.ifBlank { "Conexão Convidada" } ?: "Conexão Convidada"),
+                            senderPublicKey = obj.optString("senderPublicKey").takeIf { it.isNotBlank() },
+                            senderGeneration = obj.optLong("senderGeneration", 1L),
                             receiverIdentity = obj.optString("receiverIdentity", receiverIdentity),
                             receiverAlias = obj.optString("receiverAlias", receiverAlias),
                             message = obj.optString("message", "Conexão mútua estabelecida com sucesso!")
@@ -1454,6 +1492,8 @@ data class CreateInviteResponse(
 data class RedeemInviteResponse(
     val senderIdentity: String,
     val senderAlias: String,
+    val senderPublicKey: String? = null,
+    val senderGeneration: Long = 1L,
     val receiverIdentity: String,
     val receiverAlias: String,
     val message: String

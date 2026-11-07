@@ -37,6 +37,9 @@ object E2eeCryptoEngine {
     // Mapa thread-safe de chaves públicas conhecidas dos contatos (identityHash -> PublicKey)
     private val peerPublicKeys = ConcurrentHashMap<String, PublicKey>()
 
+    // Cache de segredos compartilhados derivados para streaming contínuo (elimina recalcular ECDH a cada frame)
+    private val ecdhDerivedSecretCache = ConcurrentHashMap<String, ByteArray>()
+
     /**
      * Registra ou atualiza a chave pública recebida de um contato remoto.
      */
@@ -51,6 +54,8 @@ object E2eeCryptoEngine {
             val kf = KeyFactory.getInstance("EC")
             val pubKey = kf.generatePublic(X509EncodedKeySpec(pubBytes))
             peerPublicKeys[clean] = pubKey
+            // Invalida cache de derivação caso a chave pública tenha sido atualizada
+            ecdhDerivedSecretCache.keys.filter { it.contains(clean) }.forEach { ecdhDerivedSecretCache.remove(it) }
         } catch (_: Exception) {}
     }
 
@@ -116,6 +121,13 @@ object E2eeCryptoEngine {
         return md.digest(sharedSecret)
     }
 
+    fun getOrDeriveEcdhSharedKey(myPrivateKey: PrivateKey, cleanPeer: String, peerPublicKey: PublicKey): ByteArray {
+        val cacheKey = "$cleanPeer:${peerPublicKey.hashCode()}:${myPrivateKey.hashCode()}"
+        return ecdhDerivedSecretCache.computeIfAbsent(cacheKey) {
+            deriveEcdhSharedKey(myPrivateKey, peerPublicKey)
+        }
+    }
+
     /**
      * Deriva a chave de sessão de 256 bits determinística para retrocompatibilidade.
      */
@@ -154,7 +166,7 @@ object E2eeCryptoEngine {
                 ?: throw SecurityException("Chave pública do destinatário indisponível")
             val senderPrivateKey = myPrivateKey
                 ?: throw SecurityException("Chave privada do remetente indisponível")
-            val keyBytes = deriveEcdhSharedKey(senderPrivateKey, peerPubKey)
+            val keyBytes = getOrDeriveEcdhSharedKey(senderPrivateKey, cleanB, peerPubKey)
             val prefix = PREFIX_ECDH
 
             val iv = ByteArray(IV_LENGTH_BYTES)
@@ -207,7 +219,7 @@ object E2eeCryptoEngine {
                 throw SecurityException("Chave ECDH do interlocutor indisponível")
             }
             try {
-                val keyBytes = deriveEcdhSharedKey(myPrivateKey, peerPubKey)
+                val keyBytes = getOrDeriveEcdhSharedKey(myPrivateKey, cleanSender, peerPubKey)
                 val ciphertextBytes = Base64Helper.decode(rawCiphertext)
                 val ivBytes = Base64Helper.decode(pureIvB64)
                 val cipher = Cipher.getInstance(ALGORITHM)

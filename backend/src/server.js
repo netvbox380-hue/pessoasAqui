@@ -372,7 +372,7 @@ function unwrapE2eeIfCompatible(payload) {
   return payload;
 }
 
-function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, ciphertextPayload, ivNonce, msgId) {
+function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, ciphertextPayload, ivNonce, msgId, isEphemeralParam) {
   const cleanRecipient = cleanId(rawRecipient);
   const kRecip = keyId(cleanRecipient);
   const kSender = keyId(cleanSender);
@@ -404,6 +404,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
       senderAlias: resolvedSenderAlias,
       ciphertextPayload: compatiblePayload,
       ivNonce: ivNonce || '',
+      isEphemeral: isEphemeral,
       timestamp: Date.now()
     };
 
@@ -419,7 +420,10 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
     // mesmo se o WebSocket do destinatário estiver em transição de rede (o cliente deduplica por messageId).
     // Mensagens efêmeras / de sinalização como [READ_ACK] ou frames de áudio/vídeo não devem ser acumuladas em fila.
     const payloadStr = String(compatiblePayload || '');
-    const isEphemeral = payloadStr.startsWith('[CALL_') ||
+    const isEphemeral = Boolean(isEphemeralParam) ||
+                        String(msgId || '').startsWith('call_frame_') ||
+                        String(msgId || '').startsWith('ephem_') ||
+                        payloadStr.startsWith('[CALL_') ||
                         payloadStr.startsWith('[FAMILY_') ||
                         payloadStr === '[READ_ACK]' ||
                         payloadStr.startsWith('[MSG_DELETE:') ||
@@ -438,7 +442,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
   }
 
   // Log resumido (ignora frames contínuos de chamada ou acks em lote para não poluir o console)
-  const isContinuous = String(compatiblePayload).startsWith('[CALL_AUDIO_FRAME:') || String(compatiblePayload).startsWith('[CALL_VIDEO_FRAME:') || compatiblePayload === '[READ_ACK]';
+  const isContinuous = isEphemeral || String(compatiblePayload).startsWith('[CALL_AUDIO_FRAME:') || String(compatiblePayload).startsWith('[CALL_VIDEO_FRAME:') || compatiblePayload === '[READ_ACK]';
   if (!isContinuous) {
     console.log(`[MSG] De ${resolvedSenderAlias} (${cleanSender}) -> ${cleanRecipient} (WS=${deliveredWs})`);
   }
@@ -593,8 +597,11 @@ wss.on('connection', (ws, req) => {
 
       // Relay de Mensagem Ponta a Ponta (E2EE)
       if (msg.type === 'E2EE_MESSAGE' && authenticatedIdentity) {
-        const { recipientHash, ciphertextPayload, ivNonce, messageId } = msg;
-        const isStream = String(ciphertextPayload).startsWith('[CALL_AUDIO_FRAME:') || String(ciphertextPayload).startsWith('[CALL_VIDEO_FRAME:');
+        const { recipientHash, ciphertextPayload, ivNonce, messageId, isEphemeral } = msg;
+        const isStream = Boolean(isEphemeral) ||
+                         String(messageId || '').startsWith('call_frame_') ||
+                         String(ciphertextPayload).startsWith('[CALL_AUDIO_FRAME:') ||
+                         String(ciphertextPayload).startsWith('[CALL_VIDEO_FRAME:');
         if (!checkRateLimit(authenticatedIdentity, isStream)) {
           return;
         }
@@ -607,7 +614,7 @@ wss.on('connection', (ws, req) => {
         }
 
         const senderAlias = activePresence.get(kAuth)?.alias || 'Usuário';
-        deliverMessageToTarget(authenticatedIdentity, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId);
+        deliverMessageToTarget(authenticatedIdentity, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isStream);
       }
     } catch (e) {
       console.error('[WS] Erro no processamento de mensagem:', e.message);
@@ -839,7 +846,10 @@ app.post('/api/messages/send', async (req, res) => {
     String(senderHash||''),String(recipientHash||''),String(ciphertextPayload||''),
     String(ivNonce||''),String(messageId||''),String(senderAlias||'')]);
   if(!await verifySignedHttp(req,res,'MESSAGE_SEND',cleanSender,cleanId(recipientHash),digest))return;
-  const isStream = String(ciphertextPayload).startsWith('[CALL_AUDIO_FRAME:') || String(ciphertextPayload).startsWith('[CALL_VIDEO_FRAME:');
+  const isStream = Boolean(req.body?.isEphemeral) ||
+                   String(messageId || '').startsWith('call_frame_') ||
+                   String(ciphertextPayload).startsWith('[CALL_AUDIO_FRAME:') ||
+                   String(ciphertextPayload).startsWith('[CALL_VIDEO_FRAME:');
   if (!checkRateLimit(cleanSender, isStream)) {
     return res.status(429).json({ error: 'Muitas requisições. Limite de envio por segundo excedido.' });
   }
@@ -850,7 +860,7 @@ app.post('/api/messages/send', async (req, res) => {
     return res.json({ success: true, delivered: true, duplicate: true });
   }
 
-  const delivered = deliverMessageToTarget(cleanSender, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId);
+  const delivered = deliverMessageToTarget(cleanSender, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isStream);
   res.json({ success: true, delivered });
 });
 
@@ -1461,25 +1471,49 @@ app.post('/api/invites/redeem', async (req, res) => {
   localStore.connections.set(`${kReceiver}->${kSender}`,
     { fromIdentity: receiver, toIdentity: sender, isMutual: true });
 
+  let senderPublicKey = null;
+  let senderGeneration = 1;
+  let receiverPublicKey = req.body?.identityProof?.publicKey || null;
+
+  if (inviteDbRequired) {
+    try {
+      const sKey = await query('SELECT public_key_spki FROM identity_key_bindings WHERE identity_id = $1', [sender]);
+      if (sKey && sKey.rows && sKey.rows.length > 0) {
+        senderPublicKey = sKey.rows[0].public_key_spki;
+        senderGeneration = Number(sKey.rows[0].generation || 1);
+      }
+    } catch (_) {}
+    if (!receiverPublicKey) {
+      try {
+        const rKey = await query('SELECT public_key_spki FROM identity_key_bindings WHERE identity_id = $1', [receiver]);
+        if (rKey && rKey.rows && rKey.rows.length > 0) {
+          receiverPublicKey = rKey.rows[0].public_key_spki;
+        }
+      } catch (_) {}
+    }
+  } else {
+    if (typeof registeredDevicePublicKeys !== 'undefined' && registeredDevicePublicKeys) {
+      senderPublicKey = registeredDevicePublicKeys.get(sender) || null;
+      if (!receiverPublicKey) {
+        receiverPublicKey = registeredDevicePublicKeys.get(receiver) || null;
+      }
+    }
+  }
+
   const senderWs = activeSockets.get(kSender);
   const senderMsg = {
     type: 'MUTUAL_CONNECTION_ESTABLISHED',
     partnerIdentity: receiver,
     partnerAlias: recAlias,
-    timestamp: Date.now(), viaInvite: true
+    partnerPublicKey: receiverPublicKey,
+    timestamp: Date.now(),
+    viaInvite: true
   };
   if (senderWs && senderWs.readyState === WebSocket.OPEN) {
     senderWs.send(JSON.stringify(senderMsg));
   } else {
     if (!pendingMessages.has(kSender)) pendingMessages.set(kSender, []);
-    pendingMessages.get(kSender).push({
-      type: 'E2EE_MESSAGE_RECEIVED',
-      senderHash: receiver,
-      senderAlias: recAlias,
-      ciphertextPayload: `[MARK_MUTUAL:${recAlias}]`,
-      ivNonce: '',
-      messageId: `mut_inv_${Date.now()}`
-    });
+    pendingMessages.get(kSender).push(senderMsg);
   }
 
   const receiverWs = activeSockets.get(kReceiver);
@@ -1488,15 +1522,21 @@ app.post('/api/invites/redeem', async (req, res) => {
       type: 'MUTUAL_CONNECTION_ESTABLISHED',
       partnerIdentity: sender,
       partnerAlias: originalAlias,
-      timestamp: Date.now(), viaInvite: true
+      partnerPublicKey: senderPublicKey,
+      timestamp: Date.now(),
+      viaInvite: true
     }));
   }
 
   console.log(`[Convite] Resgate concluído atomicamente: ${inviteId}`);
   return res.json({
     success: true,
-    senderIdentity: sender, senderAlias: originalAlias,
-    receiverIdentity: receiver, receiverAlias: recAlias,
+    senderIdentity: sender,
+    senderAlias: originalAlias,
+    senderPublicKey: senderPublicKey,
+    senderGeneration: senderGeneration,
+    receiverIdentity: receiver,
+    receiverAlias: recAlias,
     message: `✨ Conexão Mútua Estabelecida com ${originalAlias}!`
   });
 });

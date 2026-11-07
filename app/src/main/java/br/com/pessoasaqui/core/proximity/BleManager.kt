@@ -376,7 +376,7 @@ class BleManager(
     init {
         try {
             val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
-            context?.registerReceiver(object : BroadcastReceiver() {
+            val stateReceiver = object : BroadcastReceiver() {
                 override fun onReceive(c: Context?, intent: Intent?) {
                     if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
                         val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
@@ -408,7 +408,14 @@ class BleManager(
                         }
                     }
                 }
-            }, filter)
+            }
+            if (context != null) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    context.registerReceiver(stateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    context.registerReceiver(stateReceiver, filter)
+                }
+            }
         } catch (e: Exception) {
             Log.w(tag, "Não foi possível registrar receiver de estado Bluetooth: ${e.message}")
         }
