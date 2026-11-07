@@ -2216,7 +2216,7 @@ class PessoasAquiRepository(
             val now = System.currentTimeMillis()
             if (!force && identity == confirmedIdentityRegistration &&
                 alias == confirmedIdentityAlias &&
-                now - lastIdentityRegistrationAtMs in 0..60_000L) {
+                now >= lastIdentityRegistrationAtMs && now - lastIdentityRegistrationAtMs <= 60_000L) {
                 return Result.success(true)
             }
             val proof = br.com.pessoasaqui.core.crypto.InviteIdentityProof.create(
@@ -2590,8 +2590,17 @@ class PessoasAquiRepository(
                             if (targetId in savedMarkedPeople) {
                                 savedMarkedPeople.remove(targetId)
                                 saveConnectionsToPrefs()
+                                _realDiscoveredPeople.value = _realDiscoveredPeople.value.map {
+                                    if (cleanId(it.technicalIdentityHash.ifBlank { it.id }) == targetId)
+                                        it.copy(isMarkedByMe = false) else it
+                                }
                                 updateUnifiedData()
                             }
+                            proximitySimulator.receivePrivateMessage(
+                                targetId, "Sistema",
+                                "Não foi possível enviar a solicitação: cadastro seguro indisponível. Tente novamente com internet.",
+                                UUID.randomUUID().toString()
+                            )
                             return@launch
                         }
                         val result = networkClient.markConnection(myId, targetId)
@@ -2603,8 +2612,17 @@ class PessoasAquiRepository(
                             if (targetId in savedMarkedPeople) {
                                 savedMarkedPeople.remove(targetId)
                                 saveConnectionsToPrefs()
+                                _realDiscoveredPeople.value = _realDiscoveredPeople.value.map {
+                                    if (cleanId(it.technicalIdentityHash.ifBlank { it.id }) == targetId)
+                                        it.copy(isMarkedByMe = false) else it
+                                }
                                 updateUnifiedData()
                             }
+                            proximitySimulator.receivePrivateMessage(
+                                targetId, "Sistema",
+                                "Solicitação não entregue pelo servidor: ${result.exceptionOrNull()?.message ?: "falha de conexão"}.",
+                                UUID.randomUUID().toString()
+                            )
                         }
                     } else {
                         val result = networkClient.unmarkConnection(myId, targetId)
