@@ -137,7 +137,10 @@ open class PessoasAquiNetworkClient(
                 if (response.isSuccessful) {
                     Result.success(true)
                 } else {
-                    Result.failure(IOException("Erro no registro: HTTP ${response.code}"))
+                    val body = response.body?.string().orEmpty()
+                    val reason = runCatching { JSONObject(body).optString("error") }.getOrNull()
+                        ?.takeIf { it.isNotBlank() } ?: "Registro não confirmado"
+                    Result.failure(IOException("$reason (HTTP ${response.code})"))
                 }
             }
         } catch (e: Exception) {
