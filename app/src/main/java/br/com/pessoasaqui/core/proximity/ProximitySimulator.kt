@@ -320,7 +320,7 @@ class ProximitySimulator(
         text: String,
         myAlias: String,
         messageId: String = UUID.randomUUID().toString(),
-        deliveryStatus: br.com.pessoasaqui.domain.model.MessageDeliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
+        deliveryStatus: br.com.pessoasaqui.domain.model.MessageDeliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT
     ) {
         val msg = ChatMessage(
             id = messageId,
@@ -425,11 +425,31 @@ class ProximitySimulator(
         val cleanId = senderId.removePrefix("peer-")
         val currentList = _privateChats.value[cleanId] ?: _privateChats.value["peer-$cleanId"] ?: emptyList()
 
+        // Reconhecimento de confirmação de entrega recebida (Delivery Receipts)
+        if (text.startsWith("[DELIVERY_ACK:")) {
+            val targetMsgId = text.removePrefix("[DELIVERY_ACK:").removeSuffix("]").trim()
+            val updatedList = currentList.map { msg ->
+                if (msg.id == targetMsgId && msg.isFromMe && msg.deliveryStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ) {
+                    msg.copy(deliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED)
+                } else msg
+            }
+            val updatedMap = _privateChats.value.toMutableMap()
+            updatedMap[cleanId] = updatedList
+            updatedMap["peer-$cleanId"] = updatedList
+            _privateChats.value = updatedMap
+            persistPrivateChatIfEligible(cleanId, updatedList)
+            return
+        }
+
         // Reconhecimento de confirmação de leitura recebida (Read Receipts)
         if (text == "[READ_ACK]") {
             val updatedList = currentList.map { msg ->
-                if (msg.isFromMe && !msg.isRead) {
-                    msg.copy(isRead = true, readTimestampMs = System.currentTimeMillis())
+                if (msg.isFromMe && (!msg.isRead || msg.deliveryStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ)) {
+                    msg.copy(
+                        isRead = true,
+                        readTimestampMs = System.currentTimeMillis(),
+                        deliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ
+                    )
                 } else msg
             }
             val updatedMap = _privateChats.value.toMutableMap()

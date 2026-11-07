@@ -1676,11 +1676,11 @@ fun ChatDetailScreen(
                                                     modifier = Modifier.size(12.dp)
                                                 )
                                             }
-                                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED -> {
+                                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT -> {
                                                 Icon(
-                                                    imageVector = Icons.Default.ErrorOutline,
-                                                    contentDescription = "Falha no envio",
-                                                    tint = Color(0xFFFF5252),
+                                                    imageVector = Icons.Default.Done,
+                                                    contentDescription = "Enviada",
+                                                    tint = if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
                                                     modifier = Modifier.size(12.dp)
                                                 )
                                             }
@@ -1690,6 +1690,22 @@ fun ChatDetailScreen(
                                                     imageVector = Icons.Default.DoneAll,
                                                     contentDescription = if (isRead) "Visualizada" else "Entregue",
                                                     tint = if (isRead) Color(0xFF69F0AE) else if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ -> {
+                                                Icon(
+                                                    imageVector = Icons.Default.DoneAll,
+                                                    contentDescription = "Visualizada",
+                                                    tint = Color(0xFF69F0AE),
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED -> {
+                                                Icon(
+                                                    imageVector = Icons.Default.ErrorOutline,
+                                                    contentDescription = "Falha no envio",
+                                                    tint = Color(0xFFFF5252),
                                                     modifier = Modifier.size(12.dp)
                                                 )
                                             }

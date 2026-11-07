@@ -73,7 +73,9 @@ data class NearbyPerson(
 @Serializable
 enum class MessageDeliveryStatus {
     PENDING,   // Criada localmente, aguardando envio/ACK do destinatário
+    SENT,      // Transmitida para a rede/servidor ou disparada pelo rádio BLE
     DELIVERED, // Entregue com confirmação criptográfica autenticada (ACK)
+    READ,      // Lida pelo destinatário com confirmação de leitura
     FAILED     // Falha definitiva de entrega (timeout, desconexão ou erro de autenticação)
 }
 
@@ -101,7 +103,7 @@ data class ChatMessage(
     val isEdited: Boolean = false,
     val editedTimestampMs: Long = 0L,
     val isDeleted: Boolean = false,
-    val deliveryStatus: MessageDeliveryStatus = MessageDeliveryStatus.DELIVERED
+    val deliveryStatus: MessageDeliveryStatus = MessageDeliveryStatus.SENT
 ) {
     /**
      * Protege a interface contra registros cifrados antigos gravados quando a

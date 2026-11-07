@@ -33,6 +33,7 @@ object E2eeCryptoEngine {
     private const val IV_LENGTH_BYTES = 12
     private const val PREFIX = "ENC:"
     private const val PREFIX_ECDH = "ENC_ECDH:"
+    private const val MAX_ECDH_CACHE_ENTRIES = 200
 
     // Mapa thread-safe de chaves públicas conhecidas dos contatos (identityHash -> PublicKey)
     private val peerPublicKeys = ConcurrentHashMap<String, PublicKey>()
@@ -55,8 +56,32 @@ object E2eeCryptoEngine {
             val pubKey = kf.generatePublic(X509EncodedKeySpec(pubBytes))
             peerPublicKeys[clean] = pubKey
             // Invalida cache de derivação caso a chave pública tenha sido atualizada
-            ecdhDerivedSecretCache.keys.filter { it.contains(clean) }.forEach { ecdhDerivedSecretCache.remove(it) }
+            clearSessionCache(clean)
         } catch (_: Exception) {}
+    }
+
+    /**
+     * Remove a chave pública e limpa a sessão criptográfica do contato (usado em revogação).
+     */
+    fun clearPeerPublicKey(identity: String) {
+        val clean = identity.removePrefix("peer-").trim().uppercase()
+        peerPublicKeys.remove(clean)
+        clearSessionCache(clean)
+    }
+
+    /**
+     * Invalida explicitamente o cache de sessões ECDH derivadas.
+     * Se peerId for nulo, limpa todo o cache; caso contrário, limpa as sessões do par.
+     */
+    fun clearSessionCache(peerId: String? = null) {
+        if (peerId.isNullOrBlank()) {
+            ecdhDerivedSecretCache.clear()
+        } else {
+            val clean = peerId.removePrefix("peer-").trim().uppercase()
+            ecdhDerivedSecretCache.keys.filter { it.startsWith("$clean:") || it.contains(":$clean:") }.forEach {
+                ecdhDerivedSecretCache.remove(it)
+            }
+        }
     }
 
     /** A chave pública conhecida é apenas candidata; o servidor confirma
@@ -122,7 +147,21 @@ object E2eeCryptoEngine {
     }
 
     fun getOrDeriveEcdhSharedKey(myPrivateKey: PrivateKey, cleanPeer: String, peerPublicKey: PublicKey): ByteArray {
-        val cacheKey = "$cleanPeer:${peerPublicKey.hashCode()}:${myPrivateKey.hashCode()}"
+        val peerFingerprint = try {
+            val md = MessageDigest.getInstance("SHA-256")
+            Base64Helper.encode(md.digest(peerPublicKey.encoded))
+        } catch (_: Exception) {
+            Base64Helper.encode(peerPublicKey.encoded)
+        }
+        val cacheKey = "$cleanPeer:$peerFingerprint"
+
+        // Limita o tamanho do cache a 200 entradas para evitar vazamento ou exaustão de memória
+        if (ecdhDerivedSecretCache.size >= MAX_ECDH_CACHE_ENTRIES && !ecdhDerivedSecretCache.containsKey(cacheKey)) {
+            val excess = ecdhDerivedSecretCache.size - MAX_ECDH_CACHE_ENTRIES + 1
+            val keysToRemove = ecdhDerivedSecretCache.keys.take(excess)
+            keysToRemove.forEach { ecdhDerivedSecretCache.remove(it) }
+        }
+
         return ecdhDerivedSecretCache.computeIfAbsent(cacheKey) {
             deriveEcdhSharedKey(myPrivateKey, peerPublicKey)
         }

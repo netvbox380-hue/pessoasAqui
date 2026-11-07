@@ -138,7 +138,7 @@ class ChatMessagePersistenceManager(
                 val raw = file.readText(Charsets.UTF_8)
                 val content = diskCrypto.decrypt(raw)
                 val msgList = json.decodeFromString(ListSerializer(ChatMessage.serializer()), content)
-                val sanitizedList = msgList.filter { it.text != "[READ_ACK]" && !it.text.startsWith("[MSG_EDIT:") && !it.text.startsWith("[MSG_DELETE:") }
+                val sanitizedList = msgList.filter { it.text != "[READ_ACK]" && !it.text.startsWith("[DELIVERY_ACK:") && !it.text.startsWith("[MSG_EDIT:") && !it.text.startsWith("[MSG_DELETE:") }
                 if (sanitizedList.isNotEmpty()) {
                     resultMap[cleanPeerId] = sanitizedList
                     resultMap["peer-$cleanPeerId"] = sanitizedList

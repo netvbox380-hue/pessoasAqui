@@ -520,6 +520,7 @@ class PessoasAquiRepository(
         savedMarkingMePeople.remove(cid)
         avatarPhotoSentByPeer.remove(cid)
         profilePhotoStore?.savePhoto(cid, null)
+        br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.clearPeerPublicKey(cid)
         // Em nenhum caso preservar imagem real visível após revogação.
         if (removeMyMark) savedMarkedPeople.remove(cid)
         if (queueRemoteUnmark) pendingUnmarkPeople.add(cid)
@@ -1342,6 +1343,10 @@ class PessoasAquiRepository(
             Log.w("PessoasAqui", "Remetente de rede sem identidade válida")
             return
         }
+        if (cleanSender in revokedMutualPeople) {
+            Log.d("PessoasAqui", "Mensagem de rede descartada: remetente $cleanSender revogado")
+            return
+        }
         val myId = cryptoIdentityManager.getTechnicalIdentity()
         val myKey = cryptoIdentityManager.getActivePrivateKey()
         val payload: String
@@ -1350,17 +1355,25 @@ class PessoasAquiRepository(
         } catch (e: Exception) {
             if (E2eeCryptoEngine.getPeerPublicKeyBase64(cleanSender) == null) {
                 scope.launch {
-                    val pinnedSpki = br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.getPinSpki(cleanSender)
-                    if (pinnedSpki != null) {
-                        br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.registerPeerPublicKey(cleanSender, pinnedSpki)
-                    } else {
-                        refreshAuthenticatedPeerKey(cleanSender)
-                    }
                     try {
-                        val retriedPayload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, myKey)
-                        processVerifiedNetworkPayload(cleanSender, senderAlias, retriedPayload, messageId)
-                    } catch (retryEx: Exception) {
-                        Log.w("PessoasAqui", "Falha de autenticação E2EE após sincronização de chave; mensagem descartada: ${retryEx.message}")
+                        kotlinx.coroutines.withTimeoutOrNull(15000L) {
+                            if (cleanSender in revokedMutualPeople) return@withTimeoutOrNull
+                            val pinnedSpki = br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.getPinSpki(cleanSender)
+                            if (pinnedSpki != null) {
+                                br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.registerPeerPublicKey(cleanSender, pinnedSpki)
+                            } else {
+                                refreshAuthenticatedPeerKey(cleanSender)
+                            }
+                            if (cleanSender in revokedMutualPeople) return@withTimeoutOrNull
+                            try {
+                                val retriedPayload = E2eeCryptoEngine.decrypt(rawPayload, iv, cleanSender, myId, myKey)
+                                processVerifiedNetworkPayload(cleanSender, senderAlias, retriedPayload, messageId)
+                            } catch (retryEx: Exception) {
+                                Log.w("PessoasAqui", "Falha de autenticação E2EE após sincronização de chave; mensagem descartada: ${retryEx.message}")
+                            }
+                        }
+                    } catch (tEx: Exception) {
+                        Log.w("PessoasAqui", "Timeout ou erro ao processar mensagem pendente de $cleanSender: ${tEx.message}")
                     }
                 }
                 return
@@ -1544,6 +1557,17 @@ class PessoasAquiRepository(
                     "✨ Vínculo Familiar (${role.label}) confirmado mutuamente com $partnerAlias! Chamadas, fotos e áudios liberados.",
                     messageId
                 )
+            }
+            payload.startsWith("[DELIVERY_ACK:") -> {
+                val targetMsgId = payload.removePrefix("[DELIVERY_ACK:").removeSuffix("]").trim()
+                if (targetMsgId.isNotBlank()) {
+                    proximitySimulator.updateMessageDeliveryStatus(
+                        cleanSender,
+                        targetMsgId,
+                        br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
+                    )
+                    updateUnifiedData()
+                }
             }
             payload.startsWith("[MARK_ON:") -> {
                 val callerAlias = payload.removePrefix("[MARK_ON:").removeSuffix("]").ifBlank { senderAlias }
@@ -1788,6 +1812,18 @@ class PessoasAquiRepository(
                 }
                 proximitySimulator.receivePrivateMessage(cleanSender, senderAlias, payload, messageId)
                 callRingtoneWakeManager?.notifyIncomingMessageIfBackground(senderAlias, payload)
+
+                // Emite confirmação criptográfica de entrega (ACK) automática para o remetente
+                if (messageId.isNotBlank() && !payload.startsWith("[DELIVERY_ACK:") &&
+                    payload != "[READ_ACK]" && !payload.startsWith("[MSG_EDIT:") && !payload.startsWith("[MSG_DELETE:")) {
+                    scope.launch {
+                        try {
+                            sendPrivateMessage(cleanSender, "[DELIVERY_ACK:$messageId]")
+                        } catch (e: Exception) {
+                            Log.w("PessoasAqui", "Falha ao emitir DELIVERY_ACK para $cleanSender: ${e.message}")
+                        }
+                    }
+                }
             }
         }
     }
@@ -3055,7 +3091,8 @@ class PessoasAquiRepository(
         val isSignaling = text.startsWith("[PA_REAL_PHOTO_V1:") ||
                           text.startsWith("[CALL_") || text.startsWith("[FAMILY_") ||
                           text.startsWith("[VAULT_") || text.startsWith("[MARK_") ||
-                          text == "[READ_ACK]" || text.startsWith("[MSG_EDIT:") || text.startsWith("[MSG_DELETE:")
+                          text == "[READ_ACK]" || text.startsWith("[DELIVERY_ACK:") ||
+                          text.startsWith("[MSG_EDIT:") || text.startsWith("[MSG_DELETE:")
         val isAudio = text.startsWith("[AUDIO:")
         val isImage = text.startsWith("[IMAGE:")
         val isDoc = text.startsWith("[DOC:")
@@ -3130,7 +3167,7 @@ class PessoasAquiRepository(
                 text = text,
                 myAlias = _currentAlias.value,
                 messageId = msgId,
-                deliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
+                deliveryStatus = br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT
             )
         } else if (isAudio) {
             val content = text.removePrefix("[AUDIO:").removeSuffix("]")
@@ -3178,30 +3215,46 @@ class PessoasAquiRepository(
             // Fila de retenção assíncrona não bloqueante para mensagens do usuário
             scope.launch {
                 try {
-                    val success = refreshAuthenticatedPeerKey(cleanRecipient)
-                    if (success && E2eeCryptoEngine.getPeerPublicKeyBase64(cleanRecipient) != null) {
-                        val (delayedCiphertext, delayedIv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, myKey)
-                        networkClient.sendE2eeEnvelope(
-                            recipientHash = cleanRecipient,
-                            ciphertext = delayedCiphertext,
-                            ivNonce = delayedIv,
-                            messageId = effectiveMsgId,
-                            isEphemeral = isSignaling
-                        )
-                        networkClient.sendHttpMessage(
-                            senderHash = myId,
-                            recipientHash = cleanRecipient,
-                            ciphertext = delayedCiphertext,
-                            senderAlias = _currentAlias.value,
-                            messageId = effectiveMsgId,
-                            ivNonce = delayedIv,
-                            isEphemeral = isSignaling
-                        )
-                        proximitySimulator.updateMessageDeliveryStatus(
-                            cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED
-                        )
-                        updateUnifiedData()
-                    } else {
+                    kotlinx.coroutines.withTimeoutOrNull(15000L) {
+                        val success = refreshAuthenticatedPeerKey(cleanRecipient)
+                        if (cleanRecipient in revokedMutualPeople || !isPeerPermanent(cleanRecipient)) {
+                            Log.w("PessoasAqui", "Envio cancelado: contato $cleanRecipient revogado durante a espera da chave")
+                            proximitySimulator.updateMessageDeliveryStatus(
+                                cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                            )
+                            updateUnifiedData()
+                            return@withTimeoutOrNull
+                        }
+                        if (success && E2eeCryptoEngine.getPeerPublicKeyBase64(cleanRecipient) != null) {
+                            val (delayedCiphertext, delayedIv) = E2eeCryptoEngine.encrypt(text, myId, cleanRecipient, myKey)
+                            networkClient.sendE2eeEnvelope(
+                                recipientHash = cleanRecipient,
+                                ciphertext = delayedCiphertext,
+                                ivNonce = delayedIv,
+                                messageId = effectiveMsgId,
+                                isEphemeral = isSignaling
+                            )
+                            networkClient.sendHttpMessage(
+                                senderHash = myId,
+                                recipientHash = cleanRecipient,
+                                ciphertext = delayedCiphertext,
+                                senderAlias = _currentAlias.value,
+                                messageId = effectiveMsgId,
+                                ivNonce = delayedIv,
+                                isEphemeral = isSignaling
+                            )
+                            proximitySimulator.updateMessageDeliveryStatus(
+                                cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT
+                            )
+                            updateUnifiedData()
+                        } else {
+                            proximitySimulator.updateMessageDeliveryStatus(
+                                cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                            )
+                            updateUnifiedData()
+                        }
+                    } ?: run {
+                        Log.w("PessoasAqui", "Timeout de 15s na busca de chave pública para $cleanRecipient")
                         proximitySimulator.updateMessageDeliveryStatus(
                             cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
                         )

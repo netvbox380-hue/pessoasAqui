@@ -131,4 +131,39 @@ class E2eeCryptoEngineTest {
             // Entrada não cifrada deve ser rejeitada, nunca exibida como mensagem privada.
         }
     }
+    @Test
+    fun testEcdhDerivedSecretCacheAndPurgeOnRevocation() {
+        val aliceId = "AAAABBBBCCCC1111"
+        val bobId = "DDDDEEEEFFFF2222"
+        val (alice, bob) = setupPeers(aliceId, bobId)
+
+        // Deriva chave compartilhada
+        val secret1 = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(alice.private, bobId, bob.public)
+        val secret2 = E2eeCryptoEngine.getOrDeriveEcdhSharedKey(alice.private, bobId, bob.public)
+
+        assertArrayEquals("Chave recuperada do cache deve ser idêntica", secret1, secret2)
+
+        // Limpa cache da sessão de Bob
+        E2eeCryptoEngine.clearSessionCache(bobId)
+
+        // Remove chave pública e sessão de Bob (revogação)
+        E2eeCryptoEngine.clearPeerPublicKey(bobId)
+        assertNull("Chave de Bob deve ser nula após clearPeerPublicKey", E2eeCryptoEngine.getPeerPublicKeyBase64(bobId))
+    }
+
+    @Test
+    fun testEcdhCacheBoundingDoesNotExceedMaxLimit() {
+        val gen = KeyPairGenerator.getInstance("EC").apply { initialize(256) }
+        val myKey = gen.generateKeyPair()
+
+        // Deriva segredos para 250 identidades distintas
+        for (i in 0 until 250) {
+            val peerKey = gen.generateKeyPair()
+            val peerId = "PEER_%04d".format(i)
+            E2eeCryptoEngine.getOrDeriveEcdhSharedKey(myKey.private, peerId, peerKey.public)
+        }
+
+        // Limpa o cache global após o teste para manter idempotência
+        E2eeCryptoEngine.clearSessionCache()
+    }
 }

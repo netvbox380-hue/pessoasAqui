@@ -275,19 +275,20 @@ const recentMessageIds = new Map();
 const clientMessageRate = new Map();
 
 function checkRateLimit(identity, isStream) {
-  if (isStream || !identity) return true;
+  if (!identity) return true;
   const now = Date.now();
-  const rate = clientMessageRate.get(identity) || { count: 0, windowStart: now };
-  if (now - rate.windowStart > 1000) {
-    rate.count = 1;
-    rate.windowStart = now;
-    clientMessageRate.set(identity, rate);
+  const maxAllowed = isStream ? 120 : 25;
+  const rateKey = isStream ? `${identity}_stream` : identity;
+  let rate = clientMessageRate.get(rateKey);
+  if (!rate || (now - rate.windowStart > 1000)) {
+    rate = { count: 1, windowStart: now };
+    clientMessageRate.set(rateKey, rate);
     return true;
   }
   rate.count++;
-  if (rate.count > 25) {
-    if (rate.count === 26) {
-      console.warn(`[ANTI-FLOOD] Taxa de mensagens excedida para ${identity} (${rate.count}/seg). Descartando mensagens excedentes.`);
+  if (rate.count > maxAllowed) {
+    if (rate.count === maxAllowed + 1) {
+      console.warn(`[ANTI-FLOOD] Taxa ${isStream ? 'de streaming' : 'de mensagens'} excedida para ${identity} (${rate.count}/seg). Descartando.`);
     }
     return false;
   }
@@ -374,6 +375,9 @@ function unwrapE2eeIfCompatible(payload) {
 
 function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, ciphertextPayload, ivNonce, msgId, isEphemeralParam) {
   const cleanRecipient = cleanId(rawRecipient);
+  if (!cleanRecipient || !/^[A-Za-z0-9_-]{8,64}$/.test(cleanRecipient)) {
+    return false;
+  }
   const kRecip = keyId(cleanRecipient);
   const kSender = keyId(cleanSender);
   const resolvedSenderAlias =
@@ -383,6 +387,18 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
 
   // Garante compatibilidade total entre aparelhos com APK novo (AES-256-GCM) e APK anterior
   const compatiblePayload = unwrapE2eeIfCompatible(ciphertextPayload, ivNonce, cleanSender, cleanRecipient);
+
+  // Calcula isEphemeral ANTES de qualquer uso no loop ou objeto de mensagem (corrige TDZ ReferenceError)
+  const payloadStr = String(compatiblePayload || '');
+  const isEphemeral = Boolean(isEphemeralParam) ||
+                      String(msgId || '').startsWith('call_frame_') ||
+                      String(msgId || '').startsWith('ephem_') ||
+                      payloadStr.startsWith('[CALL_') ||
+                      payloadStr.startsWith('[FAMILY_') ||
+                      payloadStr === '[READ_ACK]' ||
+                      payloadStr.startsWith('[DELIVERY_ACK:') ||
+                      payloadStr.startsWith('[MSG_DELETE:') ||
+                      payloadStr.startsWith('[MSG_EDIT:');
 
   // Resolve destinatário tanto pelo identityHash quanto pelo apelido ativo (caso o remetente tenha ID antigo do contato)
   const targetKeys = new Set([kRecip]);
@@ -419,16 +435,6 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
     // Também armazena na fila pendente HTTP (com limite de 50 mensagens) para garantir entrega
     // mesmo se o WebSocket do destinatário estiver em transição de rede (o cliente deduplica por messageId).
     // Mensagens efêmeras / de sinalização como [READ_ACK] ou frames de áudio/vídeo não devem ser acumuladas em fila.
-    const payloadStr = String(compatiblePayload || '');
-    const isEphemeral = Boolean(isEphemeralParam) ||
-                        String(msgId || '').startsWith('call_frame_') ||
-                        String(msgId || '').startsWith('ephem_') ||
-                        payloadStr.startsWith('[CALL_') ||
-                        payloadStr.startsWith('[FAMILY_') ||
-                        payloadStr === '[READ_ACK]' ||
-                        payloadStr.startsWith('[MSG_DELETE:') ||
-                        payloadStr.startsWith('[MSG_EDIT:');
-
     if (!isEphemeral) {
       if (!pendingMessages.has(tk)) {
         pendingMessages.set(tk, []);
@@ -442,7 +448,11 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
   }
 
   // Log resumido (ignora frames contínuos de chamada ou acks em lote para não poluir o console)
-  const isContinuous = isEphemeral || String(compatiblePayload).startsWith('[CALL_AUDIO_FRAME:') || String(compatiblePayload).startsWith('[CALL_VIDEO_FRAME:') || compatiblePayload === '[READ_ACK]';
+  const isContinuous = isEphemeral ||
+                       String(compatiblePayload).startsWith('[CALL_AUDIO_FRAME:') ||
+                       String(compatiblePayload).startsWith('[CALL_VIDEO_FRAME:') ||
+                       compatiblePayload === '[READ_ACK]' ||
+                       String(compatiblePayload).startsWith('[DELIVERY_ACK:');
   if (!isContinuous) {
     console.log(`[MSG] De ${resolvedSenderAlias} (${cleanSender}) -> ${cleanRecipient} (WS=${deliveredWs})`);
   }
@@ -598,6 +608,9 @@ wss.on('connection', (ws, req) => {
       // Relay de Mensagem Ponta a Ponta (E2EE)
       if (msg.type === 'E2EE_MESSAGE' && authenticatedIdentity) {
         const { recipientHash, ciphertextPayload, ivNonce, messageId, isEphemeral } = msg;
+        if (!ciphertextPayload || (typeof ciphertextPayload === 'string' && ciphertextPayload.length > 25 * 1024 * 1024)) {
+          return;
+        }
         const isStream = Boolean(isEphemeral) ||
                          String(messageId || '').startsWith('call_frame_') ||
                          String(ciphertextPayload).startsWith('[CALL_AUDIO_FRAME:') ||
