@@ -1071,6 +1071,31 @@ app.post('/api/connections/mark', async (req, res) => {
   }
   if(!await authorizeConnectionWrite(req,res,'CONNECTION_MARK',from,to))return;
 
+  // Uma sessão WS autenticada não implica uma linha em identities. A FK de
+  // connections precisa de ambas as identidades registradas e vinculadas a
+  // chaves ativas. Não criar registros fictícios nem contornar a FK.
+  if (isPostgres()) {
+    try {
+      const registered = await query(
+        'SELECT id FROM identities WHERE id = ANY($1::varchar[])',
+        [[from, to]]
+      );
+      const found = new Set(registered.rows.map(row => cleanId(row.id)));
+      if (!found.has(from) || !found.has(to)) {
+        return res.status(409).json({
+          success: false,
+          error: !found.has(from)
+            ? 'Sua identidade não está cadastrada. Registre novamente e tente marcar.'
+            : 'A identidade do destinatário ainda não está cadastrada no servidor.',
+          code: !found.has(from) ? 'SENDER_IDENTITY_NOT_REGISTERED' : 'TARGET_IDENTITY_NOT_REGISTERED'
+        });
+      }
+    } catch (e) {
+      console.error('[DB] Falha ao conferir identidades da marcação:', e.message);
+      return res.status(503).json({success:false,error:'Cadastro de identidades temporariamente indisponível.'});
+    }
+  }
+
   if (process.env.DATABASE_URL && !isPostgres()) {
     return res.status(503).json({success:false,error:'Banco de conexões indisponível.'});
   }
