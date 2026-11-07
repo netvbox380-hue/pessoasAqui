@@ -68,12 +68,13 @@ test('1. Envio de texto permanente para destinatário online via WS', async () =
   env.activePresence.set('bob', { identityHash: 'BOB_1234567890AB', alias: 'Bob' });
   env.activeSockets.set('bob_1234567890ab', fakeSocket);
 
-  const delivered = await await env.deliver(
+  const res = await env.deliver(
     'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
     'ENC_ECDH:ciphertext_texto_secreto', 'iv123', 'msg_txt_01', false
   );
 
-  assert.equal(delivered, true);
+  assert.equal(res.success, true);
+  assert.equal(res.delivered, true);
   assert.equal(receivedWs.length, 1);
   assert.equal(receivedWs[0].type, 'E2EE_MESSAGE_RECEIVED');
   assert.equal(receivedWs[0].senderHash, 'ALICE_1234567890A');
@@ -88,12 +89,13 @@ test('2. Envio de texto permanente para destinatário offline (armazenado em pen
   env.activePresence.set('bob', { identityHash: 'BOB_1234567890AB', alias: 'Bob' });
   // Sem socket ativo para Bob
 
-  const delivered = await await env.deliver(
+  const res = await env.deliver(
     'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
     'ENC_ECDH:ciphertext_texto_offline', 'iv123', 'msg_txt_02', false
   );
 
-  assert.equal(delivered, false);
+  assert.equal(res.success, true);
+  assert.equal(res.delivered, false);
   const queue = env.pendingMessages.get('bob_1234567890ab');
   assert.ok(queue);
   assert.equal(queue.length, 1);
@@ -107,12 +109,13 @@ test('3. Envio de mídia criptografada (imagem/áudio) preserva integridade e fi
 
   // Mídia em Modo B trafega cifrada no envelope E2EE
   const mediaPayload = 'ENC_ECDH:base64_imagem_cifrada_aes_gcm';
-  const delivered = await await env.deliver(
+  const res = await env.deliver(
     'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
     mediaPayload, 'ivMedia', 'msg_img_01', false
   );
 
-  assert.equal(delivered, false); // offline
+  assert.equal(res.success, true);
+  assert.equal(res.delivered, false); // offline
   const queue = env.pendingMessages.get('bob_1234567890ab');
   assert.ok(queue);
   assert.equal(queue.length, 1);
@@ -132,12 +135,14 @@ test('4. Quadros de chamada e frames efêmeros entregues via WS sem acumular em 
   env.activeSockets.set('bob_1234567890ab', fakeSocket);
 
   // Frame de chamada com identificador call_frame_
-  const delivered = await await env.deliver(
+  const res = await env.deliver(
     'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
     'ENC_ECDH:audio_frame_cifrado', 'ivFrame1', 'call_frame_1001', true
   );
 
-  assert.equal(delivered, true);
+  assert.equal(res.success, true);
+  assert.equal(res.delivered, true);
+  assert.equal(res.persisted, false);
   assert.equal(receivedWs.length, 1);
   assert.equal(receivedWs[0].isEphemeral, true);
   assert.equal(env.pendingMessages.has('bob_1234567890ab'), false);
@@ -150,11 +155,12 @@ test('5. Quadros de chamada descartados se destinatário estiver offline (NÃO p
 
   // 10 frames de chamada enviados enquanto Bob está offline
   for (let i = 0; i < 10; i++) {
-    const delivered = await await env.deliver(
+    const res = await env.deliver(
       'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
       `ENC_ECDH:audio_frame_${i}`, 'ivFrame', `call_frame_${i}`, true
     );
-    assert.equal(delivered, false);
+    assert.equal(res.success, true);
+    assert.equal(res.delivered, false);
   }
 
   // Fila offline NUNCA deve conter frames de chamada
@@ -224,9 +230,13 @@ test('8. Deduplicação bloqueia retransmissão de mensagens com mesmo ID', asyn
 
 test('9. Destinatário com identificador inválido é rejeitado com segurança', async () => {
   const env = setupTestEnvironment();
-  assert.equal(await env.deliver('ALICE', 'Alice', '', 'payload', 'iv', 'id_01', false), false);
-  assert.equal(await env.deliver('ALICE', 'Alice', 'ab', 'payload', 'iv', 'id_02', false), false); // muito curto
-  assert.equal(await env.deliver('ALICE', 'Alice', 'invalid@recipient!', 'payload', 'iv', 'id_03', false), false); // caracteres ilegais
+  const r1 = await env.deliver('ALICE', 'Alice', '', 'payload', 'iv', 'id_01', false);
+  assert.equal(r1.success, false);
+  assert.equal(r1.error, 'Destinatário inválido');
+  const r2 = await env.deliver('ALICE', 'Alice', 'ab', 'payload', 'iv', 'id_02', false);
+  assert.equal(r2.success, false);
+  const r3 = await env.deliver('ALICE', 'Alice', 'invalid@recipient!', 'payload', 'iv', 'id_03', false);
+  assert.equal(r3.success, false); // caracteres ilegais
 });
 
 test('10. Reconexão: mensagens pendentes são entregues e a fila é esvaziada', async () => {

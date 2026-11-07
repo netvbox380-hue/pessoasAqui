@@ -81,23 +81,39 @@ class ProximitySimulator(
     var shouldPersistPrivateChat: ((peerId: String) -> Boolean)? = null
 
     fun persistPrivateChatIfEligible(cleanId: String, messages: List<ChatMessage>): Boolean {
-        if (shouldPersistPrivateChat == null || shouldPersistPrivateChat?.invoke(cleanId) == true) {
-            return persistenceManager?.savePrivateChat(cleanId, messages) ?: true
+        val requiresPersistence = shouldPersistPrivateChat?.invoke(cleanId)
+        if (requiresPersistence == false) {
+            // Modo A: efêmero em RAM (sem gravação em disco por política de privacidade)
+            return true
         }
-        return true
+        if (requiresPersistence == true) {
+            // Modo B: contato permanente / conexão mútua. Persistência real em disco cifrado é estritamente mandatória!
+            val pm = persistenceManager ?: return false
+            return pm.savePrivateChat(cleanId, messages)
+        }
+        // shouldPersistPrivateChat não configurado (simulador autônomo):
+        return persistenceManager?.savePrivateChat(cleanId, messages) ?: true
     }
 
     fun isMessagePersistedOrPresent(cleanPeerId: String, messageId: String): Boolean {
         if (messageId.isBlank()) return false
         val clean = cleanPeerId.removePrefix("peer-")
+        val requiresPersistence = shouldPersistPrivateChat?.invoke(clean)
+        if (requiresPersistence == true) {
+            // Modo B: contato permanente. Comprova presença real no disco físico
+            val pm = persistenceManager ?: return false
+            return pm.hasMessage(clean, messageId)
+        }
         val list = _privateChats.value[clean] ?: _privateChats.value["peer-$clean"] ?: emptyList()
         if (list.any { it.id == messageId }) return true
         return persistenceManager?.hasMessage(clean, messageId) == true
     }
 
-    fun setPersistenceManager(pm: ChatMessagePersistenceManager) {
+    fun setPersistenceManager(pm: ChatMessagePersistenceManager?) {
         this.persistenceManager = pm
-        loadPersistedMessages()
+        if (pm != null) {
+            loadPersistedMessages()
+        }
     }
 
     fun loadPersistedMessages() {

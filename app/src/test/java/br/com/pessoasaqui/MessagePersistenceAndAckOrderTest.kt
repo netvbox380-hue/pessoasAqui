@@ -236,4 +236,46 @@ class MessagePersistenceAndAckOrderTest {
         val count = repo.proximitySimulator.privateChats.value[peerId].orEmpty().count { it.id == msgId }
         assertEquals("Histórico não pode ser inflado", 1, count)
     }
+
+    @Test
+    fun testT11_modoBFailsWhenPersistenceManagerIsNull() {
+        val repo = createRepository()
+        // Define persistenceManager como nulo para simular falha de inicialização / indisponibilidade do storage
+        repo.proximitySimulator.setPersistenceManager(null)
+
+        val msgId = "msg_modob_null_pm_${UUID.randomUUID()}"
+        val success = repo.processVerifiedNetworkPayload(peerId, "Contato", "Texto Modo B sem PM", msgId)
+
+        // Modo B NUNCA deve retornar true se persistenceManager for nulo!
+        assertFalse("Modo B deve falhar categoricamente quando persistenceManager for nulo", success)
+        assertFalse("ACK JAMAIS deve ser enviado se a mensagem não foi gravada em disco", ackedServerIds.contains(msgId))
+        assertFalse("Mensagem não pode ser marcada como persistida", repo.proximitySimulator.isMessagePersistedOrPresent(peerId, msgId))
+    }
+
+    @Test
+    fun testT12_modoAPreservesRamPolicyWithoutDiskPersistence() {
+        val repo = createRepository()
+        val blePeerId = "BLE_PEER_MODO_A_10M"
+
+        // Configura política de Modo A: efêmero em RAM, sem gravação em disco
+        repo.proximitySimulator.shouldPersistPrivateChat = { id -> id != blePeerId }
+
+        val msgId = "msg_modoa_ephem_${UUID.randomUUID()}"
+        val text = "Mensagem efêmera Modo A Bluetooth 10m"
+
+        // Para Modo A, recebe mensagem no chat privado
+        val received = repo.proximitySimulator.receivePrivateMessage(
+            senderId = blePeerId,
+            senderAlias = "Vizinho BLE",
+            text = text,
+            messageId = msgId
+        )
+
+        assertTrue("Modo A deve ser aceito na memória RAM", received)
+        // Comprova que NÃO gravou em disco (preservando privacidade do Modo A)
+        assertFalse("Modo A não pode gravar histórico em disco", chatPersistence.hasMessage(blePeerId, msgId))
+        // Comprova que está na RAM
+        val inRam = repo.proximitySimulator.privateChats.value[blePeerId].orEmpty()
+        assertTrue("Modo A deve estar presente na RAM para exibição na UI", inRam.any { it.id == msgId })
+    }
 }

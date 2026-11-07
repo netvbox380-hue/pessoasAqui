@@ -138,7 +138,8 @@ test('1. Destinatário online: entrega imediata via WS, mensagem é removida de 
   env.activeSockets.set(PEER_B.toLowerCase(), fakeSocket);
 
   const delivered = await env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_CIPHERTEXT_01', 'iv1', 'msg_001', false);
-  assert.equal(delivered, true);
+  assert.equal(delivered.success, true);
+  assert.equal(delivered.delivered, true);
   assert.equal(receivedWs.length, 1);
   assert.equal(receivedWs[0].messageId, 'msg_001');
 
@@ -159,7 +160,8 @@ test('2. Destinatário offline: mensagem é enfileirada em pendingMessages e per
   // Sem socket ativo para Bob
 
   const delivered = await env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_CIPHERTEXT_02', 'iv2', 'msg_002', false);
-  assert.equal(delivered, false);
+  assert.equal(delivered.success, true);
+  assert.equal(delivered.delivered, false);
 
   const queue = env.pendingMessages.get(PEER_B.toLowerCase());
   assert.ok(queue);
@@ -215,7 +217,8 @@ test('4. WS cai durante envio: mensagem permanece em pendingMessages (não é pe
 
   // Envio tenta WS, falha na escrita do socket
   const delivered = await env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_CRASH_DURING_SEND', 'iv', 'msg_drop_1', false);
-  assert.equal(delivered, false);
+  assert.equal(delivered.success, true);
+  assert.equal(delivered.delivered, false);
 
   // Mensagem continua segura em pendingMessages
   const queue = env.pendingMessages.get(PEER_B.toLowerCase());
@@ -361,9 +364,15 @@ test('11. Envelope inválido: rejeitado sem afetar mensagens válidas na fila', 
   await env.deliver(PEER_A, 'Alice', PEER_B, 'VALID_1', 'iv', 'valid_1', false);
 
   // Envelopes corrompidos / destinatários ilegais
-  assert.equal(await env.deliver(PEER_A, 'Alice', '', 'PAYLOAD', 'iv', 'inv_1', false), false);
-  assert.equal(await env.deliver(PEER_A, 'Alice', 'SHORT', 'PAYLOAD', 'iv', 'inv_2', false), false);
-  assert.equal(await env.deliver(PEER_A, 'Alice', 'ILLEGAL$CHARS!!', 'PAYLOAD', 'iv', 'inv_3', false), false);
+  const r1 = await env.deliver(PEER_A, 'Alice', '', 'PAYLOAD', 'iv', 'inv_1', false);
+  assert.equal(r1.success, false);
+  assert.equal(r1.statusCode, 400);
+  const r2 = await env.deliver(PEER_A, 'Alice', 'SHORT', 'PAYLOAD', 'iv', 'inv_2', false);
+  assert.equal(r2.success, false);
+  assert.equal(r2.statusCode, 400);
+  const r3 = await env.deliver(PEER_A, 'Alice', 'ILLEGAL$CHARS!!', 'PAYLOAD', 'iv', 'inv_3', false);
+  assert.equal(r3.success, false);
+  assert.equal(r3.statusCode, 400);
 
   // Fila para Bob permanece intacta com apenas a mensagem válida
   const queue = env.pendingMessages.get(PEER_B.toLowerCase());
@@ -377,7 +386,8 @@ test('12. Chave pública temporariamente indisponível: mensagem retida até res
 
   // Mensagem enviada enquanto Bob ainda não publicou chave na sessão WS atual
   const delivered = await env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_RETAINED', 'iv', 'msg_wait_key', false);
-  assert.equal(delivered, false); // retida na fila pendente
+  assert.equal(delivered.success, true);
+  assert.equal(delivered.delivered, false); // retida na fila pendente
 
   const queue = env.pendingMessages.get(PEER_B.toLowerCase());
   assert.ok(queue);
@@ -512,3 +522,18 @@ test('19. T03 & T04: Consistência PostgreSQL com 100 mensagens (memória com te
   assert.equal(env.dbMessages.filter(m => !m.is_delivered).length, 0);
   assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
 });
+
+test('20. Falha no PostgreSQL: deliverMessageToTarget retorna 503 e rejeita mensagem sem falsos positivos', async () => {
+  const env = setupTestEnvironment({ postgres: true });
+  env.ctx.query = async () => {
+    throw new Error('Connection terminated unexpectedly');
+  };
+
+  const res = await env.deliver(PEER_A, 'Alice', PEER_B, 'ENC_PAYLOAD_FAIL', 'iv', 'msg_fail_db', false);
+  assert.equal(res.success, false);
+  assert.equal(res.delivered, false);
+  assert.equal(res.persisted, false);
+  assert.equal(res.error, 'Database persistence failed');
+  assert.equal(res.statusCode, 503);
+});
+
