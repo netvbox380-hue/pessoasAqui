@@ -1232,7 +1232,10 @@ class PessoasAquiRepository(
         networkClient.onMessageError = { messageId, errorReason ->
             if (messageId.isNotBlank()) {
                 proximitySimulator.privateChats.value.forEach { (peerKey, msgList) ->
-                    if (msgList.any { it.id == messageId }) {
+                    val foundMsg = msgList.find { it.id == messageId }
+                    if (foundMsg != null &&
+                        foundMsg.deliveryStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED &&
+                        foundMsg.deliveryStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ) {
                         val cleanPeer = cleanId(peerKey)
                         proximitySimulator.updateMessageDeliveryStatus(
                             cleanPeer,
@@ -1289,12 +1292,19 @@ class PessoasAquiRepository(
         bleTransportCoordinator.onDeliveryFailed = { peerId, _, messageUuid, _ ->
             val cleanSender = cleanId(peerId)
             if (messageUuid.isNotBlank()) {
-                proximitySimulator.updateMessageDeliveryStatus(
-                    cleanSender,
-                    messageUuid,
-                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
-                )
-                updateUnifiedData()
+                val currentList = proximitySimulator.privateChats.value[cleanSender]
+                    ?: proximitySimulator.privateChats.value["peer-$cleanSender"]
+                val foundMsg = currentList?.find { it.id == messageUuid }
+                if (foundMsg != null &&
+                    foundMsg.deliveryStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED &&
+                    foundMsg.deliveryStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ) {
+                    proximitySimulator.updateMessageDeliveryStatus(
+                        cleanSender,
+                        messageUuid,
+                        br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                    )
+                    updateUnifiedData()
+                }
             }
         }
 
@@ -3343,33 +3353,61 @@ class PessoasAquiRepository(
                                 ivNonce = delayedIv,
                                 isEphemeral = isSignaling
                             )
+                            val currentList = proximitySimulator.privateChats.value[cleanRecipient]
+                                ?: proximitySimulator.privateChats.value["peer-$cleanRecipient"]
+                            val currentStatus = currentList?.find { it.id == msgId }?.deliveryStatus
+
                             if (httpRes.isSuccess && httpRes.getOrNull() == true) {
-                                proximitySimulator.updateMessageDeliveryStatus(
-                                    cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT
-                                )
+                                if (currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED &&
+                                    currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ) {
+                                    proximitySimulator.updateMessageDeliveryStatus(
+                                        cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT
+                                    )
+                                }
                             } else {
+                                if (currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED &&
+                                    currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ) {
+                                    proximitySimulator.updateMessageDeliveryStatus(
+                                        cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                                    )
+                                }
+                            }
+                            updateUnifiedData()
+                        } else {
+                            val currentList = proximitySimulator.privateChats.value[cleanRecipient]
+                                ?: proximitySimulator.privateChats.value["peer-$cleanRecipient"]
+                            val currentStatus = currentList?.find { it.id == msgId }?.deliveryStatus
+                            if (currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED &&
+                                currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ) {
                                 proximitySimulator.updateMessageDeliveryStatus(
                                     cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
                                 )
                             }
                             updateUnifiedData()
-                        } else {
-                            proximitySimulator.updateMessageDeliveryStatus(
-                                cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
-                            )
-                            updateUnifiedData()
                         }
                     } ?: run {
                         Log.w("PessoasAqui", "Timeout de 15s na busca de chave pública para $cleanRecipient")
-                        proximitySimulator.updateMessageDeliveryStatus(
-                            cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
-                        )
+                        val currentList = proximitySimulator.privateChats.value[cleanRecipient]
+                            ?: proximitySimulator.privateChats.value["peer-$cleanRecipient"]
+                        val currentStatus = currentList?.find { it.id == msgId }?.deliveryStatus
+                        if (currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED &&
+                            currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ) {
+                            proximitySimulator.updateMessageDeliveryStatus(
+                                cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                            )
+                        }
                         updateUnifiedData()
                     }
                 } catch (e: Exception) {
-                    proximitySimulator.updateMessageDeliveryStatus(
-                        cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
-                    )
+                    val currentList = proximitySimulator.privateChats.value[cleanRecipient]
+                        ?: proximitySimulator.privateChats.value["peer-$cleanRecipient"]
+                    val currentStatus = currentList?.find { it.id == msgId }?.deliveryStatus
+                    if (currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED &&
+                        currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ) {
+                        proximitySimulator.updateMessageDeliveryStatus(
+                            cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                        )
+                    }
                     updateUnifiedData()
                 }
             }

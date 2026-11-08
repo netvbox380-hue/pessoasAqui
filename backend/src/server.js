@@ -359,10 +359,21 @@ async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
           }
           return { success: true, acknowledged: true, duplicate: true, messageId };
         }
-        await query(
+        const updateRes = await query(
           `UPDATE e2ee_messages SET is_delivered = TRUE WHERE id = $1 AND LOWER(recipient_identity) = LOWER($2)`,
           [messageId, cleanRecip]
         );
+        if (!updateRes || updateRes.rowCount === 0) {
+          // Concorrência: outra requisição confirmou no mesmo milissegundo.
+          // Re-checa is_delivered para garantir integridade e idempotência.
+          const recheck = await query(
+            `SELECT is_delivered FROM e2ee_messages WHERE id = $1 AND LOWER(recipient_identity) = LOWER($2)`,
+            [messageId, cleanRecip]
+          );
+          if (!recheck || recheck.rowCount === 0 || !recheck.rows[0].is_delivered) {
+            return { success: false, acknowledged: false, error: 'Falha ao atualizar status de entrega no banco', statusCode: 500 };
+          }
+        }
       }
     } catch (dbErr) {
       console.error('[DB] Erro ao registrar ACK no PostgreSQL:', dbErr.message);
@@ -950,7 +961,9 @@ wss.on('connection', (ws, req) => {
         // o servidor confirma o recebimento e expurga a mensagem pendente confirmada.
         if (typeof ciphertextPayload === 'string' && ciphertextPayload.startsWith('[DELIVERY_ACK:')) {
           const ackTargetId = ciphertextPayload.replace(/^\[DELIVERY_ACK:/, '').replace(/\]$/, '').trim();
-          acknowledgePendingMessage(authenticatedIdentity, ackTargetId);
+          await acknowledgePendingMessage(authenticatedIdentity, ackTargetId).catch(err => {
+            console.error('[WS] Erro ao registrar ACK embutido:', err.message);
+          });
         }
 
         const senderAlias = activePresence.get(kAuth)?.alias || 'Usuário';
@@ -975,6 +988,7 @@ wss.on('connection', (ws, req) => {
             messageId,
             success: ackResult.success,
             acknowledged: ackResult.acknowledged,
+            duplicate: ackResult.duplicate || false,
             error: ackResult.error
           }));
         } catch (_) {}

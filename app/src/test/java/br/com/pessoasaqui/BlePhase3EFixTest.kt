@@ -310,12 +310,27 @@ class BlePhase3EFixTest {
         // Como os drivers locais processam o ACK automaticamente:
         assertEquals("Status final da mensagem deve ser DELIVERED após o ACK", MessageDeliveryStatus.DELIVERED, sentMsg.deliveryStatus)
 
-        // 2. Simulação de falha: atualiza o status para FAILED via notificação do coordenador
+        // 2. Proteção contra regressão: notificação tardia de erro NÃO desfaz confirmação legítima de entrega
         repo.proximitySimulator.updateMessageDeliveryStatus(bobId, sentMsg.id, MessageDeliveryStatus.FAILED)
+        val afterLateError = repo.proximitySimulator.privateChats.value[bobId]
+            ?: repo.proximitySimulator.privateChats.value[bobId.lowercase()]
+            ?: emptyList()
+        assertEquals("Mensagem confirmada como DELIVERED não deve regredir para FAILED", MessageDeliveryStatus.DELIVERED, afterLateError.first { it.id == sentMsg.id }.deliveryStatus)
+
+        // 3. Simulação de falha legítima no Modo A: mensagem com falha antes do ACK transita para FAILED
+        val failedMsgId = java.util.UUID.randomUUID().toString()
+        repo.proximitySimulator.sendPrivateMessage(
+            recipientId = bobId,
+            text = "Mensagem que falhou",
+            myAlias = "Eu",
+            messageId = failedMsgId,
+            deliveryStatus = MessageDeliveryStatus.PENDING
+        )
+        repo.proximitySimulator.updateMessageDeliveryStatus(bobId, failedMsgId, MessageDeliveryStatus.FAILED)
         val currentMessages = repo.proximitySimulator.privateChats.value[bobId]
             ?: repo.proximitySimulator.privateChats.value[bobId.lowercase()]
             ?: emptyList()
-        val failedMsg = currentMessages.first { it.id == sentMsg.id }
+        val failedMsg = currentMessages.first { it.id == failedMsgId }
         assertEquals(MessageDeliveryStatus.FAILED, failedMsg.deliveryStatus)
     }
 

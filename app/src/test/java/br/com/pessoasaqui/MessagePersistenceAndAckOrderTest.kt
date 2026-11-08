@@ -393,4 +393,53 @@ class MessagePersistenceAndAckOrderTest {
         assertEquals("Mensagem confirmada como DELIVERED jamais regride para SENT",
             MessageDeliveryStatus.DELIVERED, afterAttemptChat.first { it.id == msgId }.deliveryStatus)
     }
+
+    @Test
+    fun testT16_lateTransportErrorNeverUndoesDeliveredOrReadStatus() {
+        val repo = createRepository()
+        val msgId1 = "msg_t16_del_${UUID.randomUUID()}"
+        val msgId2 = "msg_t16_read_${UUID.randomUUID()}"
+
+        // 1. Cria mensagem 1 e transita para DELIVERED
+        repo.proximitySimulator.sendPrivateMessage(
+            recipientId = peerId,
+            text = "Mensagem Entregue",
+            myAlias = "Eu",
+            messageId = msgId1,
+            deliveryStatus = MessageDeliveryStatus.SENT
+        )
+        val ackOk = repo.processVerifiedNetworkPayload(peerId, "Contato", "[DELIVERY_ACK:$msgId1]", "ack_t16")
+        assertTrue("ACK deve ser aceito", ackOk)
+
+        var chat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals(MessageDeliveryStatus.DELIVERED, chat.first { it.id == msgId1 }.deliveryStatus)
+
+        // 2. Erros tardios de transporte (networkClient.onMessageError ou bleTransportCoordinator.onDeliveryFailed)
+        // Tentativa de forçar FAILED na mensagem DELIVERED
+        repo.proximitySimulator.updateMessageDeliveryStatus(peerId, msgId1, MessageDeliveryStatus.FAILED)
+        chat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals("Erro tardio de transporte JAMAIS deve desfazer confirmação DELIVERED",
+            MessageDeliveryStatus.DELIVERED, chat.first { it.id == msgId1 }.deliveryStatus)
+
+        // 3. Cria mensagem 2 e transita para READ
+        repo.proximitySimulator.sendPrivateMessage(
+            recipientId = peerId,
+            text = "Mensagem Lida",
+            myAlias = "Eu",
+            messageId = msgId2,
+            deliveryStatus = MessageDeliveryStatus.SENT
+        )
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[DELIVERY_ACK:$msgId2]", "ack_t16_2")
+        repo.processVerifiedNetworkPayload(peerId, "Contato", "[READ_ACK]", "ack_t16_read")
+
+        chat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals(MessageDeliveryStatus.READ, chat.first { it.id == msgId2 }.deliveryStatus)
+
+        // 4. Erros tardios de transporte tentando forçar FAILED ou SENT na mensagem READ
+        repo.proximitySimulator.updateMessageDeliveryStatus(peerId, msgId2, MessageDeliveryStatus.FAILED)
+        repo.proximitySimulator.updateMessageDeliveryStatus(peerId, msgId2, MessageDeliveryStatus.SENT)
+        chat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals("Erro tardio de transporte JAMAIS deve desfazer confirmação READ",
+            MessageDeliveryStatus.READ, chat.first { it.id == msgId2 }.deliveryStatus)
+    }
 }

@@ -362,8 +362,14 @@ class ProximitySimulator(
         val updatedMap = _privateChats.value.toMutableMap()
         val existingIndex = currentList.indexOfFirst { it.id == messageId }
         val newList = if (existingIndex != -1) {
+            val currentMsg = currentList[existingIndex]
+            val effectiveStatus = if (canTransitionDeliveryStatus(currentMsg.deliveryStatus, deliveryStatus)) {
+                deliveryStatus
+            } else {
+                currentMsg.deliveryStatus
+            }
             val mut = currentList.toMutableList()
-            mut[existingIndex] = mut[existingIndex].copy(deliveryStatus = deliveryStatus, text = text)
+            mut[existingIndex] = currentMsg.copy(deliveryStatus = effectiveStatus, text = text)
             mut
         } else {
             currentList + msg
@@ -426,8 +432,7 @@ class ProximitySimulator(
                 )
             br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED ->
                 target in listOf(
-                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ,
-                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ
                 )
             br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ -> false // READ é terminal
             br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED ->

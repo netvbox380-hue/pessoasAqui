@@ -37,6 +37,9 @@ function isFatalDbError(err) {
     code === '28P01' || // Auth failed
     code === '3D000' || // Database does not exist
     code === 'XX000' || // Tenant/pooler error
+    code === '57P01' || // Admin shutdown / postmaster exit
+    code === '57P02' || // Crash shutdown
+    code === '57P03' || // Cannot connect now
     msg.includes('ENETUNREACH') ||
     msg.includes('EHOSTUNREACH') ||
     msg.includes('ECONNREFUSED') ||
@@ -63,10 +66,15 @@ function tripCircuitBreaker(err) {
   }
 }
 
+function resetCircuitBreaker() {
+  circuitBreakerTripped = false;
+}
+
 function initDatabase() {
   const connectionString = process.env.DATABASE_URL;
 
   if (connectionString) {
+    circuitBreakerTripped = false;
     console.log('[DB] Verificando conexão com Banco Relacional PostgreSQL (Supabase / Render)...');
     pool = new Pool({
       connectionString,
@@ -144,6 +152,7 @@ module.exports = {
   query,
   withTransaction,
   localStore,
+  resetCircuitBreaker,
   isPostgres: () => isPostgres && !circuitBreakerTripped
 };
 
