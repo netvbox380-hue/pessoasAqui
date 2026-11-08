@@ -164,3 +164,39 @@ Os novos testes automatizados no arquivo `backend/tests/atomicRevocationAndSupab
 
 ### 8. Como esta alteração contribui para a estabilidade de longo prazo?
 Elimina vetores de spam, vazamento de recursos e assédio entre desconhecidos via Modo B no servidor central, garantindo que o aplicativo PessoasAqui cumpra sua promessa fundamental de arquitetura de relacionamentos estritamente bilaterais e consentidos.
+
+---
+
+## 7. AUDITORIA E FECHAMENTO DOS CAMINHOS ALTERNATIVOS DE AUTORIZAÇÃO
+
+Em cumprimento à ordem de fechamento sistêmico, foi realizada a auditoria exaustiva de todos os caminhos alternativos de autorização:
+
+### 1. Desenvolvimento Local (`localStore.connections.size > 0`)
+- **Causa da Falha Anterior:** A verificação bilateral em modo em memória estava condicionada a `localStore.connections.size > 0`. A premissa incorreta era de que se o mapa estivesse vazio, tratava-se de um ambiente de teste inicial permissivo. Essa exceção transformava a ausência de estado em um *Default Allow*.
+- **Correção Definitiva:** A restrição `size > 0` foi eliminada. Toda mensagem permanente no modo local exige obrigatoriamente a presença de `conn1` e `conn2` mútuos (`isMutual === true`). Mapa vazio retorna estritamente `HTTP 403 Forbidden` (`code: 'NO_CONNECTION'`).
+
+### 2. Autorização de Chamadas e Cache em Memória (`getConnectionStatus`)
+- **Causa da Falha Anterior:** O método consultava `localStore.connections` antes do PostgreSQL para agilidade. Se o vínculo fosse desfeito ou revogado no PostgreSQL, o cache residual em RAM mantinha `isMutual = true`. Além disso, se a consulta SQL falhasse, o erro era capturado sem anular a mutualidade (*Fail-Open*).
+- **Correção Definitiva:** Quando o PostgreSQL está configurado, o banco relacional é a **ÚNICA** fonte autoritativa de verdade. O cache residual em RAM não pode ressuscitar conexões revogadas ou excluídas. Em caso de falha de consulta ou queda do PostgreSQL, o retorno é estritamente **Fail-Closed** (`HTTP 503 DB_UNAVAILABLE`).
+
+### 3. Classificação de Mensagens Efêmeras e Manipulação de Prefixos
+- **Causa da Falha Anterior:** A autorização em mensagens efêmeras era aplicada apenas a `isCallSignaling` com PostgreSQL ativo, deixando frames de chamada (`call_frame_`) e prefixos manipulados (`ephem_`) sem validação de vínculo prévio. Além disso, o cliente poderia declarar prefixos efêmeros para tentar omitir a persistência durável de mensagens permanentes.
+- **Correção Definitiva:**
+  1. Qualquer tráfego efêmero ou de chamada (sinalização WebRTC ou frames de mídia) exige vínculo bilateral permanente confirmado via `getConnectionStatus()`. Desconhecidos recebem `HTTP 403 Forbidden` (`NO_CONNECTION`). Conexões revogadas recebem `HTTP 403 Forbidden` (`CONNECTION_REVOKED`).
+  2. Comandos e payloads permanentes (`[VAULT_`, `[FAMILY_`, `[DELIVERY_ACK:`, `[READ_ACK]`, `[IMAGE:`, `[AUDIO:`, `[DOC:`, `[PA_REAL_PHOTO_V1:`, `[MSG_EDIT:`, `[MSG_DELETE:`) NUNCA são classificados como efêmeros, sendo obrigatoriamente persistidos de forma durável no PostgreSQL.
+
+### 4. Bateria de 12 Testes Negativos Obrigatórios (`callAndLocalAuthSecurity.test.js`)
+Criada suíte completa com 12 subtestes com 100% de aprovação:
+1. `Desenvolvimento local sem conexões` -> HTTP 403 `NO_CONNECTION`.
+2. `Desenvolvimento local com vínculo unilateral` -> HTTP 403 `UNILATERAL_NOT_PERMITTED`.
+3. `Desenvolvimento local com conexão bilateral válida` -> Sucesso 200 e persistência durável local.
+4. `Chamada com conexão bilateral válida` -> Autorizada 200 em RAM.
+5. `Chamada sem vínculo` -> HTTP 403 `NO_CONNECTION`.
+6. `Chamada após revogação` -> HTTP 403 `CONNECTION_REVOKED`.
+7. `Chamada com cache desatualizado` -> Autoridade do banco rejeita HTTP 403 `NO_CONNECTION`.
+8. `Chamada com PostgreSQL indisponível` -> Fail-closed imediato HTTP 503 `DB_UNAVAILABLE`.
+9. `Mensagem permanente tentando utilizar prefixo efêmero` -> Desmascarada e persistida duravelmente em `e2ee_messages`.
+10. `Mensagem efêmera legítima` -> Entregue via WebSocket sem persistir em disco.
+11. `Reinicialização do backend` -> Estado restaurado do PostgreSQL sem vazamento em RAM.
+12. `Compatibilidade com cliente Android` -> Contrato estruturado `{ success, delivered, persisted, code }` verificado via HTTP REST.
+

@@ -15,6 +15,16 @@ function setupTestEnvironment({ postgres = false } = {}) {
   const clientMessageRate = new Map();
   const dbMessages = [];
 
+  const localConnections = new Map();
+  function addLocalMutual(a, b) {
+    const kA = a.toLowerCase();
+    const kB = b.toLowerCase();
+    localConnections.set(`${kA}->${kB}`, { fromIdentity: a, toIdentity: b, isMutual: true });
+    localConnections.set(`${kB}->${kA}`, { fromIdentity: b, toIdentity: a, isMutual: true });
+  }
+  addLocalMutual('1111222233334444', '5555666677778888');
+  addLocalMutual('9999000011112222', '5555666677778888');
+
   const ctx = {
     console,
     Date,
@@ -28,7 +38,7 @@ function setupTestEnvironment({ postgres = false } = {}) {
     pendingMessages,
     recentMessageIds,
     clientMessageRate,
-    localStore: { connections: new Map(), identities: new Map() },
+    localStore: { connections: localConnections, identities: new Map() },
     isPostgres: () => postgres,
     query: async (sql, params = []) => {
       const cleanSql = sql.replace(/\s+/g, ' ');

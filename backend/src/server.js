@@ -447,46 +447,69 @@ async function getConnectionStatus(myId, peerId) {
   const to = cleanId(peerId);
   if (!from || !to) return { isMarkedByMe: false, isMarkingMe: false, isMutual: false };
 
-  let isMarkedByMe = false;
-  let isMarkingMe = false;
-  let isMutual = false;
+  // Revogação ativa em memória invalida qualquer mutualidade imediatamente
+  if (typeof revokedConnections !== 'undefined' && revokedConnections.has(pairKey(from, to))) {
+    return { isMarkedByMe: false, isMarkingMe: false, isMutual: false, isRevoked: true };
+  }
 
   const kFrom = keyId(from);
   const kTo = keyId(to);
 
-  // Sempre verifica o cache local em memória primeiro (garante resiliência instantânea)
-  const k1 = `${kFrom}->${kTo}`;
-  const k2 = `${kTo}->${kFrom}`;
-  if (localStore.connections.has(k1)) {
-    isMarkedByMe = true;
-    if (localStore.connections.get(k1).isMutual) isMutual = true;
-  }
-  if (localStore.connections.has(k2)) {
-    isMarkingMe = true;
-    if (localStore.connections.get(k2).isMutual) isMutual = true;
-  }
+  const isDbConfigured = (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) ||
+                         (typeof isPostgres === 'function' && isPostgres());
 
-  if (isPostgres()) {
-    try {
-      const res = await query(
-        `SELECT from_identity, to_identity, is_mutual FROM connections
-         WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
-            OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
-        [from, to]
-      );
-      for (const row of res.rows) {
-        const rowFrom = keyId(row.from_identity);
-        const rowTo = keyId(row.to_identity);
-        if (rowFrom === kFrom && rowTo === kTo) isMarkedByMe = true;
-        if (rowFrom === kTo && rowTo === kFrom) isMarkingMe = true;
-        if (row.is_mutual) isMutual = true;
+  // 1. Quando PostgreSQL está configurado, o banco relacional é a ÚNICA fonte autoritativa de verdade.
+  // Cache em memória desatualizado NUNCA pode reviver conexões revogadas ou excluídas.
+  if (isDbConfigured) {
+    if (typeof isPostgres === 'function' && isPostgres()) {
+      try {
+        const res = await query(
+          `SELECT from_identity, to_identity, is_mutual FROM connections
+           WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
+              OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
+          [from, to]
+        );
+        let isMarkedByMe = false;
+        let isMarkingMe = false;
+        for (const row of res.rows) {
+          const rowFrom = cleanId(row.from_identity).toLowerCase();
+          const rowTo = cleanId(row.to_identity).toLowerCase();
+          if (rowFrom === from.toLowerCase() && rowTo === to.toLowerCase()) {
+            isMarkedByMe = true;
+          }
+          if (rowFrom === to.toLowerCase() && rowTo === from.toLowerCase()) {
+            isMarkingMe = true;
+          }
+        }
+        const allMutual = res.rows.length >= 2 && res.rows.every(r => r.is_mutual === true);
+        const isMutual = (isMarkedByMe && isMarkingMe && allMutual);
+        return { isMarkedByMe, isMarkingMe, isMutual };
+      } catch (e) {
+        console.error('[DB] Erro ao consultar status de conexão no PostgreSQL:', e.message);
+        // Fail-closed absoluto: falha no banco NÃO pode ser interpretada como autorização!
+        return { isMarkedByMe: false, isMarkingMe: false, isMutual: false, dbError: true };
       }
-    } catch (e) {
-      console.error('[DB] Erro ao consultar status de conexão:', e.message);
+    } else {
+      // Banco configurado mas temporariamente fora do ar: fail-closed estrito
+      return { isMarkedByMe: false, isMarkingMe: false, isMutual: false, dbUnavailable: true };
     }
   }
 
-  if (isMarkedByMe && isMarkingMe) isMutual = true;
+  // 2. Desenvolvimento local (estritamente sem DATABASE_URL configurado):
+  let isMarkedByMe = false;
+  let isMarkingMe = false;
+  let isMutual = false;
+  if (typeof localStore !== 'undefined' && localStore && localStore.connections) {
+    const k1 = `${kFrom}->${kTo}`;
+    const k2 = `${kTo}->${kFrom}`;
+    const conn1 = localStore.connections.get(k1);
+    const conn2 = localStore.connections.get(k2);
+    if (conn1) isMarkedByMe = true;
+    if (conn2) isMarkingMe = true;
+    if (conn1 && conn2 && conn1.isMutual && conn2.isMutual) {
+      isMutual = true;
+    }
+  }
   return { isMarkedByMe, isMarkingMe, isMutual };
 }
 
@@ -510,6 +533,18 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
   // Mensagens de texto, áudio gravado, imagem, documentos, fotos reais, edições, exclusões, vínculos familiares
   // e compartilhamento de cofre Shamir NÃO são efêmeras e DEVEM ser persistidas duravelmente!
   const payloadStr = String(compatiblePayload || '');
+  const isPermanentPayload = payloadStr.startsWith('[DELIVERY_ACK:') ||
+                             payloadStr === '[READ_ACK]' ||
+                             payloadStr.startsWith('[VAULT_') ||
+                             payloadStr.startsWith('[FAMILY_') ||
+                             payloadStr.startsWith('[PA_REAL_PHOTO_V1:') ||
+                             payloadStr.startsWith('[IMAGE:') ||
+                             payloadStr.startsWith('[AUDIO:') ||
+                             payloadStr.startsWith('[DOC:') ||
+                             payloadStr.startsWith('[MSG_EDIT:') ||
+                             payloadStr.startsWith('[MSG_DELETE:') ||
+                             payloadStr.startsWith('[MARK_');
+
   const isCallFrame = String(effectiveMsgId).startsWith('call_frame_') ||
                       payloadStr.startsWith('[CALL_AUDIO_FRAME:') ||
                       payloadStr.startsWith('[CALL_VIDEO_FRAME:');
@@ -519,7 +554,8 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
                           payloadStr.startsWith('[CALL_END]') ||
                           payloadStr.startsWith('[ICE_CANDIDATE:');
   const isExplicitEphem = String(effectiveMsgId).startsWith('ephem_') && Boolean(isEphemeralParam);
-  const isEphemeral = isCallFrame || isCallSignaling || isExplicitEphem;
+  // Mensagens com comando ou payload permanente NUNCA são classificadas como efêmeras, mesmo se o cliente passar prefixo call_frame_ ou ephem_
+  const isEphemeral = !isPermanentPayload && (isCallFrame || isCallSignaling || isExplicitEphem);
 
   // Concorrência e integridade sob requisições simultâneas em voo:
   if (inFlightDeliveries.has(effectiveMsgId)) {
@@ -555,19 +591,41 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
     // PERSISTÊNCIA DURÁVEL E DEDUPLICAÇÃO NO POSTGRESQL ANTES DO DESPACHO
     let persistedInDb = false;
     if (isEphemeral) {
-      // 1. Mensagens efêmeras (WebRTC áudio/vídeo, sinalização de chamada): em memória RAM intencionalmente
-      if (isCallSignaling && isDbConfigured()) {
-        const connStatus = await getConnectionStatus(cleanSender, cleanRecipient);
-        if (!connStatus.isMutual) {
-          return {
-            success: false,
-            delivered: false,
-            persisted: false,
-            error: 'Chamadas e sinalizações exigem vínculo bilateral permanente confirmado.',
-            statusCode: 403,
-            code: 'NO_CONNECTION'
-          };
-        }
+      // 1. Mensagens efêmeras (WebRTC áudio/vídeo frames, sinalização de chamada, etc.):
+      // Toda chamada ou tráfego efêmero EXIGE vínculo bilateral permanente confirmado!
+      const connStatus = await getConnectionStatus(cleanSender, cleanRecipient);
+      if (connStatus.dbUnavailable || connStatus.dbError) {
+        return {
+          success: false,
+          delivered: false,
+          persisted: false,
+          error: 'Banco de dados indisponível para verificar autorização de chamada.',
+          statusCode: 503,
+          code: 'DB_UNAVAILABLE'
+        };
+      }
+      if (connStatus.isRevoked || (typeof revokedConnections !== 'undefined' && revokedConnections.has(pairKey(cleanSender, cleanRecipient)))) {
+        return {
+          success: false,
+          delivered: false,
+          persisted: false,
+          error: 'Conexão revogada ou não autorizada para chamadas.',
+          statusCode: 403,
+          code: 'CONNECTION_REVOKED'
+        };
+      }
+      if (!connStatus.isMutual) {
+        const isUnilateral = connStatus.isMarkedByMe || connStatus.isMarkingMe;
+        return {
+          success: false,
+          delivered: false,
+          persisted: false,
+          error: isUnilateral
+            ? 'Conexão unilateral não autorizada para chamadas.'
+            : 'Chamadas e sinalizações exigem vínculo bilateral permanente confirmado.',
+          statusCode: 403,
+          code: isUnilateral ? 'UNILATERAL_NOT_PERMITTED' : 'NO_CONNECTION'
+        };
       }
     } else if (isDbConfigured()) {
       // 2. Ambiente com PostgreSQL configurado (Produção / Testes Reais):
@@ -708,7 +766,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
       }
     } else {
       // 3. Desenvolvimento local estritamente sem DATABASE_URL:
-      if (revokedConnections.has(pairKey(cleanSender, cleanRecipient))) {
+      if (typeof revokedConnections !== 'undefined' && revokedConnections.has(pairKey(cleanSender, cleanRecipient))) {
         return {
           success: false,
           delivered: false,
@@ -718,21 +776,19 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
           code: 'CONNECTION_REVOKED'
         };
       }
-      if (typeof localStore !== 'undefined' && localStore && localStore.connections && localStore.connections.size > 0) {
-        const kFrom = keyId(cleanSender);
-        const kTo = keyId(cleanRecipient);
-        const conn1 = localStore.connections.get(`${kFrom}->${kTo}`);
-        const conn2 = localStore.connections.get(`${kTo}->${kFrom}`);
-        if (!conn1 || !conn2 || !conn1.isMutual || !conn2.isMutual) {
-          return {
-            success: false,
-            delivered: false,
-            persisted: false,
-            error: (!conn1 && !conn2) ? 'Ausência de conexão bilateral autorizada' : 'Conexão unilateral não autorizada',
-            statusCode: 403,
-            code: (!conn1 && !conn2) ? 'NO_CONNECTION' : 'UNILATERAL_NOT_PERMITTED'
-          };
-        }
+      const kFrom = keyId(cleanSender);
+      const kTo = keyId(cleanRecipient);
+      const conn1 = localStore?.connections?.get(`${kFrom}->${kTo}`);
+      const conn2 = localStore?.connections?.get(`${kTo}->${kFrom}`);
+      if (!conn1 || !conn2 || !conn1.isMutual || !conn2.isMutual) {
+        return {
+          success: false,
+          delivered: false,
+          persisted: false,
+          error: (!conn1 && !conn2) ? 'Ausência de conexão bilateral autorizada' : 'Conexão unilateral não autorizada',
+          statusCode: 403,
+          code: (!conn1 && !conn2) ? 'NO_CONNECTION' : 'UNILATERAL_NOT_PERMITTED'
+        };
       }
       if (localDurableMessages.has(effectiveMsgId)) {
         const ex = localDurableMessages.get(effectiveMsgId);
@@ -3047,6 +3103,8 @@ module.exports = {
   purgePendingMessagesRam,
   verifySchemaCompatibility,
   deliverMessageToTarget,
+  getConnectionStatus,
+  localStore,
   revokedConnections,
   pairKey
 };

@@ -14,6 +14,16 @@ function setupTestEnvironment() {
   const recentMessageIds = new Map();
   const clientMessageRate = new Map();
 
+  const localConnections = new Map();
+  function addMutualConnection(a, b) {
+    const kA = a.toLowerCase();
+    const kB = b.toLowerCase();
+    localConnections.set(`${kA}->${kB}`, { fromIdentity: a, toIdentity: b, isMutual: true });
+    localConnections.set(`${kB}->${kA}`, { fromIdentity: b, toIdentity: a, isMutual: true });
+  }
+  addMutualConnection('ALICE_1234567890A', 'BOB_1234567890AB');
+  addMutualConnection('ALICE_1', 'BOB_1234567890AB');
+
   const ctx = {
     console,
     Date,
@@ -28,9 +38,10 @@ function setupTestEnvironment() {
     clientMessageRate,
     inFlightDeliveries: new Map(),
     localDurableMessages: new Map(),
+    revokedConnections: new Set(),
     process: { env: {} },
     isDatabaseConfigured: () => false,
-    localStore: { connections: new Map() },
+    localStore: { connections: localConnections },
     isPostgres: () => false,
     query: async () => ({ rows: [] }),
     WebSocket: { OPEN: 1 }
@@ -57,7 +68,9 @@ function setupTestEnvironment() {
     activeSockets,
     pendingMessages,
     recentMessageIds,
-    clientMessageRate
+    clientMessageRate,
+    localStore: ctx.localStore,
+    addMutualConnection
   };
 }
 
@@ -271,4 +284,52 @@ test('10. Reconexão: mensagens pendentes são entregues e a fila é esvaziada',
   assert.equal(deliveredOnConnect[1].messageId, 'm2');
   assert.equal(deliveredOnConnect[2].messageId, 'm3');
   assert.equal(env.pendingMessages.has(kBob), false, 'Fila deve estar limpa após entrega na reconexão');
+});
+
+test('11. Desenvolvimento local sem conexões: rejeitado com status 403 NO_CONNECTION', async () => {
+  const env = setupTestEnvironment();
+  // Limpa conexões em memória para simular ausência total
+  env.localStore.connections.clear();
+
+  const res = await env.deliver('STRANGER_12345678', 'Estranho', 'BOB_1234567890AB', 'ENC:ola', 'iv', 'msg_no_conn', false);
+  assert.equal(res.success, false);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.code, 'NO_CONNECTION');
+});
+
+test('12. Desenvolvimento local com vínculo unilateral: rejeitado com status 403 UNILATERAL_NOT_PERMITTED', async () => {
+  const env = setupTestEnvironment();
+  env.localStore.connections.clear();
+  // Apenas Alice marca Bob, Bob não marcou Alice
+  env.localStore.connections.set('stranger_12345678->bob_1234567890ab', { fromIdentity: 'STRANGER_12345678', toIdentity: 'BOB_1234567890AB', isMutual: false });
+
+  const res = await env.deliver('STRANGER_12345678', 'Estranho', 'BOB_1234567890AB', 'ENC:ola', 'iv', 'msg_unilateral', false);
+  assert.equal(res.success, false);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.code, 'UNILATERAL_NOT_PERMITTED');
+});
+
+test('13. Chamada sem vínculo no desenvolvimento local: rejeitado com status 403 NO_CONNECTION', async () => {
+  const env = setupTestEnvironment();
+  env.localStore.connections.clear();
+
+  const res = await env.deliver('STRANGER_12345678', 'Estranho', 'BOB_1234567890AB', '[CALL_INIT:true:Estranho]', 'iv', 'call_stranger_01', true);
+  assert.equal(res.success, false);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.code, 'NO_CONNECTION');
+});
+
+test('14. Mensagem permanente com payload permanente tentando usar prefixo efêmero é persistida como permanente', async () => {
+  const env = setupTestEnvironment();
+  // Alice e Bob estão conectados
+  const res = await env.deliver(
+    'ALICE_1234567890A', 'Alice', 'BOB_1234567890AB',
+    '[VAULT_RECOVERY_SHARE:chave_secreta]', 'iv', 'call_frame_masquerade', true
+  );
+  // Como o payload é [VAULT_], isEphemeral é false
+  assert.equal(res.success, true);
+  // Fica armazenada na fila permanente de mensagens
+  assert.equal(env.pendingMessages.has('bob_1234567890ab'), true);
+  const queue = env.pendingMessages.get('bob_1234567890ab');
+  assert.equal(queue[0].isEphemeral, false);
 });
