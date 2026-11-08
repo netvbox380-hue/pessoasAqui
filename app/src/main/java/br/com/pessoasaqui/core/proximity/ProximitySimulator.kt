@@ -360,7 +360,14 @@ class ProximitySimulator(
         val cleanId = recipientId.removePrefix("peer-")
         val currentList = _privateChats.value[recipientId] ?: _privateChats.value[cleanId] ?: emptyList()
         val updatedMap = _privateChats.value.toMutableMap()
-        val newList = currentList + msg
+        val existingIndex = currentList.indexOfFirst { it.id == messageId }
+        val newList = if (existingIndex != -1) {
+            val mut = currentList.toMutableList()
+            mut[existingIndex] = mut[existingIndex].copy(deliveryStatus = deliveryStatus, text = text)
+            mut
+        } else {
+            currentList + msg
+        }
         updatedMap[recipientId] = newList
         updatedMap[cleanId] = newList
         updatedMap["peer-$cleanId"] = newList
@@ -425,6 +432,7 @@ class ProximitySimulator(
             br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ -> false // READ é terminal
             br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED ->
                 target in listOf(
+                    br.com.pessoasaqui.domain.model.MessageDeliveryStatus.PENDING,
                     br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT,
                     br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED,
                     br.com.pessoasaqui.domain.model.MessageDeliveryStatus.READ

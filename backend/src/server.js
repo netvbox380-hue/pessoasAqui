@@ -319,6 +319,7 @@ const activeInvites = new Map();
 const pendingMessages = new Map();
 
 async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
+  const isDbConfigured = () => (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) || (typeof isPostgres === 'function' && isPostgres());
   if (!authenticatedRecipientId || !messageId) {
     return { success: false, acknowledged: false, error: 'Identidade e messageId obrigatórios', statusCode: 400 };
   }
@@ -329,7 +330,10 @@ async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
   const kRecip = keyId(cleanRecip);
 
   let inDbFound = false;
-  if (isPostgres()) {
+  if (isDbConfigured()) {
+    if (!isPostgres()) {
+      return { success: false, acknowledged: false, error: 'Database unavailable', statusCode: 503 };
+    }
     try {
       const checkRes = await query(
         `SELECT id, recipient_identity, is_delivered FROM e2ee_messages WHERE id = $1`,
@@ -523,16 +527,51 @@ function unwrapE2eeIfCompatible(payload) {
 }
 
 function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, ciphertextPayload, ivNonce, msgId, isEphemeralParam) {
+  const isDbConfigured = () => (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) || (typeof isPostgres === 'function' && isPostgres());
   const cleanRecipient = cleanId(rawRecipient);
   if (!cleanRecipient || !/^[A-Za-z0-9_-]{8,64}$/.test(cleanRecipient)) {
     return Promise.resolve({ success: false, delivered: false, persisted: false, error: 'Destinatário inválido', statusCode: 400 });
   }
 
   const effectiveMsgId = msgId || `${cleanSender}_${Date.now()}_${Math.random()}`;
+  const compatiblePayload = unwrapE2eeIfCompatible(ciphertextPayload, ivNonce, cleanSender, cleanRecipient);
 
-  // Concorrência / Idempotência sob requisições simultâneas:
+  // Classificação estrita de mensagens efêmeras (áudio/vídeo frames em tempo real, sinalização de chamada, etc.)
+  // Mensagens de texto, áudio gravado, imagem, documentos, fotos reais, edições, exclusões, vínculos familiares
+  // e compartilhamento de cofre Shamir NÃO são efêmeras e DEVEM ser persistidas duravelmente!
+  const payloadStr = String(compatiblePayload || '');
+  const isCallFrame = String(effectiveMsgId).startsWith('call_frame_') ||
+                      payloadStr.startsWith('[CALL_AUDIO_FRAME:') ||
+                      payloadStr.startsWith('[CALL_VIDEO_FRAME:');
+  const isCallSignaling = payloadStr.startsWith('[CALL_INIT:') ||
+                          payloadStr.startsWith('[CALL_ACCEPT]') ||
+                          payloadStr.startsWith('[CALL_ACK]') ||
+                          payloadStr.startsWith('[CALL_END]') ||
+                          payloadStr.startsWith('[ICE_CANDIDATE:');
+  const isExplicitEphem = String(effectiveMsgId).startsWith('ephem_') && Boolean(isEphemeralParam);
+  const isEphemeral = isCallFrame || isCallSignaling || isExplicitEphem;
+
+  // Concorrência e integridade sob requisições simultâneas em voo:
   if (inFlightDeliveries.has(effectiveMsgId)) {
-    return inFlightDeliveries.get(effectiveMsgId);
+    const inFlight = inFlightDeliveries.get(effectiveMsgId);
+    const sameSender = inFlight.senderIdentity.toLowerCase() === cleanSender.toLowerCase();
+    const sameRecip = inFlight.recipientIdentity.toLowerCase() === cleanRecipient.toLowerCase();
+    const samePayload = inFlight.ciphertextPayload === compatiblePayload;
+    const sameIv = (inFlight.ivNonce || '') === (ivNonce || '');
+
+    if (!sameSender || !sameRecip || !samePayload || !sameIv) {
+      console.warn(`[MSG] Rejeição de colisão concorrente no ID ${effectiveMsgId}: requisições em voo com dados divergentes`);
+      return Promise.resolve({
+        success: false,
+        delivered: false,
+        persisted: false,
+        error: 'Identificador em conflito com mensagem concorrente divergente',
+        statusCode: 409
+      });
+    }
+
+    // Requisições rigorosamente idênticas compartilham o processamento em voo de forma idempotente
+    return inFlight.promise;
   }
 
   const deliveryPromise = (async () => {
@@ -543,27 +582,17 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
       activePresence.get(kSender)?.alias ||
       'Usuário';
 
-    // Garante compatibilidade total entre aparelhos com APK novo (AES-256-GCM) e APK anterior
-    const compatiblePayload = unwrapE2eeIfCompatible(ciphertextPayload, ivNonce, cleanSender, cleanRecipient);
-
-    // Classificação estrita de mensagens efêmeras (áudio/vídeo frames em tempo real, sinalização de chamada, etc.)
-    // Mensagens de texto, áudio gravado, imagem, documentos, fotos reais, edições, exclusões, vínculos familiares
-    // e compartilhamento de cofre Shamir NÃO são efêmeras e DEVEM ser persistidas duravelmente!
-    const payloadStr = String(compatiblePayload || '');
-    const isCallFrame = String(effectiveMsgId).startsWith('call_frame_') ||
-                        payloadStr.startsWith('[CALL_AUDIO_FRAME:') ||
-                        payloadStr.startsWith('[CALL_VIDEO_FRAME:');
-    const isCallSignaling = payloadStr.startsWith('[CALL_INIT:') ||
-                            payloadStr.startsWith('[CALL_ACCEPT]') ||
-                            payloadStr.startsWith('[CALL_ACK]') ||
-                            payloadStr.startsWith('[CALL_END]') ||
-                            payloadStr.startsWith('[ICE_CANDIDATE:');
-    const isExplicitEphem = String(effectiveMsgId).startsWith('ephem_') && Boolean(isEphemeralParam);
-    const isEphemeral = isCallFrame || isCallSignaling || isExplicitEphem;
-
     // PERSISTÊNCIA DURÁVEL E DEDUPLICAÇÃO NO POSTGRESQL ANTES DO DESPACHO
     let persistedInDb = false;
-    if (!isEphemeral && isPostgres()) {
+    if (isEphemeral) {
+      // 1. Mensagens efêmeras (WebRTC áudio/vídeo, sinalização de chamada): em memória RAM intencionalmente
+    } else if (isDbConfigured()) {
+      // 2. Ambiente com PostgreSQL configurado (Produção / Testes Reais):
+      if (!isPostgres()) {
+        console.error(`[DB] PostgreSQL configurado está inacessível para mensagem durável ${effectiveMsgId}`);
+        return { success: false, delivered: false, persisted: false, error: 'Database unavailable', statusCode: 503 };
+      }
+
       try {
         const insertRes = await query(
           `INSERT INTO e2ee_messages (id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, is_delivered)
@@ -614,17 +643,16 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
         }
       } catch (dbErr) {
         console.error('[DB] Erro de persistência durável no PostgreSQL:', dbErr.message);
-        // Política de falha fechada: Não simular sucesso durável se o PostgreSQL falhou!
-        recentMessageIds.delete(effectiveMsgId);
         return { success: false, delivered: false, persisted: false, error: 'Database persistence failed', statusCode: 503 };
       }
-    } else if (!isEphemeral && !isPostgres()) {
-      // Deduplicação durável em memória para ambiente de teste sem PostgreSQL
+    } else {
+      // 3. Desenvolvimento local estritamente sem DATABASE_URL:
       if (localDurableMessages.has(effectiveMsgId)) {
         const ex = localDurableMessages.get(effectiveMsgId);
         if (ex.cleanSender.toLowerCase() !== cleanSender.toLowerCase() ||
             ex.cleanRecipient.toLowerCase() !== cleanRecipient.toLowerCase() ||
-            ex.compatiblePayload !== compatiblePayload) {
+            ex.compatiblePayload !== compatiblePayload ||
+            (ex.ivNonce || '') !== (ivNonce || '')) {
           return {
             success: false,
             delivered: false,
@@ -687,10 +715,9 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
       }
     }
 
-    // Registra como processada com sucesso no cache de deduplicação durável
+    // Registra como processada com sucesso no cache de desenvolvimento local sem banco
     if (!isEphemeral) {
-      recentMessageIds.set(effectiveMsgId, Date.now());
-      if (!isPostgres()) {
+      if (!isDbConfigured()) {
         localDurableMessages.set(effectiveMsgId, {
           cleanSender,
           cleanRecipient,
@@ -714,7 +741,14 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
     return { success: true, delivered: deliveredWs, persisted: persistedInDb };
   })();
 
-  inFlightDeliveries.set(effectiveMsgId, deliveryPromise);
+  inFlightDeliveries.set(effectiveMsgId, {
+    promise: deliveryPromise,
+    senderIdentity: cleanSender,
+    recipientIdentity: cleanRecipient,
+    ciphertextPayload: compatiblePayload,
+    ivNonce: ivNonce || '',
+    isEphemeral: isEphemeral
+  });
   deliveryPromise.finally(() => {
     inFlightDeliveries.delete(effectiveMsgId);
   });

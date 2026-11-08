@@ -3170,7 +3170,11 @@ class PessoasAquiRepository(
         }
     }
 
-    fun sendPrivateMessage(recipientId: String, text: String): ContentModerationManager.ModerationResult {
+    fun sendPrivateMessage(
+        recipientId: String,
+        text: String,
+        existingMessageId: String? = null
+    ): ContentModerationManager.ModerationResult {
         val rawClean = cleanId(recipientId)
         val matchedPeer = _realDiscoveredPeople.value.firstOrNull {
             cleanId(it.id) == rawClean ||
@@ -3191,7 +3195,7 @@ class PessoasAquiRepository(
         val isAudio = text.startsWith("[AUDIO:")
         val isImage = text.startsWith("[IMAGE:")
         val isDoc = text.startsWith("[DOC:")
-        val msgId = UUID.randomUUID().toString()
+        val msgId = existingMessageId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
 
         val isPermanent = isPeerPermanent(cleanRecipient)
 
@@ -3330,7 +3334,7 @@ class PessoasAquiRepository(
                                 messageId = effectiveMsgId,
                                 isEphemeral = isSignaling
                             )
-                            networkClient.sendHttpMessage(
+                            val httpRes = networkClient.sendHttpMessage(
                                 senderHash = myId,
                                 recipientHash = cleanRecipient,
                                 ciphertext = delayedCiphertext,
@@ -3339,9 +3343,15 @@ class PessoasAquiRepository(
                                 ivNonce = delayedIv,
                                 isEphemeral = isSignaling
                             )
-                            proximitySimulator.updateMessageDeliveryStatus(
-                                cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT
-                            )
+                            if (httpRes.isSuccess && httpRes.getOrNull() == true) {
+                                proximitySimulator.updateMessageDeliveryStatus(
+                                    cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT
+                                )
+                            } else {
+                                proximitySimulator.updateMessageDeliveryStatus(
+                                    cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                                )
+                            }
                             updateUnifiedData()
                         } else {
                             proximitySimulator.updateMessageDeliveryStatus(
@@ -3393,7 +3403,7 @@ class PessoasAquiRepository(
         if (!isRealtimeMediaStream) {
             scope.launch {
                 try {
-                    networkClient.sendHttpMessage(
+                    val httpRes = networkClient.sendHttpMessage(
                         senderHash = myId,
                         recipientHash = cleanRecipient,
                         ciphertext = ciphertext,
@@ -3402,12 +3412,47 @@ class PessoasAquiRepository(
                         ivNonce = iv,
                         isEphemeral = isSignaling
                     )
+                    if (httpRes.isSuccess && httpRes.getOrNull() == true) {
+                        proximitySimulator.updateMessageDeliveryStatus(
+                            cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT
+                        )
+                    } else {
+                        val currentList = proximitySimulator.privateChats.value[cleanRecipient]
+                            ?: proximitySimulator.privateChats.value["peer-$cleanRecipient"]
+                        val currentStatus = currentList?.find { it.id == msgId }?.deliveryStatus
+                        if (currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED &&
+                            currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT) {
+                            proximitySimulator.updateMessageDeliveryStatus(
+                                cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                            )
+                        }
+                    }
                 } catch (e: Exception) {
                     Log.w("PessoasAqui", "Falha no envio HTTP da mensagem: ${e.message}")
+                    val currentList = proximitySimulator.privateChats.value[cleanRecipient]
+                        ?: proximitySimulator.privateChats.value["peer-$cleanRecipient"]
+                    val currentStatus = currentList?.find { it.id == msgId }?.deliveryStatus
+                    if (currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.DELIVERED &&
+                        currentStatus != br.com.pessoasaqui.domain.model.MessageDeliveryStatus.SENT) {
+                        proximitySimulator.updateMessageDeliveryStatus(
+                            cleanRecipient, msgId, br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                        )
+                    }
                 }
+                updateUnifiedData()
             }
         }
         return ContentModerationManager.ModerationResult(isAllowed = true)
+    }
+
+    fun retryPrivateMessage(recipientId: String, messageId: String): ContentModerationManager.ModerationResult {
+        val cleanRecipient = cleanId(recipientId)
+        val chat = proximitySimulator.privateChats.value[cleanRecipient]
+            ?: proximitySimulator.privateChats.value["peer-$cleanRecipient"]
+            ?: emptyList()
+        val failedMsg = chat.find { it.id == messageId }
+            ?: return ContentModerationManager.ModerationResult(isAllowed = false, reason = "Mensagem não encontrada para retentativa.")
+        return sendPrivateMessage(cleanRecipient, failedMsg.text, existingMessageId = messageId)
     }
 
     fun sendImageMessage(recipientId: String, base64: String) {

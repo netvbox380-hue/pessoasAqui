@@ -347,4 +347,50 @@ class MessagePersistenceAndAckOrderTest {
         assertEquals("Texto deve permanecer idêntico e intacto para reenvio", text, msg.text)
         assertEquals("Status da mensagem deve ser FAILED", MessageDeliveryStatus.FAILED, msg.deliveryStatus)
     }
+
+    @Test
+    fun testT15_retryPrivateMessagePreservaMessageIdERecuperaEntrega() {
+        val repo = createRepository()
+        val msgId = "msg_t15_retry_${UUID.randomUUID()}"
+        val text = "Texto para teste de retentativa durável com mesmo ID"
+
+        // 1. Mensagem enviada inicialmente e marcada como FAILED após erro
+        repo.proximitySimulator.sendPrivateMessage(
+            recipientId = peerId,
+            text = text,
+            myAlias = "Eu",
+            messageId = msgId,
+            deliveryStatus = MessageDeliveryStatus.FAILED
+        )
+
+        val initialChat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        val initialMsg = initialChat.find { it.id == msgId }
+        assertNotNull("Mensagem deve constar no chat", initialMsg)
+        assertEquals(MessageDeliveryStatus.FAILED, initialMsg?.deliveryStatus)
+
+        // 2. Executa retentativa através de retryPrivateMessage
+        val retryResult = repo.retryPrivateMessage(peerId, msgId)
+        assertTrue("Retentativa deve ser aceita", retryResult.isAllowed)
+
+        // 3. Comprova que não gerou mensagem duplicada no chat
+        val retriedChat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals("Não pode haver duplicação do messageId no chat após retry", 1, retriedChat.count { it.id == msgId })
+        val retriedMsg = retriedChat.first { it.id == msgId }
+        assertEquals("Conteúdo da mensagem deve permanecer intacto", text, retriedMsg.text)
+
+        // 4. Recebe confirmação criptográfica de entrega (ACK)
+        val ackOk = repo.processVerifiedNetworkPayload(peerId, "Contato", "[DELIVERY_ACK:$msgId]", "ack_t15")
+        assertTrue(ackOk)
+
+        // 5. Comprova transição para DELIVERED
+        val deliveredChat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        val deliveredMsg = deliveredChat.first { it.id == msgId }
+        assertEquals(MessageDeliveryStatus.DELIVERED, deliveredMsg.deliveryStatus)
+
+        // 6. Blindagem da máquina de estados: mensagem DELIVERED não regride para SENT
+        repo.proximitySimulator.updateMessageDeliveryStatus(peerId, msgId, MessageDeliveryStatus.SENT)
+        val afterAttemptChat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals("Mensagem confirmada como DELIVERED jamais regride para SENT",
+            MessageDeliveryStatus.DELIVERED, afterAttemptChat.first { it.id == msgId }.deliveryStatus)
+    }
 }

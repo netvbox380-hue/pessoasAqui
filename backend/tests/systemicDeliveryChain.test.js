@@ -36,6 +36,8 @@ function setupSystemicTestEnvironment({ postgres = true } = {}) {
     inFlightDeliveries,
     localDurableMessages,
     localStore: { connections: new Map(), identities: new Map() },
+    process: { env: { DATABASE_URL: 'postgresql://mock_db' } },
+    isDatabaseConfigured: () => true,
     isPostgres: () => postgres,
     setDbFailure: (fail) => { forceDbFailure = fail; },
     query: async (sql, params = []) => {
