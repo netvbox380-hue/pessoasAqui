@@ -103,180 +103,50 @@ app.get(['/law-enforcement', '/autoridades'], (req, res) => res.redirect('/legal
 app.get(['/delete-data', '/exclusao-dados', '/data-deletion', '/delete'], (req, res) => res.redirect('/legal#exclusao'));
 app.use('/legal', express.static(path.join(__dirname, '../public/legal')));
 
-// Garante tabelas persistentes se estiver conectado ao PostgreSQL
-setTimeout(async () => {
-  if (isPostgres()) {
+// Módulo de verificação e proteção de esquema (Supabase em modo somente-leitura na subida)
+const { checkSchemaCompatibility, runPendingMigrations } = require('./migrations');
+
+async function verifySchemaCompatibility() {
+  if (!isPostgres()) return { compatible: false, reason: 'Database not connected' };
+  try {
+    // Executa migrações automáticas SOMENTE se explicitamente instruído por variável de ambiente
+    if (process.env.AUTO_MIGRATE === 'true') {
+      await runPendingMigrations(query);
+    }
+
+    const check = await checkSchemaCompatibility(query);
+    if (!check.compatible) {
+      console.warn('[DB] Nota na verificação de esquema:', check.error || 'Incompatível');
+    } else {
+      console.log('[DB] Esquema do banco verificado em modo somente-leitura (Supabase protegido contra DDL na subida).');
+      if (check.pendingMigrations && check.pendingMigrations.length > 0) {
+        console.log(`[DB] Migrações aditivas pendentes de aprovação: ${JSON.stringify(check.pendingMigrations)}`);
+      }
+    }
+
+    // Carrega banimentos ativos sem DDL
     try {
-      // Esquema aditivo v2: não altera registros antigos, exige persistência.
-      await query(`CREATE TABLE IF NOT EXISTS identity_key_bindings (
-        identity_id VARCHAR(64) PRIMARY KEY REFERENCES identities(id) ON DELETE CASCADE,
-        public_key_spki TEXT NOT NULL,
-        generation BIGINT NOT NULL DEFAULT 1,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )`);
-      await query(`CREATE TABLE IF NOT EXISTS recovery_delegations (
-        target_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
-        family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
-        family_public_key TEXT NOT NULL,
-        is_active BOOLEAN NOT NULL DEFAULT TRUE,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY(target_identity,family_identity)
-      )`);
-      await query(`CREATE TABLE IF NOT EXISTS recovery_proof_nonces (
-        identity_id VARCHAR(64) NOT NULL,
-        operation VARCHAR(32) NOT NULL,
-        nonce VARCHAR(64) NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY(identity_id,operation,nonce)
-      )`);
-      await query(`CREATE TABLE IF NOT EXISTS recovery_grants (
-        id VARCHAR(64) PRIMARY KEY,
-        token_hash CHAR(64) NOT NULL UNIQUE,
-        target_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
-        family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
-        family_public_key TEXT NOT NULL,
-        expected_generation BIGINT NOT NULL,
-        expires_at TIMESTAMPTZ NOT NULL,
-        used_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )`);
-      await query(`CREATE INDEX IF NOT EXISTS idx_recovery_grants_target
-        ON recovery_grants(target_identity,expires_at)`);
-      // Migração aditiva: recuperação autorizada por duas identidades distintas.
-      await query(`ALTER TABLE recovery_grants
-        ADD COLUMN IF NOT EXISTS method VARCHAR(8) NOT NULL DEFAULT 'LINK'`);
-      await query(`ALTER TABLE recovery_grants
-        ADD COLUMN IF NOT EXISTS eligible_at TIMESTAMPTZ`);
-      await query(`ALTER TABLE recovery_grants ADD COLUMN IF NOT EXISTS request_device_identity VARCHAR(64)`);
-      await query(`ALTER TABLE recovery_grants ADD COLUMN IF NOT EXISTS request_public_key TEXT`);
-      await query(`ALTER TABLE recovery_grants ADD COLUMN IF NOT EXISTS prepared_at TIMESTAMPTZ`);
-
-      await query(`CREATE TABLE IF NOT EXISTS recovery_approvals (
-        grant_id VARCHAR(64) NOT NULL REFERENCES recovery_grants(id) ON DELETE CASCADE,
-        family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
-        approved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY(grant_id, family_identity)
-      )`);
-      await query(`CREATE INDEX IF NOT EXISTS idx_recovery_approvals_family
-        ON recovery_approvals(family_identity)`);
-      // Consentimento explícito para liberar partes criptografadas V3.
-      // O banco só guarda IDs e eventos; jamais PIN, segredo ou partes Shamir.
-      await query(`CREATE TABLE IF NOT EXISTS recovery_share_releases (
-        grant_id VARCHAR(64) NOT NULL REFERENCES recovery_grants(id) ON DELETE CASCADE,
-        family_identity VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
-        released_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY(grant_id, family_identity)
-      )`);
-      await query(`CREATE INDEX IF NOT EXISTS idx_recovery_share_releases_family
-        ON recovery_share_releases(family_identity)`);
-      await query(`CREATE TABLE IF NOT EXISTS recovery_security_events (
-        id BIGSERIAL PRIMARY KEY,
-        target_identity VARCHAR(64) NOT NULL,
-        actor_identity VARCHAR(64),
-        event_type VARCHAR(48) NOT NULL,
-        request_id VARCHAR(64),
-        details JSONB NOT NULL DEFAULT '{}'::jsonb,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )`);
-      await query(`CREATE INDEX IF NOT EXISTS idx_recovery_security_events_target
-        ON recovery_security_events(target_identity,created_at DESC)`);
-      await query(`CREATE TABLE IF NOT EXISTS account_recovery_holds (
-        target_identity VARCHAR(64) PRIMARY KEY REFERENCES identities(id) ON DELETE CASCADE,
-        blocked_until TIMESTAMPTZ NOT NULL,
-        reason TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )`);
-
-
-      await query(`CREATE TABLE IF NOT EXISTS offers_secure (
-        id VARCHAR(64) PRIMARY KEY,
-        author_id VARCHAR(64) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
-        author_alias VARCHAR(64) NOT NULL,
-        profession VARCHAR(64) NOT NULL,
-        description VARCHAR(500) NOT NULL,
-        image_base64 TEXT,
-        external_link TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )`);
-      await query(`CREATE INDEX IF NOT EXISTS idx_offers_secure_owner ON offers_secure(author_id,created_at)`);
-      await query(`CREATE TABLE IF NOT EXISTS offer_action_nonces (
-        author_id VARCHAR(64) NOT NULL,
-        nonce VARCHAR(64) NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY(author_id,nonce)
-      )`);
-      await query(`CREATE TABLE IF NOT EXISTS invites (
-        id VARCHAR(64) PRIMARY KEY,
-        token VARCHAR(64) NOT NULL,
-        sender_identity VARCHAR(64),
-        sender_alias VARCHAR(64),
-        signature TEXT,
-        expires_at TIMESTAMPTZ NOT NULL,
-        is_used BOOLEAN DEFAULT FALSE,
-        used_by VARCHAR(64),
-        used_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )`);
-
-      await query(`CREATE TABLE IF NOT EXISTS moderation_reports (
-        id VARCHAR(64) PRIMARY KEY,
-        reporter_identity VARCHAR(64),
-        accused_identity VARCHAR(64),
-        violation_type VARCHAR(64) DEFAULT 'ABUSE',
-        reason TEXT NOT NULL,
-        evidence_payload TEXT,
-        status VARCHAR(32) DEFAULT 'PENDING',
-        moderator_notes TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        resolved_at TIMESTAMPTZ
-      )`);
-
-      await query(`CREATE TABLE IF NOT EXISTS support_tickets (
-        id VARCHAR(64) PRIMARY KEY,
-        author_identity VARCHAR(64) NOT NULL,
-        author_alias VARCHAR(64),
-        subject VARCHAR(128) NOT NULL,
-        category VARCHAR(64) DEFAULT 'GERAL',
-        message TEXT NOT NULL,
-        status VARCHAR(32) DEFAULT 'OPEN',
-        moderator_reply TEXT,
-        replied_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )`);
-
-      await query(`CREATE TABLE IF NOT EXISTS e2ee_messages (
-        id VARCHAR(64) PRIMARY KEY,
-        sender_identity VARCHAR(64),
-        recipient_identity VARCHAR(64),
-        sender_alias VARCHAR(64),
-        ciphertext_payload TEXT NOT NULL,
-        iv_nonce VARCHAR(64) NOT NULL,
-        is_delivered BOOLEAN DEFAULT FALSE,
-        is_cancelled BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        delivered_at TIMESTAMPTZ,
-        cancelled_at TIMESTAMPTZ
-      )`);
-      await query(`ALTER TABLE e2ee_messages ADD COLUMN IF NOT EXISTS is_cancelled BOOLEAN DEFAULT FALSE`);
-      await query(`ALTER TABLE e2ee_messages ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`);
-      await query(`CREATE INDEX IF NOT EXISTS idx_e2ee_messages_recipient_undelivered ON e2ee_messages (recipient_identity, is_delivered) WHERE is_delivered = FALSE`);
-      await query(`CREATE INDEX IF NOT EXISTS idx_e2ee_messages_undelivered_uncancelled ON e2ee_messages (recipient_identity, is_delivered) WHERE is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)`);
-      await query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS affected_identity VARCHAR(64)`);
-      await query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS verified_family_report BOOLEAN NOT NULL DEFAULT FALSE`);
-
-      // Restauração de mensagens pendentes do PostgreSQL na subida do backend
-      await restorePendingMessagesFromDatabase();
-
-
       const bannedRes = await query(`SELECT id FROM identities WHERE is_banned = TRUE`);
       for (const row of bannedRes.rows) {
         bannedIdentities.add(String(row.id).toLowerCase());
       }
-      console.log(`[DB] Tabelas de moderação, tickets e convites verificadas (${bannedIdentities.size} banimentos ativos).`);
-    } catch (err) {
-      console.warn('[DB] Nota ao verificar tabelas de moderação:', err.message);
-    }
+      if (bannedIdentities.size > 0) {
+        console.log(`[DB] Banimentos ativos carregados: ${bannedIdentities.size}`);
+      }
+    } catch (_) {}
+
+    // Restaura mensagens pendentes na inicialização
+    await restorePendingMessagesFromDatabase();
+    return check;
+  } catch (err) {
+    console.warn('[DB] Nota ao verificar compatibilidade:', err.message);
+    return { compatible: false, error: err.message };
+  }
+}
+
+setTimeout(async () => {
+  if (isPostgres()) {
+    await verifySchemaCompatibility();
   }
 }, 500);
 
@@ -388,12 +258,26 @@ async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
 async function restorePendingMessagesFromDatabase() {
   if (!isPostgres()) return;
   try {
-    const pendingRows = await query(
-      `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
-       FROM e2ee_messages
-       WHERE is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)
-       ORDER BY created_at ASC`
-    );
+    let pendingRows;
+    try {
+      pendingRows = await query(
+        `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
+         FROM e2ee_messages
+         WHERE is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)
+         ORDER BY created_at ASC`
+      );
+    } catch (errCol) {
+      if (errCol.code === '42703' || String(errCol.message).includes('is_cancelled')) {
+        pendingRows = await query(
+          `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
+           FROM e2ee_messages
+           WHERE is_delivered = FALSE
+           ORDER BY created_at ASC`
+        );
+      } else {
+        throw errCol;
+      }
+    }
     pendingMessages.clear();
     for (const row of pendingRows.rows) {
       const kRecip = keyId(row.recipient_identity);
@@ -416,7 +300,7 @@ async function restorePendingMessagesFromDatabase() {
         if (q.length > 50) q.shift();
       }
     }
-    if (pendingRows.rows.length > 0) {
+    if (pendingRows && pendingRows.rows.length > 0) {
       console.log(`[DB] Mensagens pendentes restauradas do banco: ${pendingRows.rows.length}`);
     }
   } catch (errPending) {
@@ -428,14 +312,12 @@ if (typeof registerDbRecoveredCallback === 'function') {
   registerDbRecoveredCallback(restorePendingMessagesFromDatabase);
 }
 
-async function purgePendingMessagesBetween(idA, idB) {
-  const isDbConfigured = () => (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) || (typeof isPostgres === 'function' && isPostgres());
+function purgePendingMessagesRam(idA, idB) {
   const cleanA = cleanId(idA);
   const cleanB = cleanId(idB);
   const kA = keyId(cleanA);
   const kB = keyId(cleanB);
 
-  // 1. Limpa da memória RAM (fila volátil de mensagens pendentes)
   const qA = pendingMessages.get(kA);
   if (qA) {
     const filtered = qA.filter(m => keyId(m.senderHash) !== kB);
@@ -449,15 +331,24 @@ async function purgePendingMessagesBetween(idA, idB) {
     else pendingMessages.delete(kB);
   }
 
-  // 2. Persistência durável no PostgreSQL
-  if (isDbConfigured()) {
-    if (!isPostgres()) {
-      throw new Error('Database unavailable during purge');
+  for (const [id, msg] of localDurableMessages.entries()) {
+    const s = cleanId(msg.cleanSender).toLowerCase();
+    const r = cleanId(msg.cleanRecipient).toLowerCase();
+    const a = cleanA.toLowerCase();
+    const b = cleanB.toLowerCase();
+    if (((s === a && r === b) || (s === b && r === a)) && !msg.delivered) {
+      msg.isCancelled = true;
     }
-    // Distinção de estado: mensagens canceladas por revogação NÃO são entregues!
-    // is_delivered permanece FALSE, is_cancelled se torna TRUE.
-    // Histórico prévio de mensagens já entregues (is_delivered = TRUE) permanece intacto.
-    const res = await query(
+  }
+}
+
+async function purgePendingMessagesBetween(idA, idB, txQuery) {
+  const isDbConfigured = () => (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) || (typeof isPostgres === 'function' && isPostgres());
+  const cleanA = cleanId(idA);
+  const cleanB = cleanId(idB);
+
+  if (txQuery) {
+    const res = await txQuery(
       `UPDATE e2ee_messages
        SET is_cancelled = TRUE, cancelled_at = NOW()
        WHERE is_delivered = FALSE
@@ -467,7 +358,35 @@ async function purgePendingMessagesBetween(idA, idB) {
        RETURNING id`,
       [cleanA, cleanB]
     );
+    if (typeof purgePendingMessagesRam === 'function') {
+      purgePendingMessagesRam(idA, idB);
+    }
     return { success: true, cancelledCount: res?.rowCount || 0 };
+  }
+
+  if (typeof purgePendingMessagesRam === 'function') {
+    purgePendingMessagesRam(idA, idB);
+  }
+
+  if (isDbConfigured()) {
+    if (!isPostgres()) {
+      throw new Error('Database unavailable during purge');
+    }
+    const txRunner = (typeof withTransaction === 'function') ? withTransaction : async (cb) => cb(query);
+    const result = await txRunner(async (tx) => {
+      const res = await tx(
+        `UPDATE e2ee_messages
+         SET is_cancelled = TRUE, cancelled_at = NOW()
+         WHERE is_delivered = FALSE
+           AND (is_cancelled IS NULL OR is_cancelled = FALSE)
+           AND ((LOWER(sender_identity) = LOWER($1) AND LOWER(recipient_identity) = LOWER($2))
+             OR (LOWER(sender_identity) = LOWER($2) AND LOWER(recipient_identity) = LOWER($1)))
+         RETURNING id`,
+        [cleanA, cleanB]
+      );
+      return { success: true, cancelledCount: res?.rowCount || 0 };
+    });
+    return result;
   }
 
   return { success: true, cancelledCount: 0 };
@@ -658,7 +577,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
         if (insertRes && insertRes.rowCount === 0) {
           // Conflito em chave primária existente: consulta registro para validar idempotência vs colisão
           const existingRes = await query(
-            `SELECT sender_identity, recipient_identity, ciphertext_payload, iv_nonce, is_delivered
+            `SELECT sender_identity, recipient_identity, ciphertext_payload, iv_nonce, is_delivered, is_cancelled
              FROM e2ee_messages WHERE id = $1`,
             [effectiveMsgId]
           );
@@ -677,6 +596,17 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
                 persisted: false,
                 error: 'Identificador em conflito com mensagem existente diferente',
                 statusCode: 409
+              };
+            }
+
+            if (ex.is_cancelled) {
+              console.warn(`[MSG] Rejeição de envio no ID ${effectiveMsgId}: mensagem cancelada por revogação`);
+              return {
+                success: false,
+                delivered: false,
+                persisted: true,
+                error: 'Mensagem cancelada por revogação de vínculo',
+                statusCode: 410
               };
             }
 
@@ -897,28 +827,49 @@ wss.on('connection', (ws, req) => {
         // Entrega mensagens pendentes para este dispositivo sem apagá-las precipitadamente.
         // A remoção da fila ocorre sob confirmação explícita de processamento (ACK).
         let pending = [];
-        if (isPostgres()) {
-          try {
-            const dbRes = await query(
-              `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
-               FROM e2ee_messages
-               WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)
-               ORDER BY created_at ASC LIMIT 100`,
-              [kAuth]
-            );
-            pending = dbRes.rows.map(r => ({
-              type: 'E2EE_MESSAGE_RECEIVED',
-              messageId: r.id,
-              senderHash: cleanId(r.sender_identity),
-              senderAlias: r.sender_alias || 'Usuário',
-              recipientHash: cleanId(r.recipient_identity),
-              ciphertextPayload: r.ciphertext_payload,
-              ivNonce: r.iv_nonce || '',
-              isEphemeral: false,
-              timestamp: r.created_at ? new Date(r.created_at).getTime() : Date.now()
-            }));
-          } catch (_) {
-            pending = pendingMessages.get(kAuth) || [];
+        const isDbConfiguredWs = () => (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) || (typeof isPostgres === 'function' && isPostgres());
+        if (isDbConfiguredWs()) {
+          if (isPostgres()) {
+            try {
+              let dbRes;
+              try {
+                dbRes = await query(
+                  `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
+                   FROM e2ee_messages
+                   WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)
+                   ORDER BY created_at ASC LIMIT 100`,
+                  [kAuth]
+                );
+              } catch (errCol) {
+                if (errCol.code === '42703' || String(errCol.message).includes('is_cancelled')) {
+                  dbRes = await query(
+                    `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
+                     FROM e2ee_messages
+                     WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE
+                     ORDER BY created_at ASC LIMIT 100`,
+                    [kAuth]
+                  );
+                } else {
+                  throw errCol;
+                }
+              }
+              pending = dbRes.rows.map(r => ({
+                type: 'E2EE_MESSAGE_RECEIVED',
+                messageId: r.id,
+                senderHash: cleanId(r.sender_identity),
+                senderAlias: r.sender_alias || 'Usuário',
+                recipientHash: cleanId(r.recipient_identity),
+                ciphertextPayload: r.ciphertext_payload,
+                ivNonce: r.iv_nonce || '',
+                isEphemeral: false,
+                timestamp: r.created_at ? new Date(r.created_at).getTime() : Date.now()
+              }));
+            } catch (_) {
+              pending = [];
+            }
+          } else {
+            console.warn('[WS] Banco externo configurado indisponível; mensagens pendentes retidas até reconexão segura.');
+            pending = [];
           }
         } else {
           pending = pendingMessages.get(kAuth) || [];
@@ -1344,15 +1295,34 @@ app.post('/api/messages/pending', async (req, res) => {
   // A leitura da fila não confirma entrega nem processamento.
 
   let pending = [];
-  if (isPostgres()) {
+  const isDbConfiguredHttp = () => (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) || (typeof isPostgres === 'function' && isPostgres());
+  if (isDbConfiguredHttp()) {
+    if (!isPostgres()) {
+      return res.status(503).json({ success: false, error: 'Banco de mensagens indisponível. Fila protegida.' });
+    }
     try {
-      const dbRes = await query(
-        `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
-         FROM e2ee_messages
-         WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)
-         ORDER BY created_at ASC LIMIT 100`,
-        [cleanKey]
-      );
+      let dbRes;
+      try {
+        dbRes = await query(
+          `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
+           FROM e2ee_messages
+           WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)
+           ORDER BY created_at ASC LIMIT 100`,
+          [cleanKey]
+        );
+      } catch (errCol) {
+        if (errCol.code === '42703' || String(errCol.message).includes('is_cancelled')) {
+          dbRes = await query(
+            `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
+             FROM e2ee_messages
+             WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE
+             ORDER BY created_at ASC LIMIT 100`,
+            [cleanKey]
+          );
+        } else {
+          throw errCol;
+        }
+      }
       pending = dbRes.rows.map(r => ({
         type: 'E2EE_MESSAGE_RECEIVED',
         messageId: r.id,
@@ -1365,8 +1335,8 @@ app.post('/api/messages/pending', async (req, res) => {
         timestamp: r.created_at ? new Date(r.created_at).getTime() : Date.now()
       }));
     } catch (e) {
-      console.warn('[DB] Fallback para fila em memória:', e.message);
-      pending = pendingMessages.get(cleanKey) || [];
+      console.error('[DB] Erro ao consultar mensagens pendentes no PostgreSQL:', e.message);
+      return res.status(503).json({ success: false, error: 'Banco de dados indisponível para consulta autoritativa de pendências.' });
     }
   } else {
     pending = pendingMessages.get(cleanKey) || [];
@@ -1739,30 +1709,45 @@ app.post('/api/connections/unmark', async (req, res) => {
     return res.status(503).json({ success: false, error: 'Banco de dados indisponível para revogação durável.' });
   }
 
-  // Revogação de QUALQUER participante desfaz as duas marcações.
-  // Sem isto, uma nova marcação poderia reativar o vínculo unilateralmente.
+  // REVOGAÇÃO BILATERAL ATÔMICA EM TRANSAÇÃO ÚNICA:
+  // DELETE em connections e UPDATE de cancelamento em e2ee_messages sob o mesmo BEGIN ... COMMIT
   if (isPostgres()) {
     try {
-      await query(
-        `DELETE FROM connections
-         WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
-            OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
-        [from, to]
-      );
-      if (typeof purgePendingMessagesBetween === 'function') {
-        await purgePendingMessagesBetween(from, to);
-      }
+      const txRunner = (typeof withTransaction === 'function') ? withTransaction : async (cb) => cb(query);
+      await txRunner(async (txQuery) => {
+        // 1. Exclusão bilateral dos vínculos na tabela connections
+        await txQuery(
+          `DELETE FROM connections
+           WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
+              OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
+          [from, to]
+        );
+
+        // 2. Cancelamento atômico das mensagens pendentes não entregues
+        // Mensagens já entregues (is_delivered = TRUE) permanecem intocadas!
+        await txQuery(
+          `UPDATE e2ee_messages
+           SET is_cancelled = TRUE, cancelled_at = NOW()
+           WHERE is_delivered = FALSE
+             AND (is_cancelled IS NULL OR is_cancelled = FALSE)
+             AND ((LOWER(sender_identity) = LOWER($1) AND LOWER(recipient_identity) = LOWER($2))
+               OR (LOWER(sender_identity) = LOWER($2) AND LOWER(recipient_identity) = LOWER($1)))`,
+          [from, to]
+        );
+      });
     } catch (e) {
-      console.error('[DB] Erro ao revogar conexão no PostgreSQL:', e.message);
-      return res.status(503).json({ success: false, error: 'Revogação não confirmada no banco. Tente novamente.' });
-    }
-  } else {
-    if (typeof purgePendingMessagesBetween === 'function') {
-      await purgePendingMessagesBetween(from, to);
+      console.error('[DB] Erro na transação atômica de revogação no PostgreSQL:', e.message);
+      return res.status(503).json({ success: false, error: 'Revogação não confirmada no banco. Transação abortada com rollback.' });
     }
   }
+
+  // SOMENTE APÓS A CONFIRMAÇÃO DO COMMIT:
+  // 1. Atualização dos estados em memória RAM
   localStore.connections.delete(`${kFrom}->${kTo}`);
   localStore.connections.delete(`${kTo}->${kFrom}`);
+  if (typeof purgePendingMessagesRam === 'function') {
+    purgePendingMessagesRam(from, to);
+  }
 
   const myAlias = senderAlias || activePresence.get(kFrom)?.alias || 'Alguém';
   const targetWs = activeSockets.get(kTo);
@@ -2951,4 +2936,13 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, server, activeSockets, wss };
+module.exports = {
+  app,
+  server,
+  activeSockets,
+  wss,
+  purgePendingMessagesBetween,
+  purgePendingMessagesRam,
+  verifySchemaCompatibility,
+  deliverMessageToTarget
+};

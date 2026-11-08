@@ -252,6 +252,9 @@ async function withTransaction(work) {
     await client.query('COMMIT');
     return result;
   } catch (error) {
+    if (isFatalDbError(error)) {
+      tripCircuitBreaker(error);
+    }
     try { await client.query('ROLLBACK'); } catch (_) {}
     throw error;
   } finally {
