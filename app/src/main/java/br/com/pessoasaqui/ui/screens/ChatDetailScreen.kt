@@ -233,7 +233,7 @@ private fun InlineAnimatedGifPreview(base64: String?) {
                     setImageDrawable(gif)
                 }
             },
-            update = { it.setImageDrawable(gif) },
+            update = { if (it.drawable !== gif) it.setImageDrawable(gif) },
             modifier = Modifier.fillMaxWidth().height(190.dp)
         )
     }
@@ -841,7 +841,7 @@ fun ChatDetailScreen(
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = if (isOnline) "Online" else "Visto por último ${formatLastSeen(person.lastSeenEpochMs)}",
+                                    text = if (isOnline) "Online" else "Offline • Visto ${formatLastSeen(person.lastSeenEpochMs)}",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         color = if (isOnline) EmeraldGreen else TextSecondary,
                                         fontSize = 10.sp,
@@ -1440,7 +1440,7 @@ fun ChatDetailScreen(
                                                 Spacer(modifier = Modifier.height(2.dp))
 
                                                 Text(
-                                                    text = if (isPlaying) "Reproduzindo áudio..." else "🔒 Criptografada • 0:${String.format("%02d", msg.audioDurationSeconds.coerceAtLeast(3))}",
+                                                    text = if (isPlaying) "Reproduzindo áudio..." else "🔒 Criptografado • 0:${String.format("%02d", msg.audioDurationSeconds.coerceAtLeast(3))}",
                                                     style = MaterialTheme.typography.labelSmall.copy(
                                                         color = subTextColor,
                                                         fontSize = 10.sp
@@ -2265,7 +2265,7 @@ fun ChatDetailScreen(
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
                                     Text("Enviar Vídeos", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
-                                    Text("Múltiplos vídeos cifrados ponta a ponta (até 40MB)", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
+                                    Text("Vídeos protegidos 🔒 Criptografados (até 40 MB)", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
                                 }
                             }
                         }
@@ -2429,7 +2429,7 @@ fun ChatDetailScreen(
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("🔗 Criar Convite Criptografado", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                                    Text("🔗 Criar convite seguro de uso único", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
                                     Text("Link seguro de uso único para compartilhar", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp))
                                 }
                             }
@@ -3650,7 +3650,7 @@ fun FullscreenImageViewerDialog(
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = if (senderName.isNotBlank()) "Foto • $senderName" else "Foto Cifrada",
+                        text = if (senderName.isNotBlank()) "Foto • $senderName" else "Foto criptografada",
                         style = MaterialTheme.typography.titleMedium.copy(
                             color = Color.White,
                             fontWeight = FontWeight.Bold
