@@ -79,8 +79,12 @@ function setupTestEnvironment({ postgres = false } = {}) {
         }
         return { rowCount: count };
       }
+      if (cleanSql.includes('is_cancelled = TRUE')) {
+        const cancelled = dbMessages.filter(m => m.is_cancelled);
+        return { rows: cancelled, rowCount: cancelled.length };
+      }
       if (cleanSql.includes('SELECT') && cleanSql.includes('e2ee_messages')) {
-        const rows = dbMessages.filter(m => !m.is_delivered);
+        const rows = dbMessages.filter(m => !m.is_delivered && !m.is_cancelled);
         return { rows, rowCount: rows.length };
       }
       return { rows: [], rowCount: 0 };

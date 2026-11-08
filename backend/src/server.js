@@ -104,24 +104,20 @@ app.get(['/delete-data', '/exclusao-dados', '/data-deletion', '/delete'], (req, 
 app.use('/legal', express.static(path.join(__dirname, '../public/legal')));
 
 // Módulo de verificação e proteção de esquema (Supabase em modo somente-leitura na subida)
-const { checkSchemaCompatibility, runPendingMigrations } = require('./migrations');
+const { checkSchemaCompatibility, SCHEMA_STATUS } = require('./migrations');
 
 async function verifySchemaCompatibility() {
   if (!isPostgres()) return { compatible: false, reason: 'Database not connected' };
   try {
-    // Executa migrações automáticas SOMENTE se explicitamente instruído por variável de ambiente
-    if (process.env.AUTO_MIGRATE === 'true') {
-      await runPendingMigrations(query);
-    }
-
     const check = await checkSchemaCompatibility(query);
-    if (!check.compatible) {
-      console.warn('[DB] Nota na verificação de esquema:', check.error || 'Incompatível');
+    if (check.status === SCHEMA_STATUS.BLOCKING_INCOMPATIBLE) {
+      console.error('[DB] ERRO CRÍTICO: Esquema incompatível no banco de dados. Estruturas ausentes:', check.missingStructures);
+    } else if (check.status === SCHEMA_STATUS.MIGRATION_PENDING) {
+      console.log('[DB] Esquema verificado em modo somente-leitura (Supabase protegido contra DDL na subida).');
+      console.log(`[DB] Migrações aditivas pendentes de aprovação expressa: ${JSON.stringify(check.pendingMigrations)}`);
+      console.warn('[DB] Operações com is_cancelled em fail-closed até aprovação e aplicação manual da migração.');
     } else {
-      console.log('[DB] Esquema do banco verificado em modo somente-leitura (Supabase protegido contra DDL na subida).');
-      if (check.pendingMigrations && check.pendingMigrations.length > 0) {
-        console.log(`[DB] Migrações aditivas pendentes de aprovação: ${JSON.stringify(check.pendingMigrations)}`);
-      }
+      console.log('[DB] Esquema do banco verificado em modo somente-leitura: 100% compatível (Supabase protegido contra DDL na subida).');
     }
 
     // Carrega banimentos ativos sem DDL
@@ -268,15 +264,10 @@ async function restorePendingMessagesFromDatabase() {
       );
     } catch (errCol) {
       if (errCol.code === '42703' || String(errCol.message).includes('is_cancelled')) {
-        pendingRows = await query(
-          `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
-           FROM e2ee_messages
-           WHERE is_delivered = FALSE
-           ORDER BY created_at ASC`
-        );
-      } else {
-        throw errCol;
+        console.warn('[DB] Restauração de pendências suspensa: coluna is_cancelled ausente no banco (fail-closed).');
+        return;
       }
+      throw errCol;
     }
     pendingMessages.clear();
     for (const row of pendingRows.rows) {
@@ -422,6 +413,8 @@ const bannedIdentities = new Set();
 const inFlightDeliveries = new Map();
 // Armazenamento durável em memória para ambiente isolado/testes sem PostgreSQL
 const localDurableMessages = new Map();
+// Conjunto de conexões revogadas para contenção imediata em memória
+const revokedConnections = new Set();
 
 function isDuplicateMessage(msgId) {
   if (!msgId) return false;
@@ -443,6 +436,10 @@ function cleanId(id) {
 
 function keyId(id) {
   return cleanId(id).toLowerCase();
+}
+
+function pairKey(a, b) {
+  return [keyId(a), keyId(b)].sort().join('<->');
 }
 
 async function getConnectionStatus(myId, peerId) {
@@ -567,70 +564,136 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
       }
 
       try {
-        const insertRes = await query(
-          `INSERT INTO e2ee_messages (id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, is_delivered)
-           VALUES ($1, $2, $3, $4, $5, $6, FALSE)
-           ON CONFLICT (id) DO NOTHING`,
-          [effectiveMsgId, cleanSender, cleanRecipient, resolvedSenderAlias, compatiblePayload, ivNonce || '']
-        );
-
-        if (insertRes && insertRes.rowCount === 0) {
-          // Conflito em chave primária existente: consulta registro para validar idempotência vs colisão
-          const existingRes = await query(
-            `SELECT sender_identity, recipient_identity, ciphertext_payload, iv_nonce, is_delivered, is_cancelled
-             FROM e2ee_messages WHERE id = $1`,
-            [effectiveMsgId]
+        const txRunner = (typeof withTransaction === 'function') ? withTransaction : async (cb) => cb(query);
+        const txResult = await txRunner(async (tx) => {
+          // A. Sincronização transacional de autorização de vínculo:
+          // Se houver registros na tabela connections entre os pares, trava a linha em FOR SHARE.
+          // Se o unmark estiver executando DELETE na mesma linha, o SELECT FOR SHARE aguarda a conclusão do unmark.
+          const connCheck = await tx(
+            `SELECT from_identity, to_identity, is_mutual FROM connections
+             WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
+                OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))
+             FOR SHARE`,
+            [cleanSender, cleanRecipient]
           );
-          if (existingRes && existingRes.rowCount > 0) {
-            const ex = existingRes.rows[0];
-            const sameSender = cleanId(ex.sender_identity).toLowerCase() === cleanSender.toLowerCase();
-            const sameRecip = cleanId(ex.recipient_identity).toLowerCase() === cleanRecipient.toLowerCase();
-            const samePayload = ex.ciphertext_payload === compatiblePayload;
-            const sameIv = (ex.iv_nonce || '') === (ivNonce || '');
 
-            if (!sameSender || !sameRecip || !samePayload || !sameIv) {
-              console.warn(`[MSG] Rejeição de colisão no ID ${effectiveMsgId}: dados divergentes`);
-              return {
-                success: false,
-                delivered: false,
-                persisted: false,
-                error: 'Identificador em conflito com mensagem existente diferente',
-                statusCode: 409
-              };
+          if (connCheck && connCheck.rowCount > 0) {
+            // Se algum registro existir e is_mutual for false -> tentativa unilateral não autorizada
+            if (connCheck.rows.some(r => !r.is_mutual)) {
+              throw Object.assign(new Error('Conexão unilateral não autorizada'), { statusCode: 403, code: 'UNILATERAL_NOT_PERMITTED' });
             }
+          } else {
+            // Se não há vínculo na tabela connections, verifica se a conexão foi revogada
+            const isTombstoned = revokedConnections.has(pairKey(cleanSender, cleanRecipient));
+            let hasCancelled = false;
+            try {
+              const cancelRes = await tx(
+                `SELECT 1 FROM e2ee_messages
+                 WHERE is_cancelled = TRUE
+                   AND ((LOWER(sender_identity) = LOWER($1) AND LOWER(recipient_identity) = LOWER($2))
+                     OR (LOWER(sender_identity) = LOWER($2) AND LOWER(recipient_identity) = LOWER($1)))
+                 LIMIT 1`,
+                [cleanSender, cleanRecipient]
+              );
+              hasCancelled = (cancelRes && cancelRes.rowCount > 0);
+            } catch (_) {}
 
-            if (ex.is_cancelled) {
-              console.warn(`[MSG] Rejeição de envio no ID ${effectiveMsgId}: mensagem cancelada por revogação`);
-              return {
-                success: false,
-                delivered: false,
-                persisted: true,
-                error: 'Mensagem cancelada por revogação de vínculo',
-                statusCode: 410
-              };
-            }
-
-            // Retentativa idempotente legítima:
-            persistedInDb = true;
-            if (ex.is_delivered) {
-              return {
-                success: true,
-                delivered: true,
-                persisted: true,
-                duplicate: true,
-                alreadyDelivered: true
-              };
+            if (isTombstoned || hasCancelled) {
+              throw Object.assign(new Error('Conexão revogada ou não autorizada'), { statusCode: 403, code: 'CONNECTION_REVOKED' });
             }
           }
-        } else {
-          persistedInDb = true;
+
+          // B. Inserção durável no PostgreSQL com ON CONFLICT (id) DO NOTHING
+          const insertRes = await tx(
+            `INSERT INTO e2ee_messages (id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, is_delivered)
+             VALUES ($1, $2, $3, $4, $5, $6, FALSE)
+             ON CONFLICT (id) DO NOTHING`,
+            [effectiveMsgId, cleanSender, cleanRecipient, resolvedSenderAlias, compatiblePayload, ivNonce || '']
+          );
+
+          if (insertRes && insertRes.rowCount === 0) {
+            // Conflito em chave primária existente: consulta registro para validar idempotência vs colisão
+            const existingRes = await tx(
+              `SELECT sender_identity, recipient_identity, ciphertext_payload, iv_nonce, is_delivered, is_cancelled
+               FROM e2ee_messages WHERE id = $1`,
+              [effectiveMsgId]
+            );
+            if (existingRes && existingRes.rowCount > 0) {
+              const ex = existingRes.rows[0];
+              const sameSender = cleanId(ex.sender_identity).toLowerCase() === cleanSender.toLowerCase();
+              const sameRecip = cleanId(ex.recipient_identity).toLowerCase() === cleanRecipient.toLowerCase();
+              const samePayload = ex.ciphertext_payload === compatiblePayload;
+              const sameIv = (ex.iv_nonce || '') === (ivNonce || '');
+
+              if (!sameSender || !sameRecip || !samePayload || !sameIv) {
+                console.warn(`[MSG] Rejeição de colisão no ID ${effectiveMsgId}: dados divergentes`);
+                return {
+                  success: false,
+                  delivered: false,
+                  persisted: false,
+                  error: 'Identificador em conflito com mensagem existente diferente',
+                  statusCode: 409
+                };
+              }
+
+              if (ex.is_cancelled) {
+                console.warn(`[MSG] Rejeição de envio no ID ${effectiveMsgId}: mensagem cancelada por revogação`);
+                return {
+                  success: false,
+                  delivered: false,
+                  persisted: true,
+                  error: 'Mensagem cancelada por revogação de vínculo',
+                  statusCode: 410
+                };
+              }
+
+              // Retentativa idempotente legítima:
+              if (ex.is_delivered) {
+                return {
+                  success: true,
+                  delivered: true,
+                  persisted: true,
+                  duplicate: true,
+                  alreadyDelivered: true
+                };
+              }
+            }
+          }
+
+          return { success: true, persisted: true };
+        });
+
+        if (!txResult.success) {
+          return txResult;
+        }
+        persistedInDb = txResult.persisted;
+        if (txResult.duplicate) {
+          return txResult;
         }
       } catch (dbErr) {
+        if (dbErr.statusCode) {
+          return {
+            success: false,
+            delivered: false,
+            persisted: false,
+            error: dbErr.message,
+            statusCode: dbErr.statusCode
+          };
+        }
         console.error('[DB] Erro de persistência durável no PostgreSQL:', dbErr.message);
         return { success: false, delivered: false, persisted: false, error: 'Database persistence failed', statusCode: 503 };
       }
     } else {
       // 3. Desenvolvimento local estritamente sem DATABASE_URL:
+      if (revokedConnections.has(pairKey(cleanSender, cleanRecipient))) {
+        return {
+          success: false,
+          delivered: false,
+          persisted: false,
+          error: 'Conexão revogada ou não autorizada',
+          statusCode: 403
+        };
+      }
       if (localDurableMessages.has(effectiveMsgId)) {
         const ex = localDurableMessages.get(effectiveMsgId);
         if (ex.cleanSender.toLowerCase() !== cleanSender.toLowerCase() ||
@@ -842,16 +905,10 @@ wss.on('connection', (ws, req) => {
                 );
               } catch (errCol) {
                 if (errCol.code === '42703' || String(errCol.message).includes('is_cancelled')) {
-                  dbRes = await query(
-                    `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
-                     FROM e2ee_messages
-                     WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE
-                     ORDER BY created_at ASC LIMIT 100`,
-                    [kAuth]
-                  );
-                } else {
-                  throw errCol;
+                  console.warn('[WS] Dreno de mensagens pendentes suspenso: coluna is_cancelled ausente no banco (fail-closed).');
+                  return;
                 }
+                throw errCol;
               }
               pending = dbRes.rows.map(r => ({
                 type: 'E2EE_MESSAGE_RECEIVED',
@@ -1312,16 +1369,10 @@ app.post('/api/messages/pending', async (req, res) => {
         );
       } catch (errCol) {
         if (errCol.code === '42703' || String(errCol.message).includes('is_cancelled')) {
-          dbRes = await query(
-            `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
-             FROM e2ee_messages
-             WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE
-             ORDER BY created_at ASC LIMIT 100`,
-            [cleanKey]
-          );
-        } else {
-          throw errCol;
+          console.error('[DB] Consulta de pendências rejeitada: coluna is_cancelled ausente no banco (fail-closed).');
+          return res.status(503).json({ success: false, error: 'Estrutura de banco incompatível: verificação de cancelamento indisponível (fail-closed).' });
         }
+        throw errCol;
       }
       pending = dbRes.rows.map(r => ({
         type: 'E2EE_MESSAGE_RECEIVED',
@@ -1629,6 +1680,9 @@ app.post('/api/connections/mark', async (req, res) => {
   } else if (isReciprocal) {
     localStore.connections.set(reverseKey, { fromIdentity: to, toIdentity: from, isMutual: true });
   }
+  if (isReciprocal && typeof revokedConnections !== 'undefined') {
+    revokedConnections.delete(pairKey(from, to));
+  }
 
   const myAlias = senderAlias || activePresence.get(kFrom)?.alias || 'Alguém';
 
@@ -1745,6 +1799,9 @@ app.post('/api/connections/unmark', async (req, res) => {
   // 1. Atualização dos estados em memória RAM
   localStore.connections.delete(`${kFrom}->${kTo}`);
   localStore.connections.delete(`${kTo}->${kFrom}`);
+  if (typeof revokedConnections !== 'undefined') {
+    revokedConnections.add(pairKey(from, to));
+  }
   if (typeof purgePendingMessagesRam === 'function') {
     purgePendingMessagesRam(from, to);
   }
@@ -1963,6 +2020,9 @@ app.post('/api/invites/redeem', async (req, res) => {
     { fromIdentity: sender, toIdentity: receiver, isMutual: true });
   localStore.connections.set(`${kReceiver}->${kSender}`,
     { fromIdentity: receiver, toIdentity: sender, isMutual: true });
+  if (typeof revokedConnections !== 'undefined') {
+    revokedConnections.delete(pairKey(sender, receiver));
+  }
 
   let senderPublicKey = null;
   let senderGeneration = 1;
@@ -2944,5 +3004,7 @@ module.exports = {
   purgePendingMessagesBetween,
   purgePendingMessagesRam,
   verifySchemaCompatibility,
-  deliverMessageToTarget
+  deliverMessageToTarget,
+  revokedConnections,
+  pairKey
 };
