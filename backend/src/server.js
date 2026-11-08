@@ -565,7 +565,11 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
     String(effectiveMsgId).startsWith('call_')
   );
 
-  const isEphemeral = !isPermanentPayload && (
+  // Segurança: MESSAGE_SEND é sempre durável, inclusive quando o payload tem
+  // prefixo legado de chamada. Tipos de operação não podem elevar permissões.
+  // Compatibilidade de chamadas antigas deve ser explicitamente classificada
+  // como CALL_SIGNAL/CALL_STREAM pelo despachante, nunca por MESSAGE_SEND.
+  const isEphemeral = effectiveOp !== 'MESSAGE_SEND' && !isPermanentPayload && (
     isCallStreamContract ||
     isCallSignalContract ||
     isLegacyPlaintextCall
@@ -1108,7 +1112,22 @@ wss.on('connection', (ws, req) => {
           return;
         }
 
-        const declaredOp = String(operation || (Boolean(isEphemeral) ? (String(messageId || '').startsWith('call_frame_') ? 'CALL_STREAM' : 'CALL_SIGNAL') : 'MESSAGE_SEND'));
+        // Legado: chamadas em texto claro sem campo operation continuam como
+        // sinalização, mas operação explícita MESSAGE_SEND nunca vira efêmera.
+        const legacyCall = typeof ciphertextPayload === 'string' && (
+          ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
+          ciphertextPayload.startsWith('[CALL_VIDEO_FRAME:') ||
+          ciphertextPayload.startsWith('[CALL_INIT:') ||
+          ciphertextPayload.startsWith('[CALL_ACCEPT]') ||
+          ciphertextPayload.startsWith('[CALL_ACK]') ||
+          ciphertextPayload.startsWith('[CALL_END]') ||
+          ciphertextPayload.startsWith('[ICE_CANDIDATE:')
+        );
+        const declaredOp = String(operation || (
+          Boolean(isEphemeral) || legacyCall
+            ? (String(messageId || '').startsWith('call_frame_') ? 'CALL_STREAM' : 'CALL_SIGNAL')
+            : 'MESSAGE_SEND'
+        ));
 
         // Se a operação for MESSAGE_SEND, é incondicionalmente permanente!
         // Não é permitido classificar MESSAGE_SEND como efêmera.
@@ -1458,7 +1477,11 @@ app.post('/api/messages/send', async (req, res) => {
     ciphertextPayload.startsWith('[ICE_CANDIDATE:')
   );
 
-  const isEffectiveEphemeral = isEphemeralContract || isPlaintextCall;
+  // Mesmo um cliente legado autenticado por Digest V1 não pode converter
+  // MESSAGE_SEND em efêmera por um prefixo de texto claro fornecido no payload.
+  // Isso preserva a política fail-closed para durabilidade.
+  const isEffectiveEphemeral = effectiveOperation !== 'MESSAGE_SEND' &&
+    (isEphemeralContract || isPlaintextCall);
   const isStreamRate = isEffectiveEphemeral && (
     effectiveOperation === 'CALL_STREAM' ||
     String(messageId || '').startsWith('call_frame_') ||
