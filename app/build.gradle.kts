@@ -39,7 +39,11 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            val hasReleaseCredentials = !System.getenv("KEYSTORE_PASSWORD").isNullOrBlank() &&
+                                        !System.getenv("KEY_PASSWORD").isNullOrBlank()
+            if (hasReleaseCredentials) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

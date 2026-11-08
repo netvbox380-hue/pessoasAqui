@@ -529,10 +529,13 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
   const effectiveMsgId = msgId || `${cleanSender}_${Date.now()}_${Math.random()}`;
   const compatiblePayload = unwrapE2eeIfCompatible(ciphertextPayload, ivNonce, cleanSender, cleanRecipient);
 
-  // Classificação estrita de mensagens efêmeras (áudio/vídeo frames em tempo real, sinalização de chamada, etc.)
-  // Mensagens de texto, áudio gravado, imagem, documentos, fotos reais, edições, exclusões, vínculos familiares
-  // e compartilhamento de cofre Shamir NÃO são efêmeras e DEVEM ser persistidas duravelmente!
-  const payloadStr = String(compatiblePayload || '');
+  // Classificação estrita e segura por contrato autenticado:
+  // - Mensagens de texto, áudio gravado, imagem, documentos, fotos reais, edições, exclusões, vínculos familiares
+  //   e compartilhamento de cofre Shamir NÃO são efêmeras e DEVEM ser persistidas duravelmente!
+  // - Sem contrato explícito (isEphemeralParam), mensagens NUNCA são efêmeras, mesmo se prefixos forem manipulados.
+  // - Para payloads cifrados E2EE, exige contrato explícito e identificador de operação efêmera (call_frame_, ephem_, call_).
+  // - Para compatibilidade legada com payloads em texto claro, reconhece comandos legados [CALL_...].
+  const payloadStr = typeof compatiblePayload === 'string' ? compatiblePayload : '';
   const isPermanentPayload = payloadStr.startsWith('[DELIVERY_ACK:') ||
                              payloadStr === '[READ_ACK]' ||
                              payloadStr.startsWith('[VAULT_') ||
@@ -545,17 +548,25 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
                              payloadStr.startsWith('[MSG_DELETE:') ||
                              payloadStr.startsWith('[MARK_');
 
-  const isCallFrame = String(effectiveMsgId).startsWith('call_frame_') ||
-                      payloadStr.startsWith('[CALL_AUDIO_FRAME:') ||
-                      payloadStr.startsWith('[CALL_VIDEO_FRAME:');
-  const isCallSignaling = payloadStr.startsWith('[CALL_INIT:') ||
-                          payloadStr.startsWith('[CALL_ACCEPT]') ||
-                          payloadStr.startsWith('[CALL_ACK]') ||
-                          payloadStr.startsWith('[CALL_END]') ||
-                          payloadStr.startsWith('[ICE_CANDIDATE:');
-  const isExplicitEphem = String(effectiveMsgId).startsWith('ephem_') && Boolean(isEphemeralParam);
-  // Mensagens com comando ou payload permanente NUNCA são classificadas como efêmeras, mesmo se o cliente passar prefixo call_frame_ ou ephem_
-  const isEphemeral = !isPermanentPayload && (isCallFrame || isCallSignaling || isExplicitEphem);
+  const isLegacyPlaintextCall = payloadStr.startsWith('[CALL_AUDIO_FRAME:') ||
+                                payloadStr.startsWith('[CALL_VIDEO_FRAME:') ||
+                                payloadStr.startsWith('[CALL_INIT:') ||
+                                payloadStr.startsWith('[CALL_ACCEPT]') ||
+                                payloadStr.startsWith('[CALL_ACK]') ||
+                                payloadStr.startsWith('[CALL_END]') ||
+                                payloadStr.startsWith('[ICE_CANDIDATE:');
+
+  const isContractCallFrame = Boolean(isEphemeralParam) && String(effectiveMsgId).startsWith('call_frame_');
+  const isContractSignaling = Boolean(isEphemeralParam) && (
+    String(effectiveMsgId).startsWith('ephem_') ||
+    String(effectiveMsgId).startsWith('call_')
+  );
+
+  const isEphemeral = !isPermanentPayload && (
+    isContractCallFrame ||
+    isContractSignaling ||
+    isLegacyPlaintextCall
+  );
 
   // Concorrência e integridade sob requisições simultâneas em voo:
   if (inFlightDeliveries.has(effectiveMsgId)) {
@@ -1093,11 +1104,25 @@ wss.on('connection', (ws, req) => {
         if (!ciphertextPayload || (typeof ciphertextPayload === 'string' && ciphertextPayload.length > 25 * 1024 * 1024)) {
           return;
         }
-        const isStream = Boolean(isEphemeral) ||
-                         String(messageId || '').startsWith('call_frame_') ||
-                         String(ciphertextPayload).startsWith('[CALL_AUDIO_FRAME:') ||
-                         String(ciphertextPayload).startsWith('[CALL_VIDEO_FRAME:');
-        if (!checkRateLimit(authenticatedIdentity, isStream)) {
+        const isExplicitEphemeral = Boolean(isEphemeral);
+        const isPlaintextCall = typeof ciphertextPayload === 'string' && (
+          ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
+          ciphertextPayload.startsWith('[CALL_VIDEO_FRAME:') ||
+          ciphertextPayload.startsWith('[CALL_INIT:') ||
+          ciphertextPayload.startsWith('[CALL_ACCEPT]') ||
+          ciphertextPayload.startsWith('[CALL_ACK]') ||
+          ciphertextPayload.startsWith('[CALL_END]') ||
+          ciphertextPayload.startsWith('[ICE_CANDIDATE:')
+        );
+        const isEphemeralContract = isExplicitEphemeral || isPlaintextCall;
+        const isStreamRate = isEphemeralContract && (
+          String(messageId || '').startsWith('call_frame_') ||
+          (typeof ciphertextPayload === 'string' && (
+            ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
+            ciphertextPayload.startsWith('[CALL_VIDEO_FRAME:')
+          ))
+        );
+        if (!checkRateLimit(authenticatedIdentity, isStreamRate)) {
           return;
         }
 
@@ -1114,7 +1139,7 @@ wss.on('connection', (ws, req) => {
         }
 
         const senderAlias = activePresence.get(kAuth)?.alias || 'Usuário';
-        const deliveryResult = await deliverMessageToTarget(authenticatedIdentity, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isStream);
+        const deliveryResult = await deliverMessageToTarget(authenticatedIdentity, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isEphemeralContract);
         if (!deliveryResult.success) {
           try {
             ws.send(JSON.stringify({
@@ -1372,17 +1397,31 @@ app.post('/api/messages/send', async (req, res) => {
     String(senderHash||''),String(recipientHash||''),String(ciphertextPayload||''),
     String(ivNonce||''),String(messageId||''),String(senderAlias||'')]);
   if(!await verifySignedHttp(req,res,'MESSAGE_SEND',cleanSender,cleanId(recipientHash),digest))return;
-  const isStream = Boolean(req.body?.isEphemeral) ||
-                   String(messageId || '').startsWith('call_frame_') ||
-                   String(ciphertextPayload).startsWith('[CALL_AUDIO_FRAME:') ||
-                   String(ciphertextPayload).startsWith('[CALL_VIDEO_FRAME:');
-  if (!checkRateLimit(cleanSender, isStream)) {
+  const isExplicitEphemeral = Boolean(req.body?.isEphemeral);
+  const isPlaintextCall = typeof ciphertextPayload === 'string' && (
+    ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
+    ciphertextPayload.startsWith('[CALL_VIDEO_FRAME:') ||
+    ciphertextPayload.startsWith('[CALL_INIT:') ||
+    ciphertextPayload.startsWith('[CALL_ACCEPT]') ||
+    ciphertextPayload.startsWith('[CALL_ACK]') ||
+    ciphertextPayload.startsWith('[CALL_END]') ||
+    ciphertextPayload.startsWith('[ICE_CANDIDATE:')
+  );
+  const isEphemeralContract = isExplicitEphemeral || isPlaintextCall;
+  const isStreamRate = isEphemeralContract && (
+    String(messageId || '').startsWith('call_frame_') ||
+    (typeof ciphertextPayload === 'string' && (
+      ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
+      ciphertextPayload.startsWith('[CALL_VIDEO_FRAME:')
+    ))
+  );
+  if (!checkRateLimit(cleanSender, isStreamRate)) {
     return res.status(429).json({ error: 'Muitas requisições. Limite de envio por segundo excedido.' });
   }
 
   const msgId = messageId || `${cleanSender}_${Date.now()}_${Math.random()}`;
 
-  const deliveryResult = await deliverMessageToTarget(cleanSender, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isStream);
+  const deliveryResult = await deliverMessageToTarget(cleanSender, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isEphemeralContract);
   if (!deliveryResult.success) {
     const statusCode = deliveryResult.statusCode || (deliveryResult.error === 'Database persistence failed' ? 503 : 400);
     return res.status(statusCode).json({

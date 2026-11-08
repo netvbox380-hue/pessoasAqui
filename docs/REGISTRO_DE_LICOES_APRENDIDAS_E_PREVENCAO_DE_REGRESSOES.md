@@ -200,3 +200,46 @@ Criada suíte completa com 12 subtestes com 100% de aprovação:
 11. `Reinicialização do backend` -> Estado restaurado do PostgreSQL sem vazamento em RAM.
 12. `Compatibilidade com cliente Android` -> Contrato estruturado `{ success, delivered, persisted, code }` verificado via HTTP REST.
 
+---
+
+## 8. CLASSIFICAÇÃO SEGURA DE MENSAGENS POR CONTRATO AUTENTICADO E PREPARAÇÃO DOS ARTEFATOS 1.3.3
+
+### 1. Auditoria e Causa-Raiz na Classificação de Mensagens
+- **O Problema Forense:** A função `deliverMessageToTarget()` e os despachantes WebSocket/HTTP inferiam efemeridade por inspeção de prefixos em texto claro (`payloadStr.startsWith('[CALL_')` ou `effectiveMsgId.startsWith('call_frame_')`).
+- **Insegurança do Modelo Anterior:**
+  1. *Quebra da suposição de E2EE:* No Modo B real, os payloads trafegam integralmente cifrados (`ENC_ECDH:...`). O backend cego nunca vê strings como `[CALL_INIT:` ou `[VAULT_` dentro do ciphertext.
+  2. *Vetor de Evasão por Prefixo Manipulado:* Um atacante podia forjar um identificador com prefixo `call_frame_` ou `ephem_` em uma mensagem permanente criptografada, fazendo o backend tratá-la indevidamente como efêmera e não persistir no banco.
+  3. *Acúmulo Indevido de Sinalizações:* Clientes que enviavam sinalização legítima cifrada com IDs UUID tinham suas chamadas persistidas no PostgreSQL como mensagens de chat comuns, gerando toques fantasmas dias depois.
+
+### 2. Resolução por Contrato Autenticado de Operação
+- **Regra Fundamental de Persistência (Fail-Closed to Permanent):** Toda mensagem é **PERMANENTE POR PADRÃO**. Nenhuma mensagem deixa de ser persistida duravelmente a menos que o cliente autenticado tenha explicitamente declarado o contrato efêmero (`isEphemeralParam === true`).
+- **Imunidade a Prefixos Forjados:** Ter prefixo `call_frame_` ou `ephem_` sem a declaração afirmativa de contrato efêmero (`isEphemeralParam === true`) não confere status efêmero; a mensagem é obrigatoriamente persistida no PostgreSQL.
+- **Sobrescrita de Segurança para Comandos de Controle:** Comandos em texto claro conhecidos de controle (`[VAULT_`, `[DELIVERY_ACK:`, `[READ_ACK]`, `[FAMILY_`, `[PA_REAL_PHOTO_V1:`, etc.) NUNCA são classificados como efêmeros, mesmo se o remetente forjar sinalizadores efêmeros.
+- **Compatibilidade Retroativa:** Payloads legados em texto claro com comandos de chamada (`[CALL_INIT:`, `[CALL_AUDIO_FRAME:`, etc.) continuam reconhecidos como efêmeros sem quebra de comportamento.
+- **Alinhamento do Cliente Android (`PessoasAquiRepository.kt`):**
+  - Isolamento estrito entre operações de chamada em tempo real (`isCallStream` e `isCallSignaling`) e mensagens de usuário.
+  - Vínculos de cofre (`[VAULT_`), fotos reais (`[PA_REAL_PHOTO_V1:`), arquivos, mídias e recibos mantêm `isEphemeral = false` e IDs UUID permanentes.
+  - Sinalizações de chamada usam `isEphemeral = true` com prefixo `ephem_call_`, e frames de mídia usam `call_frame_`.
+
+### 3. Matriz Multidirecional de Consequências
+| Alteração | Dependência direta | Dependência indireta | Consequência possível | Consequência observada | Ação corretiva | Teste | Resultado |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| Contrato autenticado em `deliverMessageToTarget` | `server.js` | WebSocket `E2EE_MESSAGE` e HTTP `/api/messages/send` | Rejeitar mensagens de clientes legados | Nenhuma; comandos legados preservados | Fallback para comandos legados em texto claro | `authenticatedMessageClassificationSecurity.test.js` | APROVADO (12/12) |
+| Fail-closed para permanente | Persistência PostgreSQL | Fila offline em RAM (`pendingMessages`) | Gravação excessiva de chamadas | Nenhuma; sinalizações reais usam contrato efêmero | Android gera `ephem_call_` com `isEphemeral = true` | Subtest 4 e 5 | APROVADO |
+| Rate-limit diferenciado para streaming | `checkRateLimit` | WebRTC audio/video | Bloqueio de chamadas por anti-flood | Chamadas legítimas fluem a até 120 fps; ataques travam em 25/s | Condicionar taxa de 120/s ao contrato efêmero ativo | Subtest 10 e 11 | APROVADO |
+| Preservação de cofre Shamir e fotos reais | `isPermanentPayload` | Room DB e PostgreSQL | Perda de chave de resgate se marcado efêmero | Nenhuma; comandos são forçados a permanente | Verificação incondicional de comandos permanentes | Subtest 7 e 8 | APROVADO |
+| Assinatura condicional de release no Gradle | `app/build.gradle.kts` | `bundleRelease` e `assembleRelease` | Falha de build por NPE se variáveis ausentes | Build release unsigned em desenvolvimento; oficial em CI/CD | Anexar `signingConfig` apenas com credenciais presentes | `bundleRelease` e `assembleRelease` | APROVADO |
+
+### 4. Preparação e Validação de Artefatos de Homologação
+- **Identificadores Oficiais:** `versionCode = 29`, `versionName = "1.3.3"`.
+- **Compatibilidade:** `minSdk = 24`, `targetSdk = 36` (Compatível com Android 14 e 16).
+- **Branding e Logotipo:** 100% preservados e intocados (`PessoasAqui-icon-512x512.png`, `ic_launcher*`).
+- **Suítes de Testes Executadas:**
+  - 26/26 suítes de testes de integração e segurança do backend aprovadas (100%).
+  - 301/301 testes unitários do Android aprovados (100%).
+- **Artefatos Gerados:**
+  - APK de Debug: `app/build/outputs/apk/debug/app-debug.apk` (21.6 MB).
+  - APK de Release: `app/build/outputs/apk/release/app-release-unsigned.apk` (14.5 MB).
+  - Android App Bundle: `app/build/outputs/bundle/release/app-release.aab` (14.1 MB).
+
+

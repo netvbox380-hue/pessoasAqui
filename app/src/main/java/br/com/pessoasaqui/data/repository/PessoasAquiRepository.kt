@@ -3311,12 +3311,18 @@ class PessoasAquiRepository(
         }
 
         val isRealtimeMediaStream = text.startsWith("[CALL_AUDIO_FRAME:") || text.startsWith("[CALL_VIDEO_FRAME:")
-        val effectiveMsgId = if (isRealtimeMediaStream) "call_frame_$msgId" else msgId
+        val isCallSignaling = text.startsWith("[CALL_") && !isRealtimeMediaStream
+        val isEphemeralCallOperation = isRealtimeMediaStream || isCallSignaling
+        val effectiveMsgId = when {
+            isRealtimeMediaStream -> "call_frame_$msgId"
+            isCallSignaling -> "ephem_call_$msgId"
+            else -> msgId
+        }
 
         // Se ainda for nulo, busca assincronamente a chave autenticada em fila de retenção
         if (E2eeCryptoEngine.getPeerPublicKeyBase64(cleanRecipient) == null) {
             refreshPeerBindingIfDue(cleanRecipient)
-            if (isSignaling || isRealtimeMediaStream) {
+            if (isEphemeralCallOperation) {
                 return ContentModerationManager.ModerationResult(
                     isAllowed = false,
                     reason = "Sinalização descartada: aguardando chave do contato."
@@ -3342,7 +3348,7 @@ class PessoasAquiRepository(
                                 ciphertext = delayedCiphertext,
                                 ivNonce = delayedIv,
                                 messageId = effectiveMsgId,
-                                isEphemeral = isSignaling
+                                isEphemeral = isEphemeralCallOperation
                             )
                             val httpRes = networkClient.sendHttpMessage(
                                 senderHash = myId,
@@ -3351,7 +3357,7 @@ class PessoasAquiRepository(
                                 senderAlias = _currentAlias.value,
                                 messageId = effectiveMsgId,
                                 ivNonce = delayedIv,
-                                isEphemeral = isSignaling
+                                isEphemeral = isCallSignaling
                             )
                             val currentList = proximitySimulator.privateChats.value[cleanRecipient]
                                 ?: proximitySimulator.privateChats.value["peer-$cleanRecipient"]
@@ -3434,7 +3440,7 @@ class PessoasAquiRepository(
             ciphertext = ciphertext,
             ivNonce = iv,
             messageId = effectiveMsgId,
-            isEphemeral = isRealtimeMediaStream || isSignaling
+            isEphemeral = isEphemeralCallOperation
         )
 
         // 2. Redundância Garantida via REST HTTP em paralelo para mensagens discretas
@@ -3448,7 +3454,7 @@ class PessoasAquiRepository(
                         senderAlias = _currentAlias.value,
                         messageId = effectiveMsgId,
                         ivNonce = iv,
-                        isEphemeral = isSignaling
+                        isEphemeral = isCallSignaling
                     )
                     if (httpRes.isSuccess && httpRes.getOrNull() == true) {
                         proximitySimulator.updateMessageDeliveryStatus(
