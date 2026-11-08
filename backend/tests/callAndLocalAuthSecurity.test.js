@@ -467,7 +467,39 @@ test('SUÍTE: FECHAMENTO DOS CAMINHOS ALTERNATIVOS DE AUTORIZAÇÃO (CHAMADAS E 
     assert.equal(callHttpRes.status, 200);
     const callJson = await callHttpRes.json();
     assert.equal(callJson.success, true);
-    assert.equal(callJson.persisted, false);
+    // Digest V1 não autentica isEphemeral nem operation: nenhum prefixo de
+    // payload pode permitir descartar a mensagem sem contrato verificável.
+    assert.equal(callJson.persisted, true, 'Digest V1 sem contrato protegido deve persistir');
+
+    // Cliente atual: operação e efemeridade assinadas via Digest V2.
+    // Sinalização legítima deve continuar transitória, sem poluir o banco.
+    const signedCallId = 'ephem_call_android_v2_' + Date.now();
+    const signedCallPayload = 'ENC_ECDH:encrypted_call_signal';
+    const signedCallIv = 'iv_call_v2';
+    const signedCallDigest = digestHttpParts([
+      alice.id, bob.id, signedCallPayload, signedCallIv, signedCallId,
+      'Alice', 'ephemeral', 'CALL_SIGNAL'
+    ]);
+    const signedCallProof = signHttpProof(alice, 'MESSAGE_SEND', bob.id, signedCallDigest);
+    const signedCallResponse = await fetch(`${baseUrl}/api/messages/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        senderHash: alice.id,
+        recipientHash: bob.id,
+        ciphertextPayload: signedCallPayload,
+        ivNonce: signedCallIv,
+        messageId: signedCallId,
+        senderAlias: 'Alice',
+        isEphemeral: true,
+        operation: 'CALL_SIGNAL',
+        identityProof: signedCallProof
+      })
+    });
+    assert.equal(signedCallResponse.status, 200);
+    const signedCallJson = await signedCallResponse.json();
+    assert.equal(signedCallJson.success, true);
+    assert.equal(signedCallJson.persisted, false, 'CALL_SIGNAL autenticado deve ser efêmero');
   });
 
   // Finalização e limpeza
