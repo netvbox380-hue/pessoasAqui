@@ -758,7 +758,7 @@ open class PessoasAquiNetworkClient(
     }
 
     /**
-     * Envia envelope cifrado E2EE pelo WebSocket
+     * Envia envelope cifrado E2EE pelo WebSocket (assinatura clássica de 4 argumentos para compatibilidade de testes/subclasses)
      */
     open fun sendE2eeEnvelope(
         recipientHash: String,
@@ -774,6 +774,33 @@ open class PessoasAquiNetworkClient(
             put("ciphertextPayload", ciphertext)
             put("ivNonce", ivNonce)
             put("messageId", messageId)
+            put("operation", "MESSAGE_SEND")
+        }
+        return ws.send(envelope.toString())
+    }
+
+    /**
+     * Envia envelope cifrado E2EE pelo WebSocket com operação explícita
+     */
+    open fun sendE2eeEnvelope(
+        recipientHash: String,
+        ciphertext: String,
+        ivNonce: String,
+        messageId: String,
+        operation: String
+    ): Boolean {
+        if (operation == "MESSAGE_SEND") {
+            return sendE2eeEnvelope(recipientHash, ciphertext, ivNonce, messageId)
+        }
+        if (!isWsConnected) return false
+        val ws = activeWebSocket ?: return false
+        val envelope = JSONObject().apply {
+            put("type", "E2EE_MESSAGE")
+            put("recipientHash", recipientHash)
+            put("ciphertextPayload", ciphertext)
+            put("ivNonce", ivNonce)
+            put("messageId", messageId)
+            put("operation", operation)
         }
         return ws.send(envelope.toString())
     }
@@ -785,7 +812,25 @@ open class PessoasAquiNetworkClient(
         messageId: String,
         isEphemeral: Boolean
     ): Boolean {
-        if (!isEphemeral) {
+        return sendE2eeEnvelope(
+            recipientHash,
+            ciphertext,
+            ivNonce,
+            messageId,
+            isEphemeral,
+            if (isEphemeral) "CALL_SIGNAL" else "MESSAGE_SEND"
+        )
+    }
+
+    open fun sendE2eeEnvelope(
+        recipientHash: String,
+        ciphertext: String,
+        ivNonce: String,
+        messageId: String,
+        isEphemeral: Boolean,
+        operation: String
+    ): Boolean {
+        if (!isEphemeral && operation == "MESSAGE_SEND") {
             return sendE2eeEnvelope(recipientHash, ciphertext, ivNonce, messageId)
         }
         if (!isWsConnected) return false
@@ -796,7 +841,8 @@ open class PessoasAquiNetworkClient(
             put("ciphertextPayload", ciphertext)
             put("ivNonce", ivNonce)
             put("messageId", messageId)
-            put("isEphemeral", true)
+            put("operation", operation)
+            if (isEphemeral) put("isEphemeral", true)
         }
         return ws.send(envelope.toString())
     }
@@ -890,9 +936,11 @@ open class PessoasAquiNetworkClient(
         senderAlias: String,
         messageId: String = java.util.UUID.randomUUID().toString(),
         ivNonce: String = "",
-        isEphemeral: Boolean = false
+        isEphemeral: Boolean = false,
+        operation: String = if (isEphemeral) "CALL_SIGNAL" else "MESSAGE_SEND"
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            val ephemContract = if (isEphemeral) "ephemeral" else "durable"
             val json = JSONObject().apply {
                 put("senderHash", senderHash)
                 put("recipientHash", recipientHash)
@@ -900,9 +948,11 @@ open class PessoasAquiNetworkClient(
                 put("senderAlias", senderAlias)
                 put("ivNonce", ivNonce)
                 put("messageId", messageId)
+                put("operation", operation)
                 if (isEphemeral) put("isEphemeral", true)
                 val digest = br.com.pessoasaqui.core.crypto.InviteIdentityProof.digestParts(
-                    senderHash, recipientHash, ciphertext, ivNonce, messageId, senderAlias
+                    senderHash, recipientHash, ciphertext, ivNonce, messageId, senderAlias,
+                    ephemContract, operation
                 )
                 put("identityProof", signedHttpProof(
                     "MESSAGE_SEND", senderHash,

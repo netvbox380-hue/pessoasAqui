@@ -242,4 +242,53 @@ Criada suíte completa com 12 subtestes com 100% de aprovação:
   - APK de Release: `app/build/outputs/apk/release/app-release-unsigned.apk` (14.5 MB).
   - Android App Bundle: `app/build/outputs/bundle/release/app-release.aab` (14.1 MB).
 
+---
+
+## 9. INTEGRIDADE CRIPTOGRÁFICA DO CONTRATO DE MENSAGENS E VINCULAÇÃO DE OPERAÇÃO (V2 DIGEST & FAIL-CLOSED LEGACY)
+
+### 1. Auditoria Forense e Causa-Raiz
+- **A Brecha Identificada:** Na rota HTTP `/api/messages/send`, o cálculo do hash (`digestHttpParts`) englobava apenas 6 campos: `senderHash`, `recipientHash`, `ciphertextPayload`, `ivNonce`, `messageId`, `senderAlias`. Os campos `isEphemeral` e `operation` eram lidos diretamente do corpo da requisição sem estarem assinados pela chave privada ECDSA P-256 do remetente.
+- **Vetor de Ataque:** Um invasor man-in-the-middle ou cliente modificado poderia interceptar uma mensagem durável legítima assinada e alterar o parâmetro HTTP para `isEphemeral: true`. Como a assinatura era válida sobre as 6 partes, o backend validava a requisição, mas tratava a mensagem durável como efêmera, descartando a persistência no PostgreSQL sem que o destinatário guardasse a prova durável da mensagem.
+- **WebSocket Desvinculado:** O WebSocket autenticava apenas a sessão técnica da identidade na conexão (`/ws?identity=...`), mas não vinculava cada frame `E2EE_MESSAGE` a uma declaração operacional inviolável. Um cliente conectado poderia enviar um chat de usuário permanente alegando ser frame efêmero.
+
+### 2. Correção Arquitetural Sistêmica
+1. **Digest Criptográfico V2 (8 Partes):**
+   - Inclusão mandatória do contrato efêmero (`ephemContract`: `'ephemeral'` vs `'durable'`) e da operação (`operation`: `'MESSAGE_SEND'`, `'CALL_STREAM'`, `'CALL_SIGNAL'`) no digest SHA-256 canônico assinado.
+   - Fórmula V2: `digestHttpParts([senderHash, recipientHash, ciphertextPayload, ivNonce, messageId, senderAlias, ephemContract, operation])`.
+2. **Multi-Hash Verification & Fail-Closed to Durable para Clientes Legados:**
+   - O backend calcula ambos os digests (`digestV2` e `digestV1` legado) e os submete à verificação de assinatura ECDSA via `verifySignedHttp()`.
+   - Se verificado via `digestV2`: os parâmetros `isEphemeral` e `operation` declarados são aceitos integralmente.
+   - Se verificado via `digestV1` (legado): a assinatura é reconhecida como autêntica, porém o backend **força incondicionalmente** `isEphemeralContract = false` e `effectiveOperation = 'MESSAGE_SEND'`. Assinaturas legadas jamais podem ser usadas para solicitar tratamento efêmero.
+3. **WebSocket com Vinculação de Operação:**
+   - O manipulador `E2EE_MESSAGE` extrai e valida `operation`. Mensagens de chat de texto/usuário (`MESSAGE_SEND`) são incondicionalmente forçadas a duráveis (`isEphemeral = false`). A efemeridade só é permitida para operações legítimas de mídia ou controle (`CALL_STREAM` e `CALL_SIGNAL`).
+4. **Alinhamento do Cliente Android (`PessoasAquiNetworkClient.kt` e `PessoasAquiRepository.kt`):**
+   - Atualizado `sendHttpMessage` para assinar o Digest V2 de 8 partes.
+   - Preservadas as assinaturas polimórficas de `sendE2eeEnvelope` (4 argumentos clássicos delegando para `MESSAGE_SEND`) para assegurar 100% de compatibilidade binária e com todas as suítes de testes unitários do Android.
+   - Classificação estrita de operações: `MESSAGE_SEND` para mensagens e anexos, `CALL_STREAM` para frames de áudio/vídeo, e `CALL_SIGNAL` para sinalização WebRTC (incluindo `[ICE_CANDIDATE:`).
+
+### 3. Matriz Multidirecional de Consequências
+| Alteração | Dependência direta | Dependência indireta | Consequência possível | Consequência observada | Ação corretiva | Teste | Resultado |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| Digest V2 com 8 partes assinadas | `server.js` (`/api/messages/send`) | `PessoasAquiNetworkClient.kt` | Quebra de clientes legados | Incompatibilidade se rejeitado | Aceitar V1 com Fail-Closed to Durable | `contractIntegrityAndAdversarialClassification.test.js` Subtest 12 | APROVADO |
+| Adulteração de `isEphemeral` | `verifySignedHttp` | ECDSA P-256 | Assinatura continuar válida | Assinatura é imediatamente invalidada (HTTP 401) | Garantir que `ephemContract` integra o hash | Subtest 1 | APROVADO |
+| Adulteração de `operation` | `verifySignedHttp` | ECDSA P-256 | Operação forjada ser aceita | Assinatura é invalidada (HTTP 401) | `operation` integra o hash V2 | Subtest 2 e 3 | APROVADO |
+| Vinculação de operação no WebSocket | WebSocket `E2EE_MESSAGE` | `deliverMessageToTarget` | Descarte de chat permanente | Nenhuma; `MESSAGE_SEND` é forçado a durável | Incondicional `isEphemeral = false` para `MESSAGE_SEND` | Subtest 4 | APROVADO |
+| Sobrecarga clássica 4-args no Android | `PessoasAquiNetworkClient` | `PessoasAquiRepository` e testes | Regressão de testes unitários | Subclasses de teste quebravam compilação | Adicionar overloads delegados | `.\gradlew.bat testDebugUnitTest` (301 testes) | APROVADO |
+| Alinhamento de ICE Candidate | `PessoasAquiRepository` | WebRTC P2P | Poluição do banco com candidatos ICE | ICE candidatos despachados em tempo real sem persistir no DB | Classificar `[ICE_CANDIDATE:` como `CALL_SIGNAL` | Subtest 8 | APROVADO |
+
+### 4. Bateria de 12 Testes Adversariais Conclusivos (`contractIntegrityAndAdversarialClassification.test.js`)
+1. `Adversarial HTTP: Alterar isEphemeral após assinatura` -> Rejeitado com HTTP 401.
+2. `Adversarial HTTP: Reutilizar assinatura com classificação diferente` -> Rejeitado com HTTP 401.
+3. `Adversarial HTTP: Alterar tipo de operação após assinatura` -> Rejeitado com HTTP 401.
+4. `Adversarial WebSocket: MESSAGE_SEND com flag isEphemeral = true` -> Forçado a PERMANENTE (persistido no PostgreSQL).
+5. `Adversarial: Prefixo call_frame_ em mensagem permanente` -> Persistido duravelmente no PostgreSQL.
+6. `Formato E2EE desconhecido ou futuro sem contrato efêmero` -> Persistido duravelmente sem quebra de sigilo.
+7. `Frames legítimos de streaming (CALL_STREAM)` -> Despachados em tempo real sem persistência no banco.
+8. `Sinalização de chamada e ICE Candidate legítimos (CALL_SIGNAL)` -> Despachados em tempo real sem poluição de banco.
+9. `Repetição de mensagem (Replay e Anti-colisão)` -> Idempotência confirmada e colisões rejeitadas (HTTP 409).
+10. `Chamada após revogação` -> Bloqueada imediatamente com HTTP 403 (`CONNECTION_REVOKED`).
+11. `Chamada com banco de dados indisponível` -> Fail-closed imediato com HTTP 503 (`DB_UNAVAILABLE`).
+12. `Compatibilidade com clientes legados (Digest V1 6 partes)` -> Aceito com fail-closed para DURÁVEL.
+
+
 

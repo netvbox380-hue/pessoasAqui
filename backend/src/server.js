@@ -519,7 +519,7 @@ function unwrapE2eeIfCompatible(payload) {
   return payload;
 }
 
-function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, ciphertextPayload, ivNonce, msgId, isEphemeralParam) {
+function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, ciphertextPayload, ivNonce, msgId, isEphemeralParam, operationParam) {
   const isDbConfigured = () => (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) || (typeof isPostgres === 'function' && isPostgres());
   const cleanRecipient = cleanId(rawRecipient);
   if (!cleanRecipient || !/^[A-Za-z0-9_-]{8,64}$/.test(cleanRecipient)) {
@@ -532,6 +532,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
   // Classificação estrita e segura por contrato autenticado:
   // - Mensagens de texto, áudio gravado, imagem, documentos, fotos reais, edições, exclusões, vínculos familiares
   //   e compartilhamento de cofre Shamir NÃO são efêmeras e DEVEM ser persistidas duravelmente!
+  // - Mensagens com operation === 'MESSAGE_SEND' são INCONDICIONALMENTE permanentes.
   // - Sem contrato explícito (isEphemeralParam), mensagens NUNCA são efêmeras, mesmo se prefixos forem manipulados.
   // - Para payloads cifrados E2EE, exige contrato explícito e identificador de operação efêmera (call_frame_, ephem_, call_).
   // - Para compatibilidade legada com payloads em texto claro, reconhece comandos legados [CALL_...].
@@ -556,15 +557,17 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
                                 payloadStr.startsWith('[CALL_END]') ||
                                 payloadStr.startsWith('[ICE_CANDIDATE:');
 
-  const isContractCallFrame = Boolean(isEphemeralParam) && String(effectiveMsgId).startsWith('call_frame_');
-  const isContractSignaling = Boolean(isEphemeralParam) && (
+  const effectiveOp = String(operationParam || (Boolean(isEphemeralParam) ? (String(effectiveMsgId).startsWith('call_frame_') ? 'CALL_STREAM' : 'CALL_SIGNAL') : 'MESSAGE_SEND'));
+
+  const isCallStreamContract = Boolean(isEphemeralParam) && effectiveOp === 'CALL_STREAM' && String(effectiveMsgId).startsWith('call_frame_');
+  const isCallSignalContract = Boolean(isEphemeralParam) && (effectiveOp === 'CALL_SIGNAL' || effectiveOp === 'CALL_STREAM') && (
     String(effectiveMsgId).startsWith('ephem_') ||
     String(effectiveMsgId).startsWith('call_')
   );
 
   const isEphemeral = !isPermanentPayload && (
-    isContractCallFrame ||
-    isContractSignaling ||
+    isCallStreamContract ||
+    isCallSignalContract ||
     isLegacyPlaintextCall
   );
 
@@ -1100,11 +1103,16 @@ wss.on('connection', (ws, req) => {
 
       // Relay de Mensagem Ponta a Ponta (E2EE)
       if (msg.type === 'E2EE_MESSAGE' && authenticatedIdentity) {
-        const { recipientHash, ciphertextPayload, ivNonce, messageId, isEphemeral } = msg;
+        const { recipientHash, ciphertextPayload, ivNonce, messageId, isEphemeral, operation } = msg;
         if (!ciphertextPayload || (typeof ciphertextPayload === 'string' && ciphertextPayload.length > 25 * 1024 * 1024)) {
           return;
         }
-        const isExplicitEphemeral = Boolean(isEphemeral);
+
+        const declaredOp = String(operation || (Boolean(isEphemeral) ? (String(messageId || '').startsWith('call_frame_') ? 'CALL_STREAM' : 'CALL_SIGNAL') : 'MESSAGE_SEND'));
+
+        // Se a operação for MESSAGE_SEND, é incondicionalmente permanente!
+        // Não é permitido classificar MESSAGE_SEND como efêmera.
+        const isCallOp = declaredOp === 'CALL_STREAM' || declaredOp === 'CALL_SIGNAL';
         const isPlaintextCall = typeof ciphertextPayload === 'string' && (
           ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
           ciphertextPayload.startsWith('[CALL_VIDEO_FRAME:') ||
@@ -1114,8 +1122,12 @@ wss.on('connection', (ws, req) => {
           ciphertextPayload.startsWith('[CALL_END]') ||
           ciphertextPayload.startsWith('[ICE_CANDIDATE:')
         );
+
+        const isExplicitEphemeral = Boolean(isEphemeral) && isCallOp;
         const isEphemeralContract = isExplicitEphemeral || isPlaintextCall;
+
         const isStreamRate = isEphemeralContract && (
+          declaredOp === 'CALL_STREAM' ||
           String(messageId || '').startsWith('call_frame_') ||
           (typeof ciphertextPayload === 'string' && (
             ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
@@ -1139,7 +1151,7 @@ wss.on('connection', (ws, req) => {
         }
 
         const senderAlias = activePresence.get(kAuth)?.alias || 'Usuário';
-        const deliveryResult = await deliverMessageToTarget(authenticatedIdentity, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isEphemeralContract);
+        const deliveryResult = await deliverMessageToTarget(authenticatedIdentity, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isEphemeralContract, declaredOp);
         if (!deliveryResult.success) {
           try {
             ws.send(JSON.stringify({
@@ -1280,10 +1292,23 @@ async function verifySignedHttp(req,res,operation,identity,alias='',tokenHash=''
   if(process.env.DATABASE_URL&&!isPostgres()){
     res.status(503).json({error:'Autenticação indisponível.'});return false;
   }
-  let valid=false;
-  try{valid=await verifyActiveInviteProof(operation,identity,alias,'',tokenHash,req.body?.identityProof);}
-  catch(_){res.status(503).json({error:'Banco de autenticação indisponível.'});return false;}
+  const hashes = Array.isArray(tokenHash) ? tokenHash : [tokenHash];
+  let valid = false;
+  let verifiedHash = null;
+  for (const h of hashes) {
+    try {
+      if (await verifyActiveInviteProof(operation, identity, alias, '', h, req.body?.identityProof)) {
+        valid = true;
+        verifiedHash = h;
+        break;
+      }
+    } catch (_) {
+      res.status(503).json({error:'Banco de autenticação indisponível.'});
+      return false;
+    }
+  }
   if(!valid){res.status(401).json({error:'Prova criptográfica inválida.'});return false;}
+  if (req) req.verifiedTokenHash = verifiedHash;
   const key=identity+':'+operation+':'+req.body.identityProof.nonce,now=Date.now();
   if(httpNonceCache.size>8000){
     for(const [id,expires] of httpNonceCache){if(expires<=now)httpNonceCache.delete(id);}
@@ -1387,17 +1412,42 @@ registerOfferRoutesV2(app,{query,withTransaction,isPostgres,activeOffers});
  * Envio de Mensagem Cifrada via HTTP (Fallback redundante para WebSockets)
  */
 app.post('/api/messages/send', async (req, res) => {
-  const { senderHash, recipientHash, ciphertextPayload, ivNonce, senderAlias, messageId } = req.body;
+  const { senderHash, recipientHash, ciphertextPayload, ivNonce, senderAlias, messageId, operation } = req.body;
   if (!recipientHash || !ciphertextPayload) {
     return res.status(400).json({ error: 'recipientHash e ciphertextPayload são obrigatórios.' });
   }
 
   const cleanSender = cleanId(senderHash);
-  const digest=digestHttpParts([
-    String(senderHash||''),String(recipientHash||''),String(ciphertextPayload||''),
-    String(ivNonce||''),String(messageId||''),String(senderAlias||'')]);
-  if(!await verifySignedHttp(req,res,'MESSAGE_SEND',cleanSender,cleanId(recipientHash),digest))return;
-  const isExplicitEphemeral = Boolean(req.body?.isEphemeral);
+  const cleanRecipient = cleanId(recipientHash);
+  const declaredEphemeral = Boolean(req.body?.isEphemeral);
+  const declaredOperation = String(operation || (declaredEphemeral ? (String(messageId || '').startsWith('call_frame_') ? 'CALL_STREAM' : 'CALL_SIGNAL') : 'MESSAGE_SEND'));
+  const ephemContract = declaredEphemeral ? 'ephemeral' : 'durable';
+
+  // Digest V2: Vincula remetente, destinatário, ciphertext, iv, messageId, alias, contrato de efemeridade e operação
+  const digestV2 = digestHttpParts([
+    String(senderHash || ''), String(recipientHash || ''), String(ciphertextPayload || ''),
+    String(ivNonce || ''), String(messageId || ''), String(senderAlias || ''),
+    ephemContract, declaredOperation
+  ]);
+
+  // Digest V1 (Legado): 6 partes sem efemeridade nem tipo de operação
+  const digestV1 = digestHttpParts([
+    String(senderHash || ''), String(recipientHash || ''), String(ciphertextPayload || ''),
+    String(ivNonce || ''), String(messageId || ''), String(senderAlias || '')
+  ]);
+
+  if (!await verifySignedHttp(req, res, 'MESSAGE_SEND', cleanSender, cleanRecipient, [digestV2, digestV1])) {
+    return;
+  }
+
+  const isV2Verified = (req.verifiedTokenHash === digestV2);
+
+  // Se verificado apenas pelo contrato legado v1 (onde isEphemeral NÃO foi assinado):
+  // O backend NUNCA permite que assinatura legada sem efemeridade seja tratada como efêmera!
+  // É estritamente FORÇADO a persistência durável (Fail-Closed).
+  const isEphemeralContract = isV2Verified ? declaredEphemeral : false;
+  const effectiveOperation = isV2Verified ? declaredOperation : 'MESSAGE_SEND';
+
   const isPlaintextCall = typeof ciphertextPayload === 'string' && (
     ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
     ciphertextPayload.startsWith('[CALL_VIDEO_FRAME:') ||
@@ -1407,21 +1457,24 @@ app.post('/api/messages/send', async (req, res) => {
     ciphertextPayload.startsWith('[CALL_END]') ||
     ciphertextPayload.startsWith('[ICE_CANDIDATE:')
   );
-  const isEphemeralContract = isExplicitEphemeral || isPlaintextCall;
-  const isStreamRate = isEphemeralContract && (
+
+  const isEffectiveEphemeral = isEphemeralContract || isPlaintextCall;
+  const isStreamRate = isEffectiveEphemeral && (
+    effectiveOperation === 'CALL_STREAM' ||
     String(messageId || '').startsWith('call_frame_') ||
     (typeof ciphertextPayload === 'string' && (
       ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
       ciphertextPayload.startsWith('[CALL_VIDEO_FRAME:')
     ))
   );
+
   if (!checkRateLimit(cleanSender, isStreamRate)) {
     return res.status(429).json({ error: 'Muitas requisições. Limite de envio por segundo excedido.' });
   }
 
   const msgId = messageId || `${cleanSender}_${Date.now()}_${Math.random()}`;
 
-  const deliveryResult = await deliverMessageToTarget(cleanSender, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isEphemeralContract);
+  const deliveryResult = await deliverMessageToTarget(cleanSender, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isEffectiveEphemeral, effectiveOperation);
   if (!deliveryResult.success) {
     const statusCode = deliveryResult.statusCode || (deliveryResult.error === 'Database persistence failed' ? 503 : 400);
     return res.status(statusCode).json({
@@ -3145,5 +3198,8 @@ module.exports = {
   getConnectionStatus,
   localStore,
   revokedConnections,
-  pairKey
+  pairKey,
+  verifySignedHttp,
+  digestHttpParts,
+  checkRateLimit
 };

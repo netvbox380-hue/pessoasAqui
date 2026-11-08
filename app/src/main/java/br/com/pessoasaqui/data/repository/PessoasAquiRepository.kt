@@ -3311,8 +3311,13 @@ class PessoasAquiRepository(
         }
 
         val isRealtimeMediaStream = text.startsWith("[CALL_AUDIO_FRAME:") || text.startsWith("[CALL_VIDEO_FRAME:")
-        val isCallSignaling = text.startsWith("[CALL_") && !isRealtimeMediaStream
+        val isCallSignaling = (text.startsWith("[CALL_") || text.startsWith("[ICE_CANDIDATE:")) && !isRealtimeMediaStream
         val isEphemeralCallOperation = isRealtimeMediaStream || isCallSignaling
+        val operationType = when {
+            isRealtimeMediaStream -> "CALL_STREAM"
+            isCallSignaling -> "CALL_SIGNAL"
+            else -> "MESSAGE_SEND"
+        }
         val effectiveMsgId = when {
             isRealtimeMediaStream -> "call_frame_$msgId"
             isCallSignaling -> "ephem_call_$msgId"
@@ -3348,7 +3353,8 @@ class PessoasAquiRepository(
                                 ciphertext = delayedCiphertext,
                                 ivNonce = delayedIv,
                                 messageId = effectiveMsgId,
-                                isEphemeral = isEphemeralCallOperation
+                                isEphemeral = isEphemeralCallOperation,
+                                operation = operationType
                             )
                             val httpRes = networkClient.sendHttpMessage(
                                 senderHash = myId,
@@ -3357,7 +3363,8 @@ class PessoasAquiRepository(
                                 senderAlias = _currentAlias.value,
                                 messageId = effectiveMsgId,
                                 ivNonce = delayedIv,
-                                isEphemeral = isCallSignaling
+                                isEphemeral = isCallSignaling,
+                                operation = operationType
                             )
                             val currentList = proximitySimulator.privateChats.value[cleanRecipient]
                                 ?: proximitySimulator.privateChats.value["peer-$cleanRecipient"]
@@ -3440,7 +3447,8 @@ class PessoasAquiRepository(
             ciphertext = ciphertext,
             ivNonce = iv,
             messageId = effectiveMsgId,
-            isEphemeral = isEphemeralCallOperation
+            isEphemeral = isEphemeralCallOperation,
+            operation = operationType
         )
 
         // 2. Redundância Garantida via REST HTTP em paralelo para mensagens discretas
@@ -3454,7 +3462,8 @@ class PessoasAquiRepository(
                         senderAlias = _currentAlias.value,
                         messageId = effectiveMsgId,
                         ivNonce = iv,
-                        isEphemeral = isCallSignaling
+                        isEphemeral = isCallSignaling,
+                        operation = operationType
                     )
                     if (httpRes.isSuccess && httpRes.getOrNull() == true) {
                         proximitySimulator.updateMessageDeliveryStatus(
