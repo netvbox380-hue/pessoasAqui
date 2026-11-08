@@ -292,3 +292,16 @@ Criada suíte completa com 12 subtestes com 100% de aprovação:
 
 
 
+
+
+## Lição adicional — 08/11/2026: conflito entre compatibilidade legada e contrato autenticado
+
+**Incidente:** a homologação independente do commit `a22e36f` detectou 25/27 suítes aprovadas e duas falhas em testes antigos: `authenticatedMessageClassificationSecurity.test.js` (subteste 9) e `callAndLocalAuthSecurity.test.js` (subteste 12). Os testes ainda exigiam que o prefixo em texto claro `[CALL_INIT:]` fosse suficiente para declarar uma mensagem efêmera, mesmo na ausência de contrato de operação assinado.
+
+**Causa-raiz do desacordo:** coexistência de duas políticas contraditórias. A antiga inferia efemeridade pelo texto do payload; a atual exige classificar `MESSAGE_SEND` como durável e permite uso efêmero apenas mediante contrato de chamada adequado. A aceitação indiscriminada de inferências por prefixo contraria a exigência de não permitir descarte de mensagens permanentes por metadados não autenticados.
+
+**Decisão:** manter a garantia de segurança, sem reintroduzir a classificação insegura por prefixo. Reclassificar os testes antigos como cenários de *fail-closed*: mensagens legadas Digest V1 e chamadas sem contrato autenticado explícito permanecem duráveis. Acrescentar um teste positivo de sinalização `CALL_SIGNAL` com Digest V2 incluindo operação e efemeridade assinadas, demonstrando que chamadas modernas continuam efêmeras. Distinguir compatibilidade de aceitação sintática e compatibilidade comportamental: clientes antigos podem não receber a mesma política de persistência, e isso precisa ser comunicado/gerenciado antes do deploy.
+
+**Prevenção:** na mudança de contrato de segurança, inventariar todas as asserções legadas e decidir antecipadamente quais são invariantes de segurança, quais são expectativas de compatibilidade e quais devem ser migradas. Nunca modificar testes apenas para torná-los verdes sem justificar a mudança de requisito e acrescentar cobertura positiva e negativa.
+
+**Evidência:** alterações em `authenticatedMessageClassificationSecurity.test.js` e `callAndLocalAuthSecurity.test.js`, submetidas à `main`. A nova bateria completa ainda deve ser executada pelo Antigravity; não registrar estes testes como aprovados antes de seu relatório.
