@@ -542,6 +542,38 @@ fun ChatDetailScreen(
         }
     }
 
+    // GIFs são enviados pelo canal de documentos já existente para preservar
+    // os frames animados. Converter um GIF em Bitmap perderia a animação.
+    val gifPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            if (!isMutualOrFamily) {
+                Toast.makeText(context, "GIFs disponíveis apenas em conexões mútuas ou familiares", Toast.LENGTH_LONG).show()
+            } else {
+                scope.launch(Dispatchers.IO) {
+                    val type = context.contentResolver.getType(uri)?.lowercase(Locale.ROOT)
+                    val result = if (type == null || type == "image/gif") {
+                        uriToBase64Doc(context, uri, maxBytes = 8L * 1024L * 1024L)
+                    } else null
+                    if (result != null) {
+                        val parts = result.first.split(":", limit = 3)
+                        val originalName = parts.getOrNull(0).orEmpty()
+                        val fileName = if (originalName.endsWith(".gif", ignoreCase = true)) originalName else "animacao.gif"
+                        val payload = parts.getOrNull(2).orEmpty()
+                        if (payload.isNotEmpty()) {
+                            onSendDocumentMessage(person, fileName, payload, result.second)
+                        }
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Selecione um GIF válido de até 8 MB", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     val documentPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetMultipleContents()
     ) { uris: List<Uri> ->
@@ -2045,6 +2077,10 @@ fun ChatDetailScreen(
                         },
                         onCreateStickerRequested = {
                             createStickerPickerLauncher.launch("image/*")
+                        },
+                        onChooseGifRequested = {
+                            if (isMutualOrFamily) gifPickerLauncher.launch("image/gif")
+                            else restrictedFeatureDialog = "Envio de GIFs"
                         },
                         onEditStickerRequested = { id, bmp ->
                             editingStickerId = id
@@ -3866,6 +3902,7 @@ fun EmojiPickerPanel(
     onEmojiSelected: (String) -> Unit,
     onStickerSelected: (String) -> Unit = {},
     onCreateStickerRequested: () -> Unit = {},
+    onChooseGifRequested: () -> Unit = {},
     onEditStickerRequested: (String, android.graphics.Bitmap) -> Unit = { _, _ -> },
     stickerCollectionRevision: Int = 0,
     onBackspace: () -> Unit,
@@ -3874,6 +3911,8 @@ fun EmojiPickerPanel(
 ) {
     val context = LocalContext.current
     val manager = remember(context) { StickerPersistenceManager(context) }
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val panelHeight = (screenHeight * 0.50f).coerceIn(265.dp, 520.dp)
     var selectedCategory by remember { mutableIntStateOf(0) }
     var stickersRefreshKey by remember { mutableIntStateOf(0) }
     var stickerToManage by remember { mutableStateOf<Pair<String, android.graphics.Bitmap>?>(null) }
@@ -3895,7 +3934,8 @@ fun EmojiPickerPanel(
         "👍" to "Gestos",
         "❤️" to "Corações",
         "🔥" to "Símbolos",
-        "🖼️" to "Figurinhas"
+        "🖼️" to "Figurinhas",
+        "🎞️" to "GIFs"
     )
 
     val emojis = remember(selectedCategory) {
@@ -3944,10 +3984,40 @@ fun EmojiPickerPanel(
         border = BorderStroke(1.dp, DarkCardElevated),
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(max = 260.dp)
-            .fillMaxHeight(0.35f)
+            .height(panelHeight)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+            // Acesso explícito ao acervo: a aba de figurinhas não pode ficar
+            // escondida ao final da faixa de categorias, como na UI anterior.
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf(
+                    Triple("😀 Emojis", 0, Icons.Default.SentimentSatisfiedAlt),
+                    Triple("⭐ Figurinhas", 5, Icons.Default.Image),
+                    Triple("🎞️ GIFs", 6, Icons.Default.Movie)
+                ).forEach { (label, index, _) ->
+                    val active = selectedCategory == index || (index == 0 && selectedCategory in 1..4)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (active) RadarCyan.copy(alpha = 0.18f) else DarkCard,
+                        border = if (active) BorderStroke(1.dp, RadarCyan) else null,
+                        modifier = Modifier.weight(1f).clickable { selectedCategory = index }
+                    ) {
+                        Text(
+                            label,
+                            color = if (active) RadarCyan else TextPrimary,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            modifier = Modifier.padding(vertical = 9.dp, horizontal = 2.dp)
+                        )
+                    }
+                }
+            }
             // Barra superior de categorias e controles
             Row(
                 modifier = Modifier
@@ -3982,7 +4052,7 @@ fun EmojiPickerPanel(
                 }
 
                 // Botão Backspace (apenas visível nas abas de emoji texto)
-                if (selectedCategory != 5) {
+                if (selectedCategory in 0..4) {
                     IconButton(
                         onClick = onBackspace,
                         modifier = Modifier.size(36.dp)
@@ -4010,7 +4080,34 @@ fun EmojiPickerPanel(
                 }
             }
 
-            if (selectedCategory == 5) {
+            if (selectedCategory == 6) {
+                // Não converter GIF para imagem estática: o fluxo de arquivos
+                // existente preserva a animação e a criptografia E2EE.
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("🎞️ GIFs animados", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Selecione um GIF do aparelho para enviá-lo como arquivo animado e criptografado.",
+                        color = TextSecondary,
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = onChooseGifRequested) {
+                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Escolher GIF do aparelho")
+                    }
+                    Text(
+                        "Galeria de GIFs e editor de animações: em preparação.",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.labelSmall,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            } else if (selectedCategory == 5) {
                 // Aba de Figurinhas (Stickers)
                 Column(
                     modifier = Modifier
@@ -4018,7 +4115,7 @@ fun EmojiPickerPanel(
                         .padding(horizontal = 8.dp, vertical = 6.dp)
                 ) {
                     Text(
-                        "Toque para enviar • Segure para editar ou excluir",
+                        "Minhas figurinhas (${userStickers.size}) • Toque para enviar • Segure para editar",
                         color = TextSecondary,
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp),
