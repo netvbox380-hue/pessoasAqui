@@ -229,7 +229,7 @@ function setupAdversarialTestEnv(options = {}) {
       body.ciphertextPayload.startsWith('[ICE_CANDIDATE:')
     );
 
-    const isEffectiveEphemeral = isEphemeralContract || isPlaintextCall;
+    const isEffectiveEphemeral = effectiveOperation !== 'MESSAGE_SEND' && (isEphemeralContract || isPlaintextCall);
     const isStreamRate = isEffectiveEphemeral && (
       effectiveOperation === 'CALL_STREAM' ||
       String(body.messageId || '').startsWith('call_frame_') ||
@@ -261,7 +261,18 @@ function setupAdversarialTestEnv(options = {}) {
       return { success: false, error: 'Payload excessivo ou inválido' };
     }
 
-    const declaredOp = String(operation || (Boolean(isEphemeral) ? (String(messageId || '').startsWith('call_frame_') ? 'CALL_STREAM' : 'CALL_SIGNAL') : 'MESSAGE_SEND'));
+    const legacyCall = typeof ciphertextPayload === 'string' && (
+      ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
+      ciphertextPayload.startsWith('[CALL_VIDEO_FRAME:') ||
+      ciphertextPayload.startsWith('[CALL_INIT:') ||
+      ciphertextPayload.startsWith('[CALL_ACCEPT]') ||
+      ciphertextPayload.startsWith('[CALL_ACK]') ||
+      ciphertextPayload.startsWith('[CALL_END]') ||
+      ciphertextPayload.startsWith('[ICE_CANDIDATE:')
+    );
+    const declaredOp = String(operation || (Boolean(isEphemeral) || legacyCall
+      ? (String(messageId || '').startsWith('call_frame_') ? 'CALL_STREAM' : 'CALL_SIGNAL')
+      : 'MESSAGE_SEND'));
     const isCallOp = declaredOp === 'CALL_STREAM' || declaredOp === 'CALL_SIGNAL';
     const isPlaintextCall = typeof ciphertextPayload === 'string' && (
       ciphertextPayload.startsWith('[CALL_AUDIO_FRAME:') ||
@@ -612,5 +623,44 @@ test('12. Compatibilidade com clientes legados (Digest V1 6 partes): aceito com 
   assert.equal(res.statusCode, 200, 'Assinatura legada V1 deve ser aceita com sucesso');
   // Mas como a assinatura V1 NÃO assina efemeridade, é estritamente FORÇADA a durável!
   assert.equal(res.data.persisted, true, 'Assinatura V1 NUNCA pode ser efêmera (Fail-Closed to Durable)');
+  assert.equal(env.dbMessages.some(m => m.id === msgId), true);
+});
+
+test('13. Digest V1 legado com payload CALL_INIT em texto claro permanece durável (não contorna contrato)', async () => {
+  const env = setupAdversarialTestEnv();
+  const msgId = `legacy_plaintext_call_${Date.now()}`;
+  const payload = '[CALL_INIT:legacy-attacker-prefix]';
+  const iv = 'iv_legacy_plaintext';
+  const digestV1 = digestHttpParts([env.alice.id, env.bob.id, payload, iv, msgId, env.alice.alias]);
+  const proof = signHttpProof(env.alice, 'MESSAGE_SEND', env.bob.id, digestV1);
+  const result = await env.simulateHttpSendMessage({
+    senderHash: env.alice.id,
+    recipientHash: env.bob.id,
+    ciphertextPayload: payload,
+    ivNonce: iv,
+    messageId: msgId,
+    senderAlias: env.alice.alias,
+    isEphemeral: true,
+    operation: 'CALL_SIGNAL',
+    identityProof: proof
+  });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.data.persisted, true, 'Digest V1 não protege operation e deve forçar persistência');
+  assert.equal(env.dbMessages.some(m => m.id === msgId), true);
+});
+
+test('14. WS com operation MESSAGE_SEND e payload CALL_INIT legado nunca ignora persistência', async () => {
+  const env = setupAdversarialTestEnv();
+  const msgId = `ws_plaintext_spoof_${Date.now()}`;
+  const result = await env.simulateWsE2eeMessage(env.alice, {
+    recipientHash: env.bob.id,
+    ciphertextPayload: '[CALL_INIT:spoofed-as-chat]',
+    ivNonce: 'iv_ws_spoof',
+    messageId: msgId,
+    isEphemeral: true,
+    operation: 'MESSAGE_SEND'
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.persisted, true, 'MESSAGE_SEND explícito nunca pode ser efêmero');
   assert.equal(env.dbMessages.some(m => m.id === msgId), true);
 });
