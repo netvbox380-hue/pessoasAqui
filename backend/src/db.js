@@ -9,7 +9,15 @@ let pool = null;
 let isPostgres = false;
 let circuitBreakerTripped = false;
 
-// Armazenamento em memória local (alta velocidade + fallback resiliente em nuvem)
+// Controle de reconexão automática e recuperação de falha
+let isReconnecting = false;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+const BASE_RECONNECT_INTERVAL_MS = 800;
+const MAX_RECONNECT_INTERVAL_MS = 20000;
+const onDatabaseRecoveredCallbacks = new Set();
+
+// Armazenamento em memória local (desenvolvimento local sem DATABASE_URL)
 const localStore = {
   identities: new Map(),
   devices: new Map(),
@@ -50,13 +58,97 @@ function isFatalDbError(err) {
   );
 }
 
+function createPgPool(connectionString) {
+  const isSsl = connectionString.includes('supabase') || Boolean(process.env.PG_SSL_CA_PEM);
+  return new Pool({
+    connectionString,
+    connectionTimeoutMillis: 4000,
+    idleTimeoutMillis: 30000,
+    ssl: isSsl
+      ? {
+          rejectUnauthorized: true,
+          ...(process.env.PG_SSL_CA_PEM ? { ca: process.env.PG_SSL_CA_PEM.replace(/\\n/g, '\n') } : {})
+        }
+      : false
+  });
+}
+
+function scheduleAutoRecovery() {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) return;
+  if (reconnectTimer || isReconnecting) return;
+
+  const delay = Math.min(
+    BASE_RECONNECT_INTERVAL_MS * Math.pow(1.5, Math.min(reconnectAttempts, 8)),
+    MAX_RECONNECT_INTERVAL_MS
+  ) + Math.floor(Math.random() * 300);
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    attemptDatabaseRecovery();
+  }, delay);
+
+  if (typeof reconnectTimer.unref === 'function') {
+    reconnectTimer.unref();
+  }
+}
+
+async function attemptDatabaseRecovery() {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) return false;
+  if (isReconnecting) return false;
+  if (isPostgres && !circuitBreakerTripped) return true;
+
+  isReconnecting = true;
+  reconnectAttempts++;
+
+  let candidatePool = null;
+  try {
+    candidatePool = createPgPool(connectionString);
+    candidatePool.on('error', () => {}); // Ignora erros durante a sonda
+
+    await candidatePool.query('SELECT 1');
+
+    // Sonda de conectividade real foi bem-sucedida!
+    candidatePool.removeAllListeners('error');
+    candidatePool.on('error', (err) => {
+      if (isFatalDbError(err)) {
+        tripCircuitBreaker(err);
+      }
+    });
+
+    pool = candidatePool;
+    circuitBreakerTripped = false;
+    isPostgres = true;
+    reconnectAttempts = 0;
+    isReconnecting = false;
+    console.log('[DB] Conexão com PostgreSQL recuperada automaticamente e confirmada via SELECT 1.');
+
+    for (const cb of onDatabaseRecoveredCallbacks) {
+      try {
+        const res = cb();
+        if (res && typeof res.catch === 'function') res.catch(() => {});
+      } catch (_) {}
+    }
+    return true;
+  } catch (err) {
+    if (candidatePool) {
+      try { candidatePool.end().catch(() => {}); } catch (_) {}
+    }
+    isPostgres = false;
+    circuitBreakerTripped = true;
+    isReconnecting = false;
+    scheduleAutoRecovery();
+    return false;
+  }
+}
+
 function tripCircuitBreaker(err) {
   if (circuitBreakerTripped) return;
   circuitBreakerTripped = true;
   isPostgres = false;
   const reason = err ? (err.code || err.message) : 'Network unreachable';
-  console.warn(`[DB] Aviso: Banco externo inacessível no container (${reason}).`);
-  console.warn('[DB] Circuit Breaker ativado: operando 100% em Memória de Alta Velocidade sem interrupções.');
+  console.warn(`[DB] Aviso: Banco externo inacessível (${reason}). Fail-closed ativado.`);
   if (pool) {
     const oldPool = pool;
     pool = null;
@@ -64,36 +156,57 @@ function tripCircuitBreaker(err) {
       oldPool.end().catch(() => {});
     } catch (_) {}
   }
+  scheduleAutoRecovery();
 }
 
 function resetCircuitBreaker() {
   circuitBreakerTripped = false;
+  if (!isPostgres && process.env.DATABASE_URL) {
+    attemptDatabaseRecovery();
+  }
+}
+
+async function closeDatabase() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  isReconnecting = false;
+  if (pool) {
+    const oldPool = pool;
+    pool = null;
+    try { await oldPool.end(); } catch (_) {}
+  }
+  isPostgres = false;
+  circuitBreakerTripped = false;
+}
+
+function registerDbRecoveredCallback(cb) {
+  if (typeof cb === 'function') {
+    onDatabaseRecoveredCallbacks.add(cb);
+  }
 }
 
 function initDatabase() {
   const connectionString = process.env.DATABASE_URL;
 
   if (connectionString) {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     circuitBreakerTripped = false;
+    isReconnecting = false;
+    reconnectAttempts = 0;
+
     console.log('[DB] Verificando conexão com Banco Relacional PostgreSQL (Supabase / Render)...');
-    pool = new Pool({
-      connectionString,
-      connectionTimeoutMillis: 4000,
-      idleTimeoutMillis: 30000,
-      // O TLS sem validação permitiria ao intermediário ler ou alterar chaves.
-      // Pode fornecer CA própria via PG_SSL_CA_PEM em ambientes privados.
-      ssl: connectionString.includes('supabase') || process.env.PG_SSL_CA_PEM
-        ? {rejectUnauthorized:true,
-           ...(process.env.PG_SSL_CA_PEM ? {ca:process.env.PG_SSL_CA_PEM.replace(/\\n/g,'\n')} : {})}
-        : false
-    });
+    pool = createPgPool(connectionString);
     pool.on('error', (err) => {
       if (isFatalDbError(err)) {
         tripCircuitBreaker(err);
       }
     });
 
-    // Inicia como false até que a sonda confirme conectividade real (evita ENETUNREACH nas requisições iniciais)
     isPostgres = false;
 
     pool.query('SELECT 1')
@@ -108,7 +221,6 @@ function initDatabase() {
       });
   } else {
     console.log('[DB] DATABASE_URL não configurada. Operando em modo de Desenvolvimento Local em Memória.');
-    console.log('[DB] (Para conectar ao Supabase, defina DATABASE_URL no arquivo .env)');
     isPostgres = false;
   }
 }
@@ -125,7 +237,7 @@ async function query(sql, params = []) {
       throw err;
     }
   }
-  if(process.env.DATABASE_URL)throw new Error('PostgreSQL indisponível; operação não confirmada');
+  if (process.env.DATABASE_URL) throw new Error('PostgreSQL indisponível; operação não confirmada');
   return { rows: [], rowCount: 0 };
 }
 
@@ -153,6 +265,8 @@ module.exports = {
   withTransaction,
   localStore,
   resetCircuitBreaker,
+  closeDatabase,
+  registerDbRecoveredCallback,
+  attemptDatabaseRecovery,
   isPostgres: () => isPostgres && !circuitBreakerTripped
 };
-

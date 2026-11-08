@@ -148,7 +148,10 @@ CREATE TABLE IF NOT EXISTS e2ee_messages (
     ciphertext_payload TEXT NOT NULL,            -- Conteúdo criptografado no aparelho (Envelope cego)
     iv_nonce VARCHAR(64) NOT NULL,
     is_delivered BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    is_cancelled BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    delivered_at TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ
 );
 
 -- 8. RELATÓRIOS DE MODERAÇÃO E SEGURANÇA (Tolerância Zero para Violações Graves)

@@ -11,7 +11,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 const crypto = require('crypto');
-const { initDatabase, localStore, isPostgres, query, withTransaction } = require('./db');
+const { initDatabase, localStore, resetCircuitBreaker, closeDatabase, registerDbRecoveredCallback, isPostgres, query, withTransaction } = require('./db');
 const { hashPin, verifyPinHash, generateNonce, calculateLockoutDurationSeconds } = require('./crypto');
 const {
   INVITE_LIFETIME_MS, tokenDigest, verifyStoredToken, validateInviteId, validateInviteToken
@@ -253,47 +253,20 @@ setTimeout(async () => {
         ciphertext_payload TEXT NOT NULL,
         iv_nonce VARCHAR(64) NOT NULL,
         is_delivered BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        is_cancelled BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        delivered_at TIMESTAMPTZ,
+        cancelled_at TIMESTAMPTZ
       )`);
+      await query(`ALTER TABLE e2ee_messages ADD COLUMN IF NOT EXISTS is_cancelled BOOLEAN DEFAULT FALSE`);
+      await query(`ALTER TABLE e2ee_messages ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`);
       await query(`CREATE INDEX IF NOT EXISTS idx_e2ee_messages_recipient_undelivered ON e2ee_messages (recipient_identity, is_delivered) WHERE is_delivered = FALSE`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_e2ee_messages_undelivered_uncancelled ON e2ee_messages (recipient_identity, is_delivered) WHERE is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)`);
       await query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS affected_identity VARCHAR(64)`);
       await query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS verified_family_report BOOLEAN NOT NULL DEFAULT FALSE`);
 
       // Restauração de mensagens pendentes do PostgreSQL na subida do backend
-      try {
-        const pendingRows = await query(
-          `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
-           FROM e2ee_messages
-           WHERE is_delivered = FALSE
-           ORDER BY created_at ASC`
-        );
-        for (const row of pendingRows.rows) {
-          const kRecip = keyId(row.recipient_identity);
-          if (!pendingMessages.has(kRecip)) {
-            pendingMessages.set(kRecip, []);
-          }
-          const q = pendingMessages.get(kRecip);
-          if (!q.some(m => m.messageId === row.id)) {
-            q.push({
-              type: 'E2EE_MESSAGE_RECEIVED',
-              messageId: row.id,
-              senderHash: cleanId(row.sender_identity),
-              senderAlias: row.sender_alias || 'Usuário',
-              recipientHash: cleanId(row.recipient_identity),
-              ciphertextPayload: row.ciphertext_payload,
-              ivNonce: row.iv_nonce || '',
-              isEphemeral: false,
-              timestamp: row.created_at ? new Date(row.created_at).getTime() : Date.now()
-            });
-            if (q.length > 50) q.shift();
-          }
-        }
-        if (pendingRows.rows.length > 0) {
-          console.log(`[DB] Mensagens pendentes restauradas do banco: ${pendingRows.rows.length}`);
-        }
-      } catch (errPending) {
-        console.warn('[DB] Nota ao restaurar mensagens pendentes:', errPending.message);
-      }
+      await restorePendingMessagesFromDatabase();
 
 
       const bannedRes = await query(`SELECT id FROM identities WHERE is_banned = TRUE`);
@@ -336,7 +309,7 @@ async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
     }
     try {
       const checkRes = await query(
-        `SELECT id, recipient_identity, is_delivered FROM e2ee_messages WHERE id = $1`,
+        `SELECT id, recipient_identity, is_delivered, is_cancelled FROM e2ee_messages WHERE id = $1`,
         [messageId]
       );
       if (checkRes && checkRes.rowCount > 0) {
@@ -346,6 +319,9 @@ async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
         if (cleanId(row.recipient_identity).toLowerCase() !== cleanRecip.toLowerCase()) {
           console.warn(`[ACK] Destinatário não autorizado para ACK do ID ${messageId}: esperado ${row.recipient_identity}, recebido ${cleanRecip}`);
           return { success: false, acknowledged: false, error: 'Não autorizado: destinatário incorreto', statusCode: 403 };
+        }
+        if (row.is_cancelled) {
+          return { success: false, acknowledged: false, error: 'Mensagem cancelada por revogação de vínculo', statusCode: 410 };
         }
         if (row.is_delivered) {
           // Idempotência: mensagem já constava como entregue no PostgreSQL
@@ -360,18 +336,21 @@ async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
           return { success: true, acknowledged: true, duplicate: true, messageId };
         }
         const updateRes = await query(
-          `UPDATE e2ee_messages SET is_delivered = TRUE WHERE id = $1 AND LOWER(recipient_identity) = LOWER($2)`,
+          `UPDATE e2ee_messages SET is_delivered = TRUE, delivered_at = NOW() WHERE id = $1 AND LOWER(recipient_identity) = LOWER($2) AND (is_cancelled IS NULL OR is_cancelled = FALSE)`,
           [messageId, cleanRecip]
         );
         if (!updateRes || updateRes.rowCount === 0) {
           // Concorrência: outra requisição confirmou no mesmo milissegundo.
           // Re-checa is_delivered para garantir integridade e idempotência.
           const recheck = await query(
-            `SELECT is_delivered FROM e2ee_messages WHERE id = $1 AND LOWER(recipient_identity) = LOWER($2)`,
+            `SELECT is_delivered, is_cancelled FROM e2ee_messages WHERE id = $1 AND LOWER(recipient_identity) = LOWER($2)`,
             [messageId, cleanRecip]
           );
-          if (!recheck || recheck.rowCount === 0 || !recheck.rows[0].is_delivered) {
+          if (!recheck || recheck.rowCount === 0) {
             return { success: false, acknowledged: false, error: 'Falha ao atualizar status de entrega no banco', statusCode: 500 };
+          }
+          if (recheck.rows[0].is_cancelled) {
+            return { success: false, acknowledged: false, error: 'Mensagem cancelada por revogação de vínculo', statusCode: 410 };
           }
         }
       }
@@ -406,8 +385,57 @@ async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
   return { success: true, acknowledged: true, messageId };
 }
 
-function purgePendingMessagesBetween(idA, idB) {
-  const kA = keyId(idA), kB = keyId(idB);
+async function restorePendingMessagesFromDatabase() {
+  if (!isPostgres()) return;
+  try {
+    const pendingRows = await query(
+      `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
+       FROM e2ee_messages
+       WHERE is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)
+       ORDER BY created_at ASC`
+    );
+    pendingMessages.clear();
+    for (const row of pendingRows.rows) {
+      const kRecip = keyId(row.recipient_identity);
+      if (!pendingMessages.has(kRecip)) {
+        pendingMessages.set(kRecip, []);
+      }
+      const q = pendingMessages.get(kRecip);
+      if (!q.some(m => m.messageId === row.id)) {
+        q.push({
+          type: 'E2EE_MESSAGE_RECEIVED',
+          messageId: row.id,
+          senderHash: cleanId(row.sender_identity),
+          senderAlias: row.sender_alias || 'Usuário',
+          recipientHash: cleanId(row.recipient_identity),
+          ciphertextPayload: row.ciphertext_payload,
+          ivNonce: row.iv_nonce || '',
+          isEphemeral: false,
+          timestamp: row.created_at ? new Date(row.created_at).getTime() : Date.now()
+        });
+        if (q.length > 50) q.shift();
+      }
+    }
+    if (pendingRows.rows.length > 0) {
+      console.log(`[DB] Mensagens pendentes restauradas do banco: ${pendingRows.rows.length}`);
+    }
+  } catch (errPending) {
+    console.warn('[DB] Nota ao restaurar mensagens pendentes:', errPending.message);
+  }
+}
+
+if (typeof registerDbRecoveredCallback === 'function') {
+  registerDbRecoveredCallback(restorePendingMessagesFromDatabase);
+}
+
+async function purgePendingMessagesBetween(idA, idB) {
+  const isDbConfigured = () => (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) || (typeof isPostgres === 'function' && isPostgres());
+  const cleanA = cleanId(idA);
+  const cleanB = cleanId(idB);
+  const kA = keyId(cleanA);
+  const kB = keyId(cleanB);
+
+  // 1. Limpa da memória RAM (fila volátil de mensagens pendentes)
   const qA = pendingMessages.get(kA);
   if (qA) {
     const filtered = qA.filter(m => keyId(m.senderHash) !== kB);
@@ -420,14 +448,29 @@ function purgePendingMessagesBetween(idA, idB) {
     if (filtered.length > 0) pendingMessages.set(kB, filtered);
     else pendingMessages.delete(kB);
   }
-  if (isPostgres()) {
-    query(
-      `UPDATE e2ee_messages SET is_delivered = TRUE
-       WHERE (LOWER(sender_identity) = LOWER($1) AND LOWER(recipient_identity) = LOWER($2))
-          OR (LOWER(sender_identity) = LOWER($2) AND LOWER(recipient_identity) = LOWER($1))`,
-      [cleanId(idA), cleanId(idB)]
-    ).catch(() => {});
+
+  // 2. Persistência durável no PostgreSQL
+  if (isDbConfigured()) {
+    if (!isPostgres()) {
+      throw new Error('Database unavailable during purge');
+    }
+    // Distinção de estado: mensagens canceladas por revogação NÃO são entregues!
+    // is_delivered permanece FALSE, is_cancelled se torna TRUE.
+    // Histórico prévio de mensagens já entregues (is_delivered = TRUE) permanece intacto.
+    const res = await query(
+      `UPDATE e2ee_messages
+       SET is_cancelled = TRUE, cancelled_at = NOW()
+       WHERE is_delivered = FALSE
+         AND (is_cancelled IS NULL OR is_cancelled = FALSE)
+         AND ((LOWER(sender_identity) = LOWER($1) AND LOWER(recipient_identity) = LOWER($2))
+           OR (LOWER(sender_identity) = LOWER($2) AND LOWER(recipient_identity) = LOWER($1)))
+       RETURNING id`,
+      [cleanA, cleanB]
+    );
+    return { success: true, cancelledCount: res?.rowCount || 0 };
   }
+
+  return { success: true, cancelledCount: 0 };
 }
 // Cache de deduplicação de mensagens (evita mensagens repetidas/duplicadas)
 const recentMessageIds = new Map();
@@ -859,7 +902,7 @@ wss.on('connection', (ws, req) => {
             const dbRes = await query(
               `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
                FROM e2ee_messages
-               WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE
+               WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)
                ORDER BY created_at ASC LIMIT 100`,
               [kAuth]
             );
@@ -1306,7 +1349,7 @@ app.post('/api/messages/pending', async (req, res) => {
       const dbRes = await query(
         `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
          FROM e2ee_messages
-         WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE
+         WHERE LOWER(recipient_identity) = LOWER($1) AND is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)
          ORDER BY created_at ASC LIMIT 100`,
         [cleanKey]
       );
@@ -1690,6 +1733,12 @@ app.post('/api/connections/unmark', async (req, res) => {
   const kFrom = keyId(from);
   const kTo = keyId(to);
 
+  const isDbConfigured = () => (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) || (typeof isPostgres === 'function' && isPostgres());
+
+  if (isDbConfigured() && !isPostgres()) {
+    return res.status(503).json({ success: false, error: 'Banco de dados indisponível para revogação durável.' });
+  }
+
   // Revogação de QUALQUER participante desfaz as duas marcações.
   // Sem isto, uma nova marcação poderia reativar o vínculo unilateralmente.
   if (isPostgres()) {
@@ -1700,16 +1749,20 @@ app.post('/api/connections/unmark', async (req, res) => {
             OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
         [from, to]
       );
+      if (typeof purgePendingMessagesBetween === 'function') {
+        await purgePendingMessagesBetween(from, to);
+      }
     } catch (e) {
       console.error('[DB] Erro ao revogar conexão no PostgreSQL:', e.message);
       return res.status(503).json({ success: false, error: 'Revogação não confirmada no banco. Tente novamente.' });
     }
+  } else {
+    if (typeof purgePendingMessagesBetween === 'function') {
+      await purgePendingMessagesBetween(from, to);
+    }
   }
   localStore.connections.delete(`${kFrom}->${kTo}`);
   localStore.connections.delete(`${kTo}->${kFrom}`);
-  if (typeof purgePendingMessagesBetween === 'function') {
-    purgePendingMessagesBetween(from, to);
-  }
 
   const myAlias = senderAlias || activePresence.get(kFrom)?.alias || 'Alguém';
   const targetWs = activeSockets.get(kTo);

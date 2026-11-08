@@ -89,11 +89,11 @@ test('SUÍTE DE INTEGRAÇÃO REAL COM POSTGRESQL 18 ISOLADO', async (t) => {
         ON e2ee_messages (recipient_identity, is_delivered) WHERE is_delivered = FALSE;
 
       CREATE TABLE IF NOT EXISTS connections (
-        identity_a VARCHAR(64) NOT NULL,
-        identity_b VARCHAR(64) NOT NULL,
+        from_identity VARCHAR(64) NOT NULL,
+        to_identity VARCHAR(64) NOT NULL,
         is_mutual BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMPTZ DEFAULT NOW(),
-        PRIMARY KEY (identity_a, identity_b)
+        PRIMARY KEY (from_identity, to_identity)
       );
 
       CREATE TABLE IF NOT EXISTS identity_key_bindings (
@@ -269,18 +269,18 @@ test('SUÍTE DE INTEGRAÇÃO REAL COM POSTGRESQL 18 ISOLADO', async (t) => {
   await t.test('9. Revogação durável de vínculo mútuo na tabela connections', async () => {
     const connPool = new Pool({ connectionString: CONNECTION_STRING });
     await connPool.query(
-      `INSERT INTO connections (identity_a, identity_b, is_mutual) VALUES ($1, $2, TRUE)
-       ON CONFLICT (identity_a, identity_b) DO UPDATE SET is_mutual = TRUE`,
+      `INSERT INTO connections (from_identity, to_identity, is_mutual) VALUES ($1, $2, TRUE)
+       ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = TRUE`,
       ['PEER_A', 'PEER_B']
     );
 
-    let state = await connPool.query('SELECT is_mutual FROM connections WHERE identity_a = $1 AND identity_b = $2', ['PEER_A', 'PEER_B']);
+    let state = await connPool.query('SELECT is_mutual FROM connections WHERE from_identity = $1 AND to_identity = $2', ['PEER_A', 'PEER_B']);
     assert.equal(state.rows[0].is_mutual, true);
 
     // Executa revogação
-    await connPool.query('UPDATE connections SET is_mutual = FALSE WHERE identity_a = $1 AND identity_b = $2', ['PEER_A', 'PEER_B']);
+    await connPool.query('UPDATE connections SET is_mutual = FALSE WHERE from_identity = $1 AND to_identity = $2', ['PEER_A', 'PEER_B']);
 
-    state = await connPool.query('SELECT is_mutual FROM connections WHERE identity_a = $1 AND identity_b = $2', ['PEER_A', 'PEER_B']);
+    state = await connPool.query('SELECT is_mutual FROM connections WHERE from_identity = $1 AND to_identity = $2', ['PEER_A', 'PEER_B']);
     assert.equal(state.rows[0].is_mutual, false);
     await connPool.end();
   });
