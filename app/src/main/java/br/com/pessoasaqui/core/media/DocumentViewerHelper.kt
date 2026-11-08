@@ -43,6 +43,7 @@ object DocumentViewerHelper {
             "7z" -> "application/x-7z-compressed"
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"
+            "gif" -> "image/gif"
             "mp3", "m4a", "wav" -> "audio/*"
             "mp4", "mkv", "webm" -> "video/*"
             else -> "*/*"
