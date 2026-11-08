@@ -3135,6 +3135,10 @@ class PessoasAquiRepository(
                     }
                     refreshPeerBindingIfDue(cleanSender)
                     // Resgate válido é nova aceitação explícita das duas partes.
+                    // Só criar aviso no histórico ao ocorrer uma NOVA transição
+                    // para conexão mútua. Reabertura/reconciliação não deve
+                    // repetir avisos de confirmação na conversa.
+                    val wasAlreadyMutual = isPeerPermanent(cleanSender)
                     revokedMutualPeople.remove(cleanSender)
                     confirmMutualConnectionFromServer(cleanSender, senderAlias)
 
@@ -3162,12 +3166,14 @@ class PessoasAquiRepository(
                     updateUnifiedData()
                     saveSavedContactsToPrefs()
 
-                    proximitySimulator.receivePrivateMessage(
-                        cleanSender,
-                        "Sistema",
-                        "✨ Conexão Mútua Estabelecida via Link Seguro com ${peer.alias}! Conversas privadas e chamadas liberadas à distância.",
-                        UUID.randomUUID().toString()
-                    )
+                    if (!wasAlreadyMutual) {
+                        proximitySimulator.receivePrivateMessage(
+                            cleanSender,
+                            "Sistema",
+                            "✨ Conexão mútua estabelecida com ${peer.alias}.",
+                            UUID.randomUUID().toString()
+                        )
+                    }
 
                     onResult(true, res.getOrNull()?.message ?: "Conexão Mútua estabelecida com sucesso!", peer)
                 } else {
