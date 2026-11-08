@@ -163,6 +163,35 @@ fun uriToBase64Doc(context: android.content.Context, uri: Uri, maxBytes: Long = 
     }
 }
 
+/**
+ * Importação limitada a 8 MiB, com validação de assinatura GIF87a/GIF89a
+ * e dimensões do cabeçalho. Nunca decodifica o GIF no caminho de envio:
+ * os frames originais permanecem intactos na mensagem E2EE de documento.
+ */
+fun uriToValidatedGif(context: android.content.Context, uri: Uri): Pair<String, Long>? {
+    return try {
+        val maxBytes = 8 * 1024 * 1024
+        val buffer = ByteArray(8192)
+        val bytes = ByteArrayOutputStream()
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (bytes.size() + count > maxBytes) return null
+                bytes.write(buffer, 0, count)
+            }
+        } ?: return null
+        val content = bytes.toByteArray()
+        if (content.size < 10) return null
+        val header = String(content, 0, 6, Charsets.US_ASCII)
+        if (header != "GIF87a" && header != "GIF89a") return null
+        val width = (content[6].toInt() and 0xff) or ((content[7].toInt() and 0xff) shl 8)
+        val height = (content[8].toInt() and 0xff) or ((content[9].toInt() and 0xff) shl 8)
+        if (width !in 1..2048 || height !in 1..2048) return null
+        Pair(Base64.encodeToString(content, Base64.NO_WRAP), content.size.toLong())
+    } catch (_: Exception) { null }
+}
+
 private fun isSameDay(ts1: Long, ts2: Long): Boolean {
     val cal1 = Calendar.getInstance().apply { timeInMillis = ts1 }
     val cal2 = Calendar.getInstance().apply { timeInMillis = ts2 }
@@ -554,16 +583,10 @@ fun ChatDetailScreen(
                 scope.launch(Dispatchers.IO) {
                     val type = context.contentResolver.getType(uri)?.lowercase(Locale.ROOT)
                     val result = if (type == null || type == "image/gif") {
-                        uriToBase64Doc(context, uri, maxBytes = 8L * 1024L * 1024L)
+                        uriToValidatedGif(context, uri)
                     } else null
                     if (result != null) {
-                        val parts = result.first.split(":", limit = 3)
-                        val originalName = parts.getOrNull(0).orEmpty()
-                        val fileName = if (originalName.endsWith(".gif", ignoreCase = true)) originalName else "animacao.gif"
-                        val payload = parts.getOrNull(2).orEmpty()
-                        if (payload.isNotEmpty()) {
-                            onSendDocumentMessage(person, fileName, payload, result.second)
-                        }
+                        onSendDocumentMessage(person, "animacao.gif", result.first, result.second)
                     } else {
                         withContext(Dispatchers.Main) {
                             Toast.makeText(context, "Selecione um GIF válido de até 8 MB", Toast.LENGTH_LONG).show()
@@ -3995,10 +4018,10 @@ fun EmojiPickerPanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 listOf(
-                    Triple("😀 Emojis", 0, Icons.Default.SentimentSatisfiedAlt),
-                    Triple("⭐ Figurinhas", 5, Icons.Default.Image),
-                    Triple("🎞️ GIFs", 6, Icons.Default.Movie)
-                ).forEach { (label, index, _) ->
+                    "😀 Emojis" to 0,
+                    "⭐ Figurinhas" to 5,
+                    "🎞️ GIFs" to 6
+                ).forEach { (label, index) ->
                     val active = selectedCategory == index || (index == 0 && selectedCategory in 1..4)
                     Surface(
                         shape = RoundedCornerShape(12.dp),
