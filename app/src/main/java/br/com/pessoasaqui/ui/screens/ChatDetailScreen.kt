@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -717,7 +718,7 @@ fun ChatDetailScreen(
                             Text(
                                 text = when {
                                     person.isFamily -> "Família • ${person.familyRole?.label ?: "Vínculo Seguro"}"
-                                    person.isMutualConnection -> "Conexão Mútua • Qualquer distância"
+                                    person.isMutualConnection -> "Conexão Mútua"
                                     else -> "Pessoas no local • ~${person.estimatedDistanceMeters}m"
                                 },
                                 style = MaterialTheme.typography.labelSmall.copy(
@@ -1072,7 +1073,7 @@ fun ChatDetailScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Pessoas no local • Somente Texto Criptografado",
+                                text = "Pessoas no local • 🔒 Criptografada",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = WarningAmber,
                                     fontWeight = FontWeight.Bold
@@ -1134,38 +1135,9 @@ fun ChatDetailScreen(
                         }
                     }
                 }
-            } else {
-                Surface(
-                    shape = RoundedCornerShape(0.dp),
-                    color = DarkCard,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = if (person.isFamily) Icons.Default.Shield else Icons.Default.Verified,
-                            contentDescription = null,
-                            tint = if (person.isFamily) FamilyPurple else EmeraldGreen,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (person.isFamily)
-                                "🛡️ Familiar Conectado • Chamadas, vídeos, áudios e arquivos liberados (E2EE)"
-                            else
-                                "🤝 Conexão Mútua Confirmada • Chamadas, vídeos, áudios e arquivos liberados (E2EE)",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                color = if (person.isFamily) FamilyPurple else EmeraldGreen,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 11.sp
-                            )
-                        )
-                    }
-                }
             }
+            // A confirmação de conexão já é registrada como evento no histórico.
+            // Não repetir um banner permanente em toda abertura da conversa.
 
             // A largura é calculada a partir da janela REAL: bolhas estreitas
             // em telefone, mais largas sem esticar demais em tablet/dobráveis.
@@ -1366,7 +1338,7 @@ fun ChatDetailScreen(
                                                 Spacer(modifier = Modifier.height(2.dp))
 
                                                 Text(
-                                                    text = if (isPlaying) "Reproduzindo áudio..." else "Áudio Cifrado • 0:${String.format("%02d", msg.audioDurationSeconds.coerceAtLeast(3))}",
+                                                    text = if (isPlaying) "Reproduzindo áudio..." else "🔒 Criptografada • 0:${String.format("%02d", msg.audioDurationSeconds.coerceAtLeast(3))}",
                                                     style = MaterialTheme.typography.labelSmall.copy(
                                                         color = subTextColor,
                                                         fontSize = 10.sp
@@ -1422,7 +1394,7 @@ fun ChatDetailScreen(
                                                 ) {
                                                     Image(
                                                         bitmap = currentBitmap,
-                                                        contentDescription = "Foto Cifrada (Toque para ampliar)",
+                                                        contentDescription = "Foto criptografada (toque para ampliar)",
                                                         modifier = Modifier
                                                             .fillMaxWidth()
                                                             .heightIn(max = 240.dp),
@@ -1458,7 +1430,7 @@ fun ChatDetailScreen(
                                                 }
                                                 Spacer(modifier = Modifier.height(4.dp))
                                                 Text(
-                                                    text = "📷 Foto Cifrada Ponta a Ponta",
+                                                    text = "🔒 Criptografada",
                                                     style = MaterialTheme.typography.labelSmall.copy(
                                                         color = subTextColor,
                                                         fontSize = 10.sp
@@ -1467,7 +1439,7 @@ fun ChatDetailScreen(
                                             }
                                         } else {
                                             Text(
-                                                text = "📷 [Imagem Cifrada Recebida]",
+                                                text = "📷 Imagem criptografada",
                                                 style = MaterialTheme.typography.bodyMedium.copy(
                                                     color = primaryTextColor
                                                 )
@@ -1533,7 +1505,7 @@ fun ChatDetailScreen(
                                                         )
                                                         val sizeLabel = if (msg.fileSizeBytes > 0) "${msg.fileSizeBytes / 1024} KB" else "Arquivo seguro"
                                                         Text(
-                                                            text = "$sizeLabel • E2EE Cifrado",
+                                                            text = "$sizeLabel • 🔒 Criptografado",
                                                             style = MaterialTheme.typography.labelSmall.copy(
                                                                 color = subTextColor,
                                                                 fontSize = 10.sp
@@ -1661,7 +1633,7 @@ fun ChatDetailScreen(
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Icon(
                                         imageVector = Icons.Default.Lock,
-                                        contentDescription = "Cifrado Ponta a Ponta",
+                                        contentDescription = "Mensagem criptografada de ponta a ponta",
                                         tint = if (isStickerMsg) Color.White.copy(alpha = 0.7f) else subTextColor,
                                         modifier = Modifier.size(10.dp)
                                     )
@@ -1859,7 +1831,7 @@ fun ChatDetailScreen(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Send,
-                                    contentDescription = "Enviar Áudio Cifrado",
+                                    contentDescription = "Enviar áudio criptografado",
                                     tint = DeepBlack,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -1955,7 +1927,7 @@ fun ChatDetailScreen(
                             OutlinedTextField(
                                 value = inputText,
                                 onValueChange = { inputText = it },
-                                placeholder = { Text(if (editingMessage != null) "Editar texto..." else "Mensagem cifrada...") },
+                                placeholder = { Text(if (editingMessage != null) "Editar texto..." else "🔒 Criptografada") },
                                 leadingIcon = {
                                     IconButton(
                                         onClick = { showEmojiPicker = !showEmojiPicker }
