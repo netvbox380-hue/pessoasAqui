@@ -879,9 +879,80 @@ test('SUÍTE: AUDITORIA SISTÊMICA DE COMPATIBILIDADE, CONCORRÊNCIA E SEGURANÇ
     });
 
     // -------------------------------------------------------------------------
-    // TESTE 13: Auditoria de Compatibilidade de Esquema (checkSchemaCompatibility)
+    // TESTE 13: Ausência Total de Vínculo (Sem registro em connections)
     // -------------------------------------------------------------------------
-    await t.test('13. Auditoria de Compatibilidade de Esquema: categorização clara e ausência de DDL', async () => {
+    await t.test('13. Ausência Total de Vínculo: Envio de mensagem permanente sem registro em connections é rejeitado com HTTP 403 (NO_CONNECTION)', async () => {
+      // Alice tenta enviar mensagem para Charlie (com quem nunca interagiu nem possui vínculo)
+      const msgNoConnId = `msg_noconn_${Date.now()}`;
+      const payloadNoConn = 'ENC:MensagemParaEstranho';
+      const ivNoConn = 'iv_noconn';
+
+      const digest = digestHttpParts([alice.id, charlie.id, payloadNoConn, ivNoConn, msgNoConnId, alice.alias]);
+      const proofSend = signHttpProof(alice, 'MESSAGE_SEND', charlie.id, digest);
+
+      const sendRes = await fetch(`${httpUrl}/api/messages/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          senderHash: alice.id,
+          recipientHash: charlie.id,
+          ciphertextPayload: payloadNoConn,
+          ivNonce: ivNoConn,
+          messageId: msgNoConnId,
+          senderAlias: alice.alias,
+          identityProof: proofSend
+        })
+      });
+
+      assert.strictEqual(sendRes.status, 403, 'Envio para destinatário sem vínculo deve ser rejeitado com HTTP 403 Forbidden');
+      const sendJson = await sendRes.json();
+      assert.strictEqual(sendJson.code, 'NO_CONNECTION', 'Código de erro deve ser NO_CONNECTION');
+
+      // Comprova no banco que a mensagem NUNCA foi gravada em e2ee_messages
+      const checkClient = await pool.connect();
+      try {
+        const msgRes = await checkClient.query('SELECT * FROM e2ee_messages WHERE id = $1', [msgNoConnId]);
+        assert.strictEqual(msgRes.rowCount, 0, 'Mensagem não autorizada NUNCA deve ser persistida no banco');
+      } finally {
+        checkClient.release();
+      }
+    });
+
+    // -------------------------------------------------------------------------
+    // TESTE 14: Sinalização de Chamada sem Vínculo (Chamada entre Desconhecidos)
+    // -------------------------------------------------------------------------
+    await t.test('14. Sinalização de Chamada sem Vínculo: Tentativa de iniciar chamada (CALL_INIT) entre desconhecidos é rejeitada com HTTP 403 (NO_CONNECTION)', async () => {
+      const callMsgId = `call_init_${Date.now()}`;
+      const callPayload = '[CALL_INIT:fake_webrtc_sdp]';
+      const callIv = 'iv_call';
+
+      const digest = digestHttpParts([alice.id, charlie.id, callPayload, callIv, callMsgId, alice.alias]);
+      const proofSend = signHttpProof(alice, 'MESSAGE_SEND', charlie.id, digest);
+
+      const callRes = await fetch(`${httpUrl}/api/messages/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          senderHash: alice.id,
+          recipientHash: charlie.id,
+          ciphertextPayload: callPayload,
+          ivNonce: callIv,
+          messageId: callMsgId,
+          senderAlias: alice.alias,
+          isEphemeral: true,
+          identityProof: proofSend
+        })
+      });
+
+      assert.strictEqual(callRes.status, 403, 'Sinalização de chamada para desconhecido deve ser rejeitada com HTTP 403');
+      const callJson = await callRes.json();
+      assert.strictEqual(callJson.code, 'NO_CONNECTION');
+    });
+
+    // -------------------------------------------------------------------------
+    // TESTE 15: Auditoria de Compatibilidade de Esquema (checkSchemaCompatibility)
+    // -------------------------------------------------------------------------
+    await t.test('15. Auditoria de Compatibilidade de Esquema: categorização clara e ausência de DDL', async () => {
       const checkClient = await pool.connect();
       try {
         // A. Esquema completo atual -> COMPATIBLE

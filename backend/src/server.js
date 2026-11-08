@@ -556,6 +556,19 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
     let persistedInDb = false;
     if (isEphemeral) {
       // 1. Mensagens efêmeras (WebRTC áudio/vídeo, sinalização de chamada): em memória RAM intencionalmente
+      if (isCallSignaling && isDbConfigured()) {
+        const connStatus = await getConnectionStatus(cleanSender, cleanRecipient);
+        if (!connStatus.isMutual) {
+          return {
+            success: false,
+            delivered: false,
+            persisted: false,
+            error: 'Chamadas e sinalizações exigem vínculo bilateral permanente confirmado.',
+            statusCode: 403,
+            code: 'NO_CONNECTION'
+          };
+        }
+      }
     } else if (isDbConfigured()) {
       // 2. Ambiente com PostgreSQL configurado (Produção / Testes Reais):
       if (!isPostgres()) {
@@ -567,7 +580,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
         const txRunner = (typeof withTransaction === 'function') ? withTransaction : async (cb) => cb(query);
         const txResult = await txRunner(async (tx) => {
           // A. Sincronização transacional de autorização de vínculo:
-          // Se houver registros na tabela connections entre os pares, trava a linha em FOR SHARE.
+          // Trava os registros da tabela connections entre os pares em FOR SHARE.
           // Se o unmark estiver executando DELETE na mesma linha, o SELECT FOR SHARE aguarda a conclusão do unmark.
           const connCheck = await tx(
             `SELECT from_identity, to_identity, is_mutual FROM connections
@@ -577,30 +590,39 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
             [cleanSender, cleanRecipient]
           );
 
-          if (connCheck && connCheck.rowCount > 0) {
-            // Se algum registro existir e is_mutual for false -> tentativa unilateral não autorizada
-            if (connCheck.rows.some(r => !r.is_mutual)) {
-              throw Object.assign(new Error('Conexão unilateral não autorizada'), { statusCode: 403, code: 'UNILATERAL_NOT_PERMITTED' });
-            }
-          } else {
-            // Se não há vínculo na tabela connections, verifica se a conexão foi revogada
-            const isTombstoned = revokedConnections.has(pairKey(cleanSender, cleanRecipient));
-            let hasCancelled = false;
-            try {
-              const cancelRes = await tx(
-                `SELECT 1 FROM e2ee_messages
-                 WHERE is_cancelled = TRUE
-                   AND ((LOWER(sender_identity) = LOWER($1) AND LOWER(recipient_identity) = LOWER($2))
-                     OR (LOWER(sender_identity) = LOWER($2) AND LOWER(recipient_identity) = LOWER($1)))
-                 LIMIT 1`,
-                [cleanSender, cleanRecipient]
-              );
-              hasCancelled = (cancelRes && cancelRes.rowCount > 0);
-            } catch (_) {}
+          const isTombstoned = revokedConnections.has(pairKey(cleanSender, cleanRecipient));
+          let hasCancelled = false;
+          try {
+            const cancelRes = await tx(
+              `SELECT 1 FROM e2ee_messages
+               WHERE is_cancelled = TRUE
+                 AND ((LOWER(sender_identity) = LOWER($1) AND LOWER(recipient_identity) = LOWER($2))
+                   OR (LOWER(sender_identity) = LOWER($2) AND LOWER(recipient_identity) = LOWER($1)))
+               LIMIT 1`,
+              [cleanSender, cleanRecipient]
+            );
+            hasCancelled = (cancelRes && cancelRes.rowCount > 0);
+          } catch (_) {}
 
-            if (isTombstoned || hasCancelled) {
-              throw Object.assign(new Error('Conexão revogada ou não autorizada'), { statusCode: 403, code: 'CONNECTION_REVOKED' });
-            }
+          // 1. Ausência total de vínculo (nunca foram amigos ou vínculo foi excluído)
+          if (!connCheck || connCheck.rowCount === 0) {
+            const isRevoked = isTombstoned || hasCancelled;
+            throw Object.assign(
+              new Error(isRevoked ? 'Conexão revogada ou não autorizada' : 'Ausência de conexão bilateral autorizada'),
+              { statusCode: 403, code: isRevoked ? 'CONNECTION_REVOKED' : 'NO_CONNECTION' }
+            );
+          }
+
+          // 2. Vínculo incompleto ou unilateral (exige ambas as direções com is_mutual = true)
+          const hasDirect = connCheck.rows.some(r => cleanId(r.from_identity).toLowerCase() === cleanSender.toLowerCase() && cleanId(r.to_identity).toLowerCase() === cleanRecipient.toLowerCase());
+          const hasReverse = connCheck.rows.some(r => cleanId(r.from_identity).toLowerCase() === cleanRecipient.toLowerCase() && cleanId(r.to_identity).toLowerCase() === cleanSender.toLowerCase());
+          const allMutual = connCheck.rows.every(r => r.is_mutual === true);
+
+          if (!hasDirect || !hasReverse || !allMutual || connCheck.rowCount < 2) {
+            throw Object.assign(
+              new Error('Conexão unilateral não autorizada'),
+              { statusCode: 403, code: 'UNILATERAL_NOT_PERMITTED' }
+            );
           }
 
           // B. Inserção durável no PostgreSQL com ON CONFLICT (id) DO NOTHING
@@ -677,7 +699,8 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
             delivered: false,
             persisted: false,
             error: dbErr.message,
-            statusCode: dbErr.statusCode
+            statusCode: dbErr.statusCode,
+            code: dbErr.code
           };
         }
         console.error('[DB] Erro de persistência durável no PostgreSQL:', dbErr.message);
@@ -691,8 +714,25 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
           delivered: false,
           persisted: false,
           error: 'Conexão revogada ou não autorizada',
-          statusCode: 403
+          statusCode: 403,
+          code: 'CONNECTION_REVOKED'
         };
+      }
+      if (typeof localStore !== 'undefined' && localStore && localStore.connections && localStore.connections.size > 0) {
+        const kFrom = keyId(cleanSender);
+        const kTo = keyId(cleanRecipient);
+        const conn1 = localStore.connections.get(`${kFrom}->${kTo}`);
+        const conn2 = localStore.connections.get(`${kTo}->${kFrom}`);
+        if (!conn1 || !conn2 || !conn1.isMutual || !conn2.isMutual) {
+          return {
+            success: false,
+            delivered: false,
+            persisted: false,
+            error: (!conn1 && !conn2) ? 'Ausência de conexão bilateral autorizada' : 'Conexão unilateral não autorizada',
+            statusCode: 403,
+            code: (!conn1 && !conn2) ? 'NO_CONNECTION' : 'UNILATERAL_NOT_PERMITTED'
+          };
+        }
       }
       if (localDurableMessages.has(effectiveMsgId)) {
         const ex = localDurableMessages.get(effectiveMsgId);
@@ -1024,7 +1064,8 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({
               type: 'MESSAGE_ERROR',
               messageId: msgId,
-              error: deliveryResult.error || 'Falha no processamento da mensagem'
+              error: deliveryResult.error || 'Falha no processamento da mensagem',
+              code: deliveryResult.code
             }));
           } catch (_) {}
         }
@@ -1292,7 +1333,8 @@ app.post('/api/messages/send', async (req, res) => {
       error: deliveryResult.error === 'Database persistence failed'
         ? 'Erro de persistência durável no banco de dados.'
         : (deliveryResult.error || 'Falha no envio da mensagem.'),
-      details: deliveryResult.error
+      details: deliveryResult.error,
+      code: deliveryResult.code
     });
   }
   res.json({

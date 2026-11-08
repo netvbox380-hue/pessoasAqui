@@ -180,6 +180,12 @@ test('SUÍTE: RECUPERAÇÃO AUTOMÁTICA DO POSTGRESQL E REVOGAÇÃO TRANSACIONAL
       ($1, $2), ($3, $4)
       ON CONFLICT (identity_id) DO UPDATE SET public_key_spki = EXCLUDED.public_key_spki
     `, [alice.id, alice.pub, bob.id, bob.pub]);
+
+    await bindClient.query(`
+      INSERT INTO connections (from_identity, to_identity, is_mutual) VALUES
+      ($1, $2, TRUE), ($2, $1, TRUE)
+      ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = TRUE
+    `, [alice.id, bob.id]);
   } finally {
     bindClient.release();
   }

@@ -87,6 +87,15 @@ function setupTestEnvironment({ postgres = false } = {}) {
         const rows = dbMessages.filter(m => !m.is_delivered && !m.is_cancelled);
         return { rows, rowCount: rows.length };
       }
+      if (cleanSql.includes('FROM connections')) {
+        return {
+          rows: [
+            { from_identity: params[0], to_identity: params[1], is_mutual: true },
+            { from_identity: params[1], to_identity: params[0], is_mutual: true }
+          ],
+          rowCount: 2
+        };
+      }
       return { rows: [], rowCount: 0 };
     },
     WebSocket: { OPEN: 1 }
