@@ -59,6 +59,7 @@ open class PessoasAquiNetworkClient(
     var onAuthenticatedKeyRotation: ((identityHash: String) -> Unit)? = null
     var onModerationWarning: ((message: String) -> Unit)? = null
     var onAccountBanned: ((message: String) -> Unit)? = null
+    var onMessageError: ((messageId: String, errorReason: String) -> Unit)? = null
 
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
@@ -598,6 +599,11 @@ open class PessoasAquiNetworkClient(
                                     }.toString())
                                 }
                             }
+                        }
+                        "MESSAGE_ERROR" -> {
+                            val msgId = obj.optString("messageId")
+                            val error = obj.optString("error", "Falha no envio da mensagem")
+                            onMessageError?.invoke(msgId, error)
                         }
                         "E2EE_MESSAGE_RECEIVED", "E2EE_MESSAGE" -> {
                             val sender = obj.getString("senderHash")

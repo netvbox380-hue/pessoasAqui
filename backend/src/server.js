@@ -319,12 +319,55 @@ const activeInvites = new Map();
 const pendingMessages = new Map();
 
 async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
-  if (!authenticatedRecipientId || !messageId) return false;
+  if (!authenticatedRecipientId || !messageId) {
+    return { success: false, acknowledged: false, error: 'Identidade e messageId obrigatórios', statusCode: 400 };
+  }
   const cleanRecip = cleanId(authenticatedRecipientId);
-  if (!/^[A-F0-9]{16}$/i.test(cleanRecip)) return false;
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(cleanRecip)) {
+    return { success: false, acknowledged: false, error: 'Identidade inválida', statusCode: 400 };
+  }
   const kRecip = keyId(cleanRecip);
 
-  let removedFromMemory = false;
+  let inDbFound = false;
+  if (isPostgres()) {
+    try {
+      const checkRes = await query(
+        `SELECT id, recipient_identity, is_delivered FROM e2ee_messages WHERE id = $1`,
+        [messageId]
+      );
+      if (checkRes && checkRes.rowCount > 0) {
+        inDbFound = true;
+        const row = checkRes.rows[0];
+        // Validação estrita de autorização: apenas o destinatário legítimo pode confirmar
+        if (cleanId(row.recipient_identity).toLowerCase() !== cleanRecip.toLowerCase()) {
+          console.warn(`[ACK] Destinatário não autorizado para ACK do ID ${messageId}: esperado ${row.recipient_identity}, recebido ${cleanRecip}`);
+          return { success: false, acknowledged: false, error: 'Não autorizado: destinatário incorreto', statusCode: 403 };
+        }
+        if (row.is_delivered) {
+          // Idempotência: mensagem já constava como entregue no PostgreSQL
+          const queue = pendingMessages.get(kRecip);
+          if (queue) {
+            const idx = queue.findIndex(m => m.messageId === messageId);
+            if (idx !== -1) {
+              queue.splice(idx, 1);
+              if (queue.length === 0) pendingMessages.delete(kRecip);
+            }
+          }
+          return { success: true, acknowledged: true, duplicate: true, messageId };
+        }
+        await query(
+          `UPDATE e2ee_messages SET is_delivered = TRUE WHERE id = $1 AND LOWER(recipient_identity) = LOWER($2)`,
+          [messageId, cleanRecip]
+        );
+      }
+    } catch (dbErr) {
+      console.error('[DB] Erro ao registrar ACK no PostgreSQL:', dbErr.message);
+      // Falha fechada: NÃO remove da memória RAM, retorna 503
+      return { success: false, acknowledged: false, error: 'Database ACK failed', statusCode: 503 };
+    }
+  }
+
+  let inMemoryFound = false;
   const queue = pendingMessages.get(kRecip);
   if (queue) {
     const idx = queue.findIndex(m => m.messageId === messageId);
@@ -334,31 +377,18 @@ async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
       if (targetRecip.toLowerCase() === cleanRecip.toLowerCase()) {
         queue.splice(idx, 1);
         if (queue.length === 0) pendingMessages.delete(kRecip);
-        removedFromMemory = true;
+        inMemoryFound = true;
+      } else {
+        return { success: false, acknowledged: false, error: 'Não autorizado: destinatário incorreto', statusCode: 403 };
       }
     }
   }
 
-  let markedInDb = false;
-  if (isPostgres()) {
-    try {
-      const res = await query(
-        `UPDATE e2ee_messages
-         SET is_delivered = TRUE
-         WHERE id = $1
-           AND LOWER(recipient_identity) = LOWER($2)
-           AND is_delivered = FALSE`,
-        [messageId, cleanRecip]
-      );
-      if (res && res.rowCount > 0) {
-        markedInDb = true;
-      }
-    } catch (e) {
-      console.warn('[DB] Erro ao registrar ACK no PostgreSQL:', e.message);
-    }
+  if (!inDbFound && !inMemoryFound) {
+    return { success: false, acknowledged: false, error: 'Mensagem inexistente ou já expurgada', statusCode: 404 };
   }
 
-  return removedFromMemory || markedInDb;
+  return { success: true, acknowledged: true, messageId };
 }
 
 function purgePendingMessagesBetween(idA, idB) {
@@ -411,6 +441,10 @@ function checkRateLimit(identity, isStream) {
 }
 // Conjunto de identidades banidas da rede (rejeição em tempo real)
 const bannedIdentities = new Set();
+// Controle de entregas em processamento (in-flight) para concorrência atômica
+const inFlightDeliveries = new Map();
+// Armazenamento durável em memória para ambiente isolado/testes sem PostgreSQL
+const localDurableMessages = new Map();
 
 function isDuplicateMessage(msgId) {
   if (!msgId) return false;
@@ -489,11 +523,19 @@ function unwrapE2eeIfCompatible(payload) {
 }
 
 function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, ciphertextPayload, ivNonce, msgId, isEphemeralParam) {
-  return (async () => {
-    const cleanRecipient = cleanId(rawRecipient);
-    if (!cleanRecipient || !/^[A-Za-z0-9_-]{8,64}$/.test(cleanRecipient)) {
-      return { success: false, delivered: false, persisted: false, error: 'Destinatário inválido', statusCode: 400 };
-    }
+  const cleanRecipient = cleanId(rawRecipient);
+  if (!cleanRecipient || !/^[A-Za-z0-9_-]{8,64}$/.test(cleanRecipient)) {
+    return Promise.resolve({ success: false, delivered: false, persisted: false, error: 'Destinatário inválido', statusCode: 400 });
+  }
+
+  const effectiveMsgId = msgId || `${cleanSender}_${Date.now()}_${Math.random()}`;
+
+  // Concorrência / Idempotência sob requisições simultâneas:
+  if (inFlightDeliveries.has(effectiveMsgId)) {
+    return inFlightDeliveries.get(effectiveMsgId);
+  }
+
+  const deliveryPromise = (async () => {
     const kRecip = keyId(cleanRecipient);
     const kSender = keyId(cleanSender);
     const resolvedSenderAlias =
@@ -508,7 +550,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
     // Mensagens de texto, áudio gravado, imagem, documentos, fotos reais, edições, exclusões, vínculos familiares
     // e compartilhamento de cofre Shamir NÃO são efêmeras e DEVEM ser persistidas duravelmente!
     const payloadStr = String(compatiblePayload || '');
-    const isCallFrame = String(msgId || '').startsWith('call_frame_') ||
+    const isCallFrame = String(effectiveMsgId).startsWith('call_frame_') ||
                         payloadStr.startsWith('[CALL_AUDIO_FRAME:') ||
                         payloadStr.startsWith('[CALL_VIDEO_FRAME:');
     const isCallSignaling = payloadStr.startsWith('[CALL_INIT:') ||
@@ -516,37 +558,95 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
                             payloadStr.startsWith('[CALL_ACK]') ||
                             payloadStr.startsWith('[CALL_END]') ||
                             payloadStr.startsWith('[ICE_CANDIDATE:');
-    const isEphemeral = Boolean(isEphemeralParam) ||
-                        String(msgId || '').startsWith('ephem_') ||
-                        isCallFrame ||
-                        isCallSignaling;
+    const isExplicitEphem = String(effectiveMsgId).startsWith('ephem_') && Boolean(isEphemeralParam);
+    const isEphemeral = isCallFrame || isCallSignaling || isExplicitEphem;
 
-    // PERSISTÊNCIA DURÁVEL NO POSTGRESQL ANTES DO DESPACHO
-    // Se a mensagem for durável e o PostgreSQL estiver ativo,
-    // comprova a gravação atômica antes de entregar aos WebSockets ou filas de leitura!
+    // PERSISTÊNCIA DURÁVEL E DEDUPLICAÇÃO NO POSTGRESQL ANTES DO DESPACHO
     let persistedInDb = false;
     if (!isEphemeral && isPostgres()) {
       try {
-        await query(
+        const insertRes = await query(
           `INSERT INTO e2ee_messages (id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, is_delivered)
            VALUES ($1, $2, $3, $4, $5, $6, FALSE)
            ON CONFLICT (id) DO NOTHING`,
-          [msgId, cleanSender, cleanRecipient, resolvedSenderAlias, compatiblePayload, ivNonce || '']
+          [effectiveMsgId, cleanSender, cleanRecipient, resolvedSenderAlias, compatiblePayload, ivNonce || '']
         );
-        persistedInDb = true;
+
+        if (insertRes && insertRes.rowCount === 0) {
+          // Conflito em chave primária existente: consulta registro para validar idempotência vs colisão
+          const existingRes = await query(
+            `SELECT sender_identity, recipient_identity, ciphertext_payload, iv_nonce, is_delivered
+             FROM e2ee_messages WHERE id = $1`,
+            [effectiveMsgId]
+          );
+          if (existingRes && existingRes.rowCount > 0) {
+            const ex = existingRes.rows[0];
+            const sameSender = cleanId(ex.sender_identity).toLowerCase() === cleanSender.toLowerCase();
+            const sameRecip = cleanId(ex.recipient_identity).toLowerCase() === cleanRecipient.toLowerCase();
+            const samePayload = ex.ciphertext_payload === compatiblePayload;
+            const sameIv = (ex.iv_nonce || '') === (ivNonce || '');
+
+            if (!sameSender || !sameRecip || !samePayload || !sameIv) {
+              console.warn(`[MSG] Rejeição de colisão no ID ${effectiveMsgId}: dados divergentes`);
+              return {
+                success: false,
+                delivered: false,
+                persisted: false,
+                error: 'Identificador em conflito com mensagem existente diferente',
+                statusCode: 409
+              };
+            }
+
+            // Retentativa idempotente legítima:
+            persistedInDb = true;
+            if (ex.is_delivered) {
+              return {
+                success: true,
+                delivered: true,
+                persisted: true,
+                duplicate: true,
+                alreadyDelivered: true
+              };
+            }
+          }
+        } else {
+          persistedInDb = true;
+        }
       } catch (dbErr) {
         console.error('[DB] Erro de persistência durável no PostgreSQL:', dbErr.message);
         // Política de falha fechada: Não simular sucesso durável se o PostgreSQL falhou!
+        recentMessageIds.delete(effectiveMsgId);
         return { success: false, delivered: false, persisted: false, error: 'Database persistence failed', statusCode: 503 };
+      }
+    } else if (!isEphemeral && !isPostgres()) {
+      // Deduplicação durável em memória para ambiente de teste sem PostgreSQL
+      if (localDurableMessages.has(effectiveMsgId)) {
+        const ex = localDurableMessages.get(effectiveMsgId);
+        if (ex.cleanSender.toLowerCase() !== cleanSender.toLowerCase() ||
+            ex.cleanRecipient.toLowerCase() !== cleanRecipient.toLowerCase() ||
+            ex.compatiblePayload !== compatiblePayload) {
+          return {
+            success: false,
+            delivered: false,
+            persisted: false,
+            error: 'Identificador em conflito com mensagem existente diferente',
+            statusCode: 409
+          };
+        }
+        return {
+          success: true,
+          delivered: ex.delivered,
+          persisted: true,
+          duplicate: true
+        };
       }
     }
 
-    // Resolve destinatário tanto pelo identityHash quanto pelo apelido ativo (caso o remetente tenha ID antigo do contato)
+    // Resolve destinatário estritamente pela identidade técnica autorizada
     const targetKeys = new Set([kRecip]);
     for (const [presKey, peer] of activePresence.entries()) {
-      if (keyId(peer.identityHash) === kRecip || (peer.alias && peer.alias.trim().toLowerCase() === kRecip)) {
+      if (keyId(peer.identityHash) === kRecip) {
         targetKeys.add(presKey);
-        targetKeys.add(keyId(peer.identityHash));
       }
     }
 
@@ -556,7 +656,7 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
 
       const msgObj = {
         type: 'E2EE_MESSAGE_RECEIVED',
-        messageId: msgId,
+        messageId: effectiveMsgId,
         senderHash: cleanSender,
         senderAlias: resolvedSenderAlias,
         recipientHash: cleanRecipient,
@@ -580,10 +680,25 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
           pendingMessages.set(tk, []);
         }
         const queue = pendingMessages.get(tk);
-        if (!queue.some(m => m.messageId === msgId)) {
+        if (!queue.some(m => m.messageId === effectiveMsgId)) {
           queue.push(msgObj);
           if (queue.length > 50) queue.shift();
         }
+      }
+    }
+
+    // Registra como processada com sucesso no cache de deduplicação durável
+    if (!isEphemeral) {
+      recentMessageIds.set(effectiveMsgId, Date.now());
+      if (!isPostgres()) {
+        localDurableMessages.set(effectiveMsgId, {
+          cleanSender,
+          cleanRecipient,
+          compatiblePayload,
+          ivNonce: ivNonce || '',
+          delivered: deliveredWs,
+          timestamp: Date.now()
+        });
       }
     }
 
@@ -598,6 +713,13 @@ function deliverMessageToTarget(cleanSender, senderAlias, rawRecipient, cipherte
     }
     return { success: true, delivered: deliveredWs, persisted: persistedInDb };
   })();
+
+  inFlightDeliveries.set(effectiveMsgId, deliveryPromise);
+  deliveryPromise.finally(() => {
+    inFlightDeliveries.delete(effectiveMsgId);
+  });
+
+  return deliveryPromise;
 }
 
 wss.on('connection', (ws, req) => {
@@ -790,10 +912,6 @@ wss.on('connection', (ws, req) => {
         const kAuth = keyId(authenticatedIdentity);
         const msgId = messageId || `${authenticatedIdentity}_${Date.now()}_${Math.random()}`;
 
-        if (isDuplicateMessage(msgId)) {
-          return;
-        }
-
         // Reconhecimento de ACK de entrega: quando o destinatário responde com [DELIVERY_ACK:id],
         // o servidor confirma o recebimento e expurga a mensagem pendente confirmada.
         if (typeof ciphertextPayload === 'string' && ciphertextPayload.startsWith('[DELIVERY_ACK:')) {
@@ -816,9 +934,15 @@ wss.on('connection', (ws, req) => {
 
       if (msg.type === 'MESSAGE_ACK' && authenticatedIdentity) {
         const { messageId } = msg;
-        const ackSuccess = await acknowledgePendingMessage(authenticatedIdentity, messageId);
+        const ackResult = await acknowledgePendingMessage(authenticatedIdentity, messageId);
         try {
-          ws.send(JSON.stringify({ type: 'MESSAGE_ACK_CONFIRMED', messageId, success: Boolean(ackSuccess) }));
+          ws.send(JSON.stringify({
+            type: 'MESSAGE_ACK_CONFIRMED',
+            messageId,
+            success: ackResult.success,
+            acknowledged: ackResult.acknowledged,
+            error: ackResult.error
+          }));
         } catch (_) {}
         return;
       }
@@ -1062,10 +1186,6 @@ app.post('/api/messages/send', async (req, res) => {
 
   const msgId = messageId || `${cleanSender}_${Date.now()}_${Math.random()}`;
 
-  if (isDuplicateMessage(msgId)) {
-    return res.json({ success: true, delivered: true, duplicate: true });
-  }
-
   const deliveryResult = await deliverMessageToTarget(cleanSender, senderAlias, recipientHash, ciphertextPayload, ivNonce, msgId, isStream);
   if (!deliveryResult.success) {
     const statusCode = deliveryResult.statusCode || (deliveryResult.error === 'Database persistence failed' ? 503 : 400);
@@ -1076,7 +1196,12 @@ app.post('/api/messages/send', async (req, res) => {
       details: deliveryResult.error
     });
   }
-  res.json({ success: true, delivered: deliveryResult.delivered, persisted: deliveryResult.persisted });
+  res.json({
+    success: true,
+    delivered: deliveryResult.delivered,
+    persisted: deliveryResult.persisted,
+    duplicate: deliveryResult.duplicate || false
+  });
 });
 
 /**
@@ -1090,8 +1215,21 @@ app.post('/api/messages/ack', async (req, res) => {
   }
   const cleanKey = keyId(rawId);
   if (!await verifySignedHttp(req, res, 'MESSAGE_ACK', cleanId(rawId))) return;
-  const acknowledged = await acknowledgePendingMessage(cleanKey, messageId);
-  res.json({ success: true, acknowledged: messageId, removed: Boolean(acknowledged) });
+  const ackResult = await acknowledgePendingMessage(cleanKey, messageId);
+  if (!ackResult.success) {
+    const statusCode = ackResult.statusCode || 400;
+    return res.status(statusCode).json({
+      success: false,
+      acknowledged: false,
+      error: ackResult.error || 'Falha ao processar confirmação de mensagem'
+    });
+  }
+  res.json({
+    success: true,
+    acknowledged: messageId,
+    removed: ackResult.acknowledged,
+    duplicate: ackResult.duplicate || false
+  });
 });
 
 /**

@@ -278,4 +278,73 @@ class MessagePersistenceAndAckOrderTest {
         val inRam = repo.proximitySimulator.privateChats.value[blePeerId].orEmpty()
         assertTrue("Modo A deve estar presente na RAM para exibição na UI", inRam.any { it.id == msgId })
     }
+
+    @Test
+    fun testT13_falha503MantemMensagemParaRetentativaComMesmoId() {
+        val repo = createRepository()
+        val msgId = "msg_t13_503_${UUID.randomUUID()}"
+        val text = "Mensagem com persistência durável diante de 503"
+
+        // 1. Envio da mensagem com status inicial SENT/PENDING
+        repo.proximitySimulator.sendPrivateMessage(
+            recipientId = peerId,
+            text = text,
+            myAlias = "Eu",
+            messageId = msgId,
+            deliveryStatus = MessageDeliveryStatus.SENT
+        )
+
+        val initialChat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        val initialMsg = initialChat.find { it.id == msgId }
+        assertNotNull("Mensagem deve estar presente no chat", initialMsg)
+        assertEquals(MessageDeliveryStatus.SENT, initialMsg?.deliveryStatus)
+
+        // 2. Simula resposta de erro HTTP 503 do backend disparando onMessageError
+        testNetworkClient.onMessageError?.invoke(msgId, "HTTP 503 Service Unavailable")
+
+        // 3. Comprova que a mensagem NÃO foi descartada e seu status mudou para FAILED
+        val failedChat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        val failedMsg = failedChat.find { it.id == msgId }
+        assertNotNull("Mensagem não pode ser descartada após falha 503", failedMsg)
+        assertEquals("Status deve ser FAILED para permitir retentativa durável", MessageDeliveryStatus.FAILED, failedMsg?.deliveryStatus)
+        assertEquals(1, failedChat.count { it.id == msgId })
+
+        // 4. Servidor se recupera e confirmação criptográfica de entrega (ACK) é recebida
+        val ackProcessed = repo.processVerifiedNetworkPayload(peerId, "Contato", "[DELIVERY_ACK:$msgId]", "ack_t13_evt")
+        assertTrue("Processamento de ACK de entrega deve ter sucesso", ackProcessed)
+
+        // 5. Comprova que a mensagem com o MESMO msgId agora está marcada como DELIVERED
+        val deliveredChat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        val deliveredMsg = deliveredChat.find { it.id == msgId }
+        assertNotNull("Mensagem deve permanecer no histórico com o mesmo ID", deliveredMsg)
+        assertEquals("Status deve ter transitado para DELIVERED", MessageDeliveryStatus.DELIVERED, deliveredMsg?.deliveryStatus)
+        assertEquals("Não deve haver duplicações no histórico de chat", 1, deliveredChat.count { it.id == msgId })
+    }
+
+    @Test
+    fun testT14_webSocketMessageErrorNaoDescartaMensagem() {
+        val repo = createRepository()
+        val msgId = "msg_t14_ws_err_${UUID.randomUUID()}"
+        val text = "Mensagem que recebe MESSAGE_ERROR do WebSocket"
+
+        // 1. Mensagem registrada no chat
+        repo.proximitySimulator.sendPrivateMessage(
+            recipientId = peerId,
+            text = text,
+            myAlias = "Eu",
+            messageId = msgId,
+            deliveryStatus = MessageDeliveryStatus.SENT
+        )
+
+        // 2. Simula evento WebSocket "MESSAGE_ERROR" vindo do backend
+        testNetworkClient.onMessageError?.invoke(msgId, "DATABASE_ERROR: PostgreSQL connection failed")
+
+        // 3. Comprova que a mensagem é mantida no chat e seu conteúdo está íntegro
+        val chat = repo.proximitySimulator.privateChats.value[peerId].orEmpty()
+        assertEquals("Apenas 1 mensagem deve constar no histórico", 1, chat.count { it.id == msgId })
+
+        val msg = chat.first { it.id == msgId }
+        assertEquals("Texto deve permanecer idêntico e intacto para reenvio", text, msg.text)
+        assertEquals("Status da mensagem deve ser FAILED", MessageDeliveryStatus.FAILED, msg.deliveryStatus)
+    }
 }

@@ -149,7 +149,8 @@ test('1. Destinatário online: entrega imediata via WS, mensagem é removida de 
 
   // Cliente envia ACK
   const acked = await env.acknowledge(PEER_B, 'msg_001');
-  assert.equal(acked, true);
+  assert.equal(acked.success, true);
+  assert.equal(acked.acknowledged, true);
   assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
   assert.equal(env.dbMessages.find(m => m.id === 'msg_001').is_delivered, true);
 });
@@ -443,11 +444,12 @@ test('15. Concorrência: entrega simultânea via HTTP e WS tratada atomicamente 
 
   // Simula cliente recebendo via WS e fazendo ACK via HTTP ao mesmo tempo
   const ackWs = await env.acknowledge(PEER_B, 'msg_concurrent_1');
-  assert.equal(ackWs, true, 'Primeiro ACK deve confirmar e remover da fila');
+  assert.equal(ackWs.success, true, 'Primeiro ACK deve confirmar e remover da fila');
+  assert.equal(ackWs.acknowledged, true);
 
   // Segundo ACK (via HTTP /api/messages/ack concorrente)
   const ackHttp = await env.acknowledge(PEER_B, 'msg_concurrent_1');
-  assert.equal(ackHttp, false, 'Segundo ACK idempotente detecta que já foi removido sem corromper estado');
+  assert.equal(ackHttp.acknowledged, false, 'Segundo ACK idempotente detecta que já foi removido sem corromper estado');
 
   assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
 });
@@ -469,7 +471,9 @@ test('16. Blindagem de ACK: Terceiro C não consegue confirmar nem remover mensa
 
   // Terceiro Carlos (STRANGER_C) tenta confirmar mensagem que pertence a Bob
   const fraudAck = await env.acknowledge(STRANGER_C, 'msg_bob_confidential');
-  assert.equal(fraudAck, false, 'Carlos não pode confirmar mensagem endereçada a Bob');
+  assert.equal(fraudAck.success, false, 'Carlos não pode confirmar mensagem endereçada a Bob');
+  assert.equal(fraudAck.acknowledged, false);
+  assert.equal(fraudAck.statusCode, 403);
 
   // A mensagem de Bob continua 100% intacta na fila e no banco
   assert.equal(env.pendingMessages.get(PEER_B.toLowerCase()).length, 1);
@@ -478,24 +482,27 @@ test('16. Blindagem de ACK: Terceiro C não consegue confirmar nem remover mensa
 
   // Agora Bob confirma legitimamente
   const legitAck = await env.acknowledge(PEER_B, 'msg_bob_confidential');
-  assert.equal(legitAck, true, 'Bob confirma legitimamente sua própria mensagem');
+  assert.equal(legitAck.success, true, 'Bob confirma legitimamente sua própria mensagem');
+  assert.equal(legitAck.acknowledged, true);
   assert.equal(env.pendingMessages.has(PEER_B.toLowerCase()), false);
   assert.equal(env.dbMessages.find(m => m.id === 'msg_bob_confidential').is_delivered, true);
 });
 
 test('17. Blindagem de ACK: Identidade inválida ou nula é rejeitada imediatamente', async () => {
   const env = setupTestEnvironment({ postgres: true });
-  assert.equal(await env.acknowledge('', 'msg_1'), false);
-  assert.equal(await env.acknowledge(null, 'msg_1'), false);
-  assert.equal(await env.acknowledge('INVALID_CHARS!!', 'msg_1'), false);
-  assert.equal(await env.acknowledge('12345', 'msg_1'), false); // menor que 16 chars hex
-  assert.equal(await env.acknowledge(PEER_B, ''), false);
+  assert.equal((await env.acknowledge('', 'msg_1')).success, false);
+  assert.equal((await env.acknowledge(null, 'msg_1')).success, false);
+  assert.equal((await env.acknowledge('INVALID_CHARS!!', 'msg_1')).success, false);
+  assert.equal((await env.acknowledge('12345', 'msg_1')).success, false);
+  assert.equal((await env.acknowledge(PEER_B, '')).success, false);
 });
 
 test('18. Blindagem de ACK: ACK com identificador inexistente retorna false sem erros', async () => {
   const env = setupTestEnvironment({ postgres: true });
   const result = await env.acknowledge(PEER_B, 'msg_inexistente_9999');
-  assert.equal(result, false);
+  assert.equal(result.success, false);
+  assert.equal(result.acknowledged, false);
+  assert.equal(result.statusCode, 404);
 });
 
 test('19. T03 & T04: Consistência PostgreSQL com 100 mensagens (memória com teto 50, DB retém todas)', async () => {

@@ -1229,6 +1229,21 @@ class PessoasAquiRepository(
                 callRingtoneWakeManager?.notifyIncomingMessageIfBackground("Moderação PessoasAqui", warningMsg)
             }
         }
+        networkClient.onMessageError = { messageId, errorReason ->
+            if (messageId.isNotBlank()) {
+                proximitySimulator.privateChats.value.forEach { (peerKey, msgList) ->
+                    if (msgList.any { it.id == messageId }) {
+                        val cleanPeer = cleanId(peerKey)
+                        proximitySimulator.updateMessageDeliveryStatus(
+                            cleanPeer,
+                            messageId,
+                            br.com.pessoasaqui.domain.model.MessageDeliveryStatus.FAILED
+                        )
+                    }
+                }
+                updateUnifiedData()
+            }
+        }
         networkClient.onAccountBanned = { banMsg ->
             scope.launch {
                 _accountBannedAlert.value = banMsg
