@@ -250,7 +250,7 @@ test('8. Comandos de foto real e vínculos familiares em texto claro: persistido
   assert.equal(res2.persisted, true);
 });
 
-test('9. Compatibilidade com comandos de chamada legados em texto claro [CALL_INIT:] sem flag: classificados como efêmeros', async () => {
+test('9. Chamada legada sem contrato autenticado explícito: preservação durável por segurança (fail-closed)', async () => {
   const env = setupClassificationTestEnv({ postgres: true });
   const receivedWs = [];
   env.activeSockets.set(env.BOB.toLowerCase(), {
@@ -265,9 +265,11 @@ test('9. Compatibilidade com comandos de chamada legados em texto claro [CALL_IN
   );
 
   assert.equal(res.success, true);
-  assert.equal(res.persisted, false, 'Comando em texto claro [CALL_INIT:] é efêmero por compatibilidade');
+  // Sem operation e sem isEphemeral assinados não há como atestar
+  // que o payload legado é uma chamada. Não classificar só por prefixo.
+  assert.equal(res.persisted, true, 'Sem contrato autenticado a entrega deve ser durável');
   assert.equal(receivedWs.length, 1);
-  assert.equal(receivedWs[0].isEphemeral, true);
+  assert.equal(receivedWs[0].isEphemeral, false);
 });
 
 test('10. Anti-flood e rate-limit: mensagem com prefixo call_frame_ sem flag efêmera sofre limite normal de 25/s', async () => {
