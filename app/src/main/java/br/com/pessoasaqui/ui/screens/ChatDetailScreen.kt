@@ -64,6 +64,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -190,6 +191,52 @@ fun uriToValidatedGif(context: android.content.Context, uri: Uri): Pair<String, 
         if (width !in 1..2048 || height !in 1..2048) return null
         Pair(Base64.encodeToString(content, Base64.NO_WRAP), content.size.toLong())
     } catch (_: Exception) { null }
+}
+
+/**
+ * Prévia inline de GIF no Android 9+; usa o decodificador nativo sem
+ * enviar o arquivo a terceiros. Limites de bytes/dimensões evitam
+ * decodificação irrestrita. Aparelhos antigos podem abrir pelo visor externo.
+ */
+@Composable
+private fun InlineAnimatedGifPreview(base64: String?) {
+    if (android.os.Build.VERSION.SDK_INT < 28 || base64.isNullOrBlank()) return
+
+    val drawable by produceState<android.graphics.drawable.Drawable?>(null, base64) {
+        value = withContext(Dispatchers.IO) {
+            try {
+                if (base64.length > 12 * 1024 * 1024) return@withContext null
+                val data = Base64.decode(base64, Base64.DEFAULT)
+                if (data.size !in 10..(8 * 1024 * 1024)) return@withContext null
+                val head = String(data, 0, 6, Charsets.US_ASCII)
+                if (head != "GIF87a" && head != "GIF89a") return@withContext null
+                val source = android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(data))
+                android.graphics.ImageDecoder.decodeDrawable(source) { decoder, info, _ ->
+                    val w = info.size.width
+                    val h = info.size.height
+                    require(w in 1..2048 && h in 1..2048)
+                    val ratio = minOf(240f / w, 240f / h, 1f)
+                    decoder.setTargetSize(maxOf(1, (w * ratio).toInt()), maxOf(1, (h * ratio).toInt()))
+                }
+            } catch (_: Exception) { null }
+        }
+    }
+    drawable?.let { gif ->
+        DisposableEffect(gif) {
+            (gif as? android.graphics.drawable.AnimatedImageDrawable)?.start()
+            onDispose { (gif as? android.graphics.drawable.AnimatedImageDrawable)?.stop() }
+        }
+        AndroidView(
+            factory = { ctx ->
+                android.widget.ImageView(ctx).apply {
+                    scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                    setImageDrawable(gif)
+                }
+            },
+            update = { it.setImageDrawable(gif) },
+            modifier = Modifier.fillMaxWidth().height(190.dp)
+        )
+    }
 }
 
 private fun isSameDay(ts1: Long, ts2: Long): Boolean {
@@ -1526,6 +1573,10 @@ fun ChatDetailScreen(
                                                 .padding(vertical = 2.dp)
                                         ) {
                                             Column(modifier = Modifier.padding(10.dp)) {
+                                                if (fileExt == "GIF") {
+                                                    InlineAnimatedGifPreview(msg.mediaBase64)
+                                                    Spacer(modifier = Modifier.height(6.dp))
+                                                }
                                                 Row(
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
@@ -1578,7 +1629,7 @@ fun ChatDetailScreen(
                                                     modifier = Modifier.fillMaxWidth()
                                                 ) {
                                                     Text(
-                                                        text = "Toque para abrir documento",
+                                                        text = if (fileExt == "GIF") "Toque para abrir GIF" else "Toque para abrir documento",
                                                         style = MaterialTheme.typography.labelSmall.copy(
                                                             color = subTextColor,
                                                             fontWeight = FontWeight.SemiBold,
