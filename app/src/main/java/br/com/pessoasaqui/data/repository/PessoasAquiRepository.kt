@@ -843,6 +843,11 @@ class PessoasAquiRepository(
         } catch (_: Exception) {}
     }
 
+    // Se o blob legado não puder ser decifrado, não substituir nem a cópia
+    // criptografada das preferências nem o espelho em disco por uma lista parcial.
+    // Recuperação dos dados deve ocorrer por fluxo explícito e autenticado.
+    @Volatile private var savedContactsPrefsUnreadable = false
+
     internal fun loadSavedContactsFromPrefs(): List<NearbyPerson> {
         val list = mutableListOf<NearbyPerson>()
 
@@ -858,11 +863,19 @@ class PessoasAquiRepository(
             Log.e("PessoasAqui", "Erro ao carregar contatos de arquivo dedicado", e)
         }
 
-        // 2. Carrega de SharedPreferences se houver com decifração AES-256
-        val rawPref = prefs?.getString("saved_contacts_v2", null)
-        if (!rawPref.isNullOrBlank()) {
-            val jsonStr = diskCrypto.decrypt(rawPref)
-            parseContactsJson(jsonStr, list)
+        // 2. Preferências legadas podem ter chave/envelope incompatível.
+        // Falha fechada: nunca aceitar conteúdo inválido como texto claro,
+        // nem apagar o blob cifrado original; contatos do arquivo dedicado
+        // e histórico legítimo continuam disponíveis.
+        try {
+            val rawPref = prefs?.getString("saved_contacts_v2", null)
+            if (!rawPref.isNullOrBlank()) {
+                val jsonStr = diskCrypto.decrypt(rawPref)
+                parseContactsJson(jsonStr, list)
+            }
+        } catch (e: Exception) {
+            savedContactsPrefsUnreadable = true
+            Log.e("PessoasAqui", "Contatos cifrados legados inacessíveis; preservados para recuperação", e)
         }
 
         // 3. Mescla com contatos que possuem conversas privadas salvas em disco
@@ -902,12 +915,24 @@ class PessoasAquiRepository(
     }
 
     fun saveSavedContactsToPrefs() {
+        // Um erro de leitura nunca pode virar sobrescrita destrutiva de um
+        // backup criptografado antigo. Proteger os dois destinos persistentes.
+        if (savedContactsPrefsUnreadable) {
+            Log.w("PessoasAqui", "Gravação de contatos suspensa: backup cifrado legado requer recuperação")
+            return
+        }
         try {
             val currentList = _realDiscoveredPeople.value.filter {
                 (isPeerPermanent(it.technicalIdentityHash.ifBlank { it.id }) || it.isFamily) && !it.id.startsWith("sim-", ignoreCase = true)
             }
             val existingSaved = loadSavedContactsFromPrefs().filter {
                 !it.id.startsWith("sim-", ignoreCase = true)
+            }
+            // A leitura pode descobrir falha de integridade durante esta mesma
+            // chamada. Não prosseguir com gravações usando conjunto incompleto.
+            if (savedContactsPrefsUnreadable) {
+                Log.w("PessoasAqui", "Gravação cancelada: contatos persistidos não foram decifrados")
+                return
             }
 
             // Mescla apenas contatos que ainda permanecem ativos em savedMutualPeople ou família
