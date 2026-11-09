@@ -111,7 +111,8 @@ class PrivateGifStudio(private val context: Context) {
         finally { retriever.release() }
     }
 
-    private fun decodeSampled(uri: Uri): Bitmap? = try {
+    private fun decodeSampled(uri: Uri): Bitmap? {
+        return try {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
         if (options.outWidth !in 1..8192 || options.outHeight !in 1..8192) return null
@@ -122,6 +123,7 @@ class PrivateGifStudio(private val context: Context) {
         context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
             ?.let { normalize(it) }
     } catch (_: Exception) { null }
+    }
 
     private fun normalize(source: Bitmap): Bitmap {
         val target = Bitmap.createBitmap(FRAME_SIZE, FRAME_SIZE, Bitmap.Config.ARGB_8888)
