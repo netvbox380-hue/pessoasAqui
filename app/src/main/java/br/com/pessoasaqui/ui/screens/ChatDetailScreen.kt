@@ -2187,6 +2187,15 @@ fun ChatDetailScreen(
                         onCreateGifPicturesRequested = { createGifPicturesLauncher.launch("image/*") },
                         onCreateGifVideoRequested = { createGifVideoLauncher.launch("video/*") },
                         onEditGifRequested = { editExistingGifLauncher.launch("image/gif") },
+                        onEditSavedGif = { file ->
+                            scope.launch {
+                                val frames = withContext(Dispatchers.IO) {
+                                    PrivateGifStudio(context).loadSavedGif(file)
+                                }
+                                if (frames.size >= 2) gifEditorFrames = frames
+                                else Toast.makeText(context, "Não foi possível editar o GIF", Toast.LENGTH_SHORT).show()
+                            }
+                        },
                         onSavedGifSelected = { file ->
                             if (!isMutualOrFamily) restrictedFeatureDialog = "Envio de GIFs"
                             else scope.launch(Dispatchers.IO) {
@@ -4037,6 +4046,7 @@ fun EmojiPickerPanel(
     onCreateGifPicturesRequested: () -> Unit = {},
     onCreateGifVideoRequested: () -> Unit = {},
     onEditGifRequested: () -> Unit = {},
+    onEditSavedGif: (java.io.File) -> Unit = {},
     onSavedGifSelected: (java.io.File) -> Unit = {},
     gifCollectionRevision: Int = 0,
     onEditStickerRequested: (String, android.graphics.Bitmap) -> Unit = { _, _ -> },
@@ -4411,16 +4421,19 @@ fun EmojiPickerPanel(
         gifToDelete?.let { file ->
             AlertDialog(
                 onDismissRequest = { gifToDelete = null },
-                title = { Text("Excluir GIF do acervo?", color = TextPrimary) },
-                text = { Text("As mensagens já enviadas não serão modificadas.", color = TextSecondary) },
+                title = { Text("Gerenciar GIF", color = TextPrimary) },
+                text = { Text("Editar ou excluir do acervo local. Mensagens enviadas permanecem intactas.", color = TextSecondary) },
                 confirmButton = {
+                    TextButton(onClick = {
+                        gifToDelete = null
+                        onEditSavedGif(file)
+                    }) { Text("Editar", color = RadarCyan) }
+                },
+                dismissButton = {
                     TextButton(onClick = {
                         if (gifStudio.delete(file)) gifRefreshKey++
                         gifToDelete = null
                     }) { Text("Excluir", color = AlertRed) }
-                },
-                dismissButton = {
-                    TextButton(onClick = { gifToDelete = null }) { Text("Cancelar", color = RadarCyan) }
                 }, containerColor = DarkSurface
             )
         }
