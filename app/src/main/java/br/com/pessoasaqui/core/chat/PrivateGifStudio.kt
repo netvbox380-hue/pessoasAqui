@@ -243,7 +243,7 @@ internal object Gif332Encoder {
                 write(prefix)
                 if (nextCode < 4096) {
                     table[key] = nextCode++
-                    if (nextCode == (1 shl codeSize) && codeSize < 12) codeSize++
+                    if (nextCode > (1 shl codeSize) && codeSize < 12) codeSize++
                 } else {
                     write(clear)
                     table.clear()
