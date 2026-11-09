@@ -82,6 +82,8 @@ class PessoasAquiRepository(
     val radarPausedForBattery: StateFlow<Boolean> = _radarPausedForBattery.asStateFlow()
     @Volatile private var radarRequested = false
     @Volatile private var uiForeground = false
+    @Volatile private var lastVisibilitySyncMs = 0L
+    @Volatile private var lastVisibilityAnnounced: Boolean? = null
     @Volatile private var radarTabVisible = false
     @Volatile private var bleChatScreenOpen = false
     @Volatile private var offersScreenOpen = false
@@ -1957,8 +1959,19 @@ class PessoasAquiRepository(
                         continue
                     }
 
-                    // 1. Envia Heartbeat HTTP para manter a presença viva no Render / Supabase
+                    // 1. Heartbeat de transporte NÃO equivale a app visível.
                     networkClient.sendPresenceHeartbeat(myId, myAlias, myIntent)
+                    // Reconciliar visibilidade também após reinícios da API ou do WS.
+                    val nowVisible = uiForeground
+                    val visibilityNowMs = System.currentTimeMillis()
+                    if (lastVisibilityAnnounced != nowVisible ||
+                        visibilityNowMs - lastVisibilitySyncMs >= 15_000L) {
+                        val visibilityResult = networkClient.sendPresenceVisibility(myId, myAlias, nowVisible)
+                        if (visibilityResult.getOrNull() == true) {
+                            lastVisibilityAnnounced = nowVisible
+                            lastVisibilitySyncMs = System.currentTimeMillis()
+                        }
+                    }
 
                     // 2. Primeiro envia revogações pendentes (pode ter sido solicitado offline).
                     // Nunca repovoar o servidor com vínculos da memória: isso ressuscitava
@@ -2220,6 +2233,7 @@ class PessoasAquiRepository(
     }
 
     internal fun handleRemotePresenceSync(remotePeers: List<RemotePeer>) {
+        val presenceRecordedAt = System.currentTimeMillis()
         val myId = cleanId(cryptoIdentityManager.getTechnicalIdentity())
         val myAlias = _currentAlias.value.trim()
         val current = _realDiscoveredPeople.value.toMutableList()
@@ -2257,7 +2271,9 @@ class PessoasAquiRepository(
                     alias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) existing.alias else p.alias,
                     intent = safeIntent,
                     // A nuvem não comprova proximidade: não renova o relógio BLE.
-                    lastSeenEpochMs = if (lastNativeBleSeenMs.containsKey(cId)) existing.lastSeenEpochMs else System.currentTimeMillis()
+                    lastSeenEpochMs = if (lastNativeBleSeenMs.containsKey(cId)) existing.lastSeenEpochMs else presenceRecordedAt,
+                    isOnline = true,
+                    remotePresenceEpochMs = presenceRecordedAt
                 ))
             } else if (isPeerPermanent(cId)) {
                 // Presença remota de Conexão Mútua comprovada pré-existente
@@ -2274,7 +2290,9 @@ class PessoasAquiRepository(
                         isMarkedByMe = true,
                         isMarkingMe = true,
                         isPhotoVisible = true,
-                        lastSeenEpochMs = System.currentTimeMillis()
+                        lastSeenEpochMs = presenceRecordedAt,
+                        isOnline = true,
+                        remotePresenceEpochMs = presenceRecordedAt
                     ))
                 )
             }
@@ -2287,7 +2305,14 @@ class PessoasAquiRepository(
             cleanId(peer.technicalIdentityHash) != myId
         }
 
-        _realDiscoveredPeople.value = cleanedList
+        // Um snapshot de presença autenticado não contém contatos já offline.
+        // Não remover conexões salvas, apenas apagar seu indicador online.
+        val onlineIds = distinctPeers.map { cleanId(it.identityHash) }.toSet()
+        _realDiscoveredPeople.value = cleanedList.map { peer ->
+            val cid = cleanId(peer.technicalIdentityHash.ifBlank { peer.id })
+            if (peer.isOnline && cid !in onlineIds) peer.copy(isOnline = false)
+            else peer
+        }
         updateUnifiedData()
     }
 
@@ -2321,7 +2346,9 @@ class PessoasAquiRepository(
                 alias = if (existing.alias.isNotBlank() && !existing.alias.startsWith("Pessoa Próxima #")) existing.alias else peer.alias,
                 intent = safeIntent,
                 // Eventos da internet não mantêm artificialmente o Radar ligado.
-                lastSeenEpochMs = if (lastNativeBleSeenMs.containsKey(cId)) existing.lastSeenEpochMs else System.currentTimeMillis()
+                lastSeenEpochMs = if (lastNativeBleSeenMs.containsKey(cId)) existing.lastSeenEpochMs else System.currentTimeMillis(),
+                isOnline = true,
+                remotePresenceEpochMs = System.currentTimeMillis()
             ))
             _realDiscoveredPeople.value = current
             updateUnifiedData()
@@ -2338,7 +2365,9 @@ class PessoasAquiRepository(
                 isMarkedByMe = true,
                 isMarkingMe = true,
                 isPhotoVisible = true,
-                lastSeenEpochMs = System.currentTimeMillis()
+                lastSeenEpochMs = System.currentTimeMillis(),
+                isOnline = true,
+                remotePresenceEpochMs = System.currentTimeMillis()
             ))
             current.add(0, newPeer)
             _realDiscoveredPeople.value = current
@@ -2360,8 +2389,15 @@ class PessoasAquiRepository(
                 true
             }
         }
-        if (current.size != _realDiscoveredPeople.value.size) {
-            _realDiscoveredPeople.value = current
+        // A perda do WS não encerra proximidade BLE nem remove contato mútuo.
+        // Mas PEER_OFFLINE deve tirar imediatamente a bolinha verde.
+        val updated = current.map { peer ->
+            val cid = cleanId(peer.technicalIdentityHash.ifBlank { peer.id })
+            if (cid == cleanPeerHash) peer.copy(isOnline = false)
+            else peer
+        }
+        if (updated != _realDiscoveredPeople.value) {
+            _realDiscoveredPeople.value = updated
             updateUnifiedData()
         }
     }
@@ -2640,6 +2676,22 @@ class PessoasAquiRepository(
 
     /** Recupera descoberta ao voltar ao app, sem forçar reinício do GATT ativo. */
     fun setBleAppForeground(visible: Boolean) {
+        // Status visual do app é separado do transporte em background:
+        // não fechar socket, não interromper fila E2EE nem chamadas.
+        scope.launch {
+            try {
+                val myId = cryptoIdentityManager.getTechnicalIdentity()
+                if (myId.isNotBlank()) {
+                    val ok = networkClient.sendPresenceVisibility(myId, _currentAlias.value, visible)
+                    if (ok.getOrNull() == true && uiForeground == visible) {
+                        lastVisibilityAnnounced = visible
+                        lastVisibilitySyncMs = System.currentTimeMillis()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("PessoasAqui", "Aviso de visibilidade: ${e.message}")
+            }
+        }
         synchronized(radarPauseLock) {
             uiForeground = visible
             // Um deep link de chat temporário pode chegar antes do onStart.
