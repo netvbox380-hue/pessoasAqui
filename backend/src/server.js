@@ -991,6 +991,9 @@ wss.on('connection', (ws, req) => {
         }
 
         activePresence.set(kAuth, {
+          // Aparência Online é independente do transporte de mensagens E2EE.
+          // Em reconexões WS não ressuscitar visibilidade explicitamente desativada.
+          visible: activePresence.get(kAuth)?.visible !== false,
           identityHash: authenticatedIdentity,
           alias: incomingAlias,
           intent: msg.intent || 'QUERO_CONVERSAR',
@@ -1057,7 +1060,7 @@ wss.on('connection', (ws, req) => {
         const existingPeers = Array.from(activePresence.values())
           .filter(p => keyId(p.identityHash) !== kAuth &&
                        (!p.alias || !incomingAlias || p.alias.toLowerCase() !== incomingAlias.toLowerCase()) &&
-                       (now - p.lastSeen < 120000));
+                       p.visible !== false && (now - p.lastSeen < 120000));
 
         const enrichedPeers = await Promise.all(existingPeers.map(async (p) => {
           const status = await getConnectionStatus(authenticatedIdentity, p.identityHash);
@@ -1078,7 +1081,7 @@ wss.on('connection', (ws, req) => {
         for (const [targetKey, client] of activeSockets.entries()) {
           if (client !== ws && client.readyState === WebSocket.OPEN) {
             const status = await getConnectionStatus(authenticatedIdentity, targetKey);
-            if (status.isMutual) {
+            if (status.isMutual && peerData?.visible !== false) {
               client.send(JSON.stringify({ type: 'PEER_ONLINE', peer: { ...peerData, isMutual: true } }));
             }
           }
@@ -1377,14 +1380,54 @@ app.post('/api/presence/heartbeat', async (req, res) => {
     }
   }
 
+  // HTTP heartbeat mantém filas/mensagens; não torna a UI Online se o
+  // Android explicitamente informou que sua atividade saiu de primeiro plano.
+  const previousVisibility = activePresence.get(kId)?.visible !== false;
   activePresence.set(kId, {
     identityHash: cleanIdentity,
     alias: cleanAlias,
     intent: intent || 'QUERO_CONVERSAR',
+    visible: previousVisibility,
     lastSeen: Date.now()
   });
 
   res.json({ success: true, activePresenceCount: activePresence.size });
+});
+
+/**
+ * Estado visual de atividade do app, autenticado por prova de posse.
+ * Não fecha WebSocket, não apaga presença de transporte e não mexe no E2EE.
+ * Um cliente antigo que não conhece a rota continua seguindo o legado.
+ */
+app.post('/api/presence/visibility', async (req, res) => {
+  const identity = cleanId(req.body?.identityHash);
+  const visibility = req.body?.visible;
+  if (!identity || typeof visibility !== 'boolean') {
+    return res.status(400).json({ error: 'Identidade e visibilidade obrigatórias.' });
+  }
+  const alias = String(req.body?.alias || '').trim().slice(0, 64);
+  if (!await verifySignedHttp(req, res, 'PRESENCE_VISIBILITY', identity, alias,
+       digestHttpParts([String(visibility)]))) return;
+  const key = keyId(identity);
+  const entry = activePresence.get(key);
+  // Não ressuscitar sessão inexistente apenas com um comando de visibilidade.
+  if (!entry) return res.json({ success: true, visible: false });
+  if (entry.visible === visibility) return res.json({ success: true, visible: visibility });
+  entry.visible = visibility;
+  if (visibility) entry.lastSeen = Date.now();
+  for (const [peerId, client] of activeSockets.entries()) {
+    if (peerId === key || client.readyState !== WebSocket.OPEN) continue;
+    try {
+      const relationship = await getConnectionStatus(identity, peerId);
+      if (!relationship.isMutual) continue;
+      client.send(JSON.stringify(visibility
+        ? { type: 'PEER_ONLINE', peer: { ...entry, isMutual: true } }
+        : { type: 'PEER_OFFLINE', identityHash: identity }));
+    } catch (err) {
+      console.warn('[Presence] Falha na publicação de visibilidade:', err.message);
+    }
+  }
+  res.json({ success: true, visible: visibility });
 });
 
 /**
@@ -1401,7 +1444,7 @@ app.post('/api/presence/nearby', async (req, res) => {
   const peers = Array.from(activePresence.values())
     .filter(p => keyId(p.identityHash) !== kMyHash &&
                  (!myAlias || !p.alias || p.alias.trim().toLowerCase() !== myAlias) &&
-                 (now - p.lastSeen < 120000));
+                 p.visible !== false && (now - p.lastSeen < 120000));
 
   if (myHash) {
     const enriched = await Promise.all(peers.map(async (p) => {
