@@ -134,8 +134,16 @@ class PrivateGifStudio(private val context: Context) {
                 ?.toLongOrNull() ?: return emptyList()
             if (duration !in 200..15_000) return emptyList()
             (0 until 12).mapNotNull { i ->
-                retriever.getFrameAtTime(i * duration * 1000L / 12L, MediaMetadataRetriever.OPTION_CLOSEST)
-                    ?.let { normalize(it) }
+                val at = i * duration * 1000L / 12L
+                val source = if (android.os.Build.VERSION.SDK_INT >= 27) {
+                    retriever.getScaledFrameAtTime(at, MediaMetadataRetriever.OPTION_CLOSEST,
+                        FRAME_SIZE, FRAME_SIZE)
+                } else {
+                    retriever.getFrameAtTime(at, MediaMetadataRetriever.OPTION_CLOSEST)
+                }
+                source?.let { bitmap ->
+                    try { normalize(bitmap) } finally { bitmap.recycle() }
+                }
             }
         } catch (_: Exception) { emptyList() }
         finally { retriever.release() }
