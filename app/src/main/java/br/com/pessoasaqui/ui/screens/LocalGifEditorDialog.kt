@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -15,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -34,6 +37,7 @@ fun LocalGifEditorDialog(
 ) {
     val context = LocalContext.current
     val studio = remember(context) { PrivateGifStudio(context) }
+    val maxHeight = LocalConfiguration.current.screenHeightDp.dp * 0.86f
     val scope = rememberCoroutineScope()
     val frames = remember(initialFrames) { mutableStateListOf<Bitmap>().apply { addAll(initialFrames.take(PrivateGifStudio.MAX_FRAMES)) } }
     var selected by remember { mutableIntStateOf(0) }
@@ -52,7 +56,7 @@ fun LocalGifEditorDialog(
 
     Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
         Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
-            Column(modifier = Modifier.fillMaxWidth().padding(14.dp),
+            Column(modifier = Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState()).padding(14.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(9.dp)) {
                 Text("🎞️ Criar GIF animado", style = MaterialTheme.typography.titleMedium)
