@@ -35,6 +35,25 @@ class PrivateGifStudio(private val context: Context) {
         ?.filter { VALID_NAME.matches(it.name) && it.length() in 14..MAX_GIF_BYTES.toLong() }
         ?.sortedByDescending { it.lastModified() }?.take(MAX_LIBRARY) ?: emptyList()
 
+    /** Quadro inicial para a grade; renderização local, limitada e sem carregar o GIF inteiro na UI. */
+    fun thumbnail(file: File): Bitmap? = try {
+        if (file.parentFile?.canonicalPath != directory.canonicalPath ||
+            !VALID_NAME.matches(file.name) || file.length() !in 14..MAX_GIF_BYTES.toLong()) return null
+        val bytes = file.readBytes()
+        if (!isGif(bytes)) return null
+        val movie = Movie.decodeByteArray(bytes, 0, bytes.size) ?: return null
+        if (movie.width() !in 1..2048 || movie.height() !in 1..2048) return null
+        val bmp = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+        val ratio = minOf(96f / movie.width(), 96f / movie.height())
+        canvas.translate((96 - movie.width() * ratio) / 2f, (96 - movie.height() * ratio) / 2f)
+        canvas.scale(ratio, ratio)
+        movie.setTime(0)
+        movie.draw(canvas, 0f, 0f)
+        bmp
+    } catch (_: Exception) { null }
+
     fun delete(file: File): Boolean =
         file.parentFile?.canonicalPath == directory.canonicalPath && VALID_NAME.matches(file.name) && file.delete()
 
@@ -104,7 +123,7 @@ class PrivateGifStudio(private val context: Context) {
                 ?.toLongOrNull() ?: return emptyList()
             if (duration !in 200..15_000) return emptyList()
             (0 until 12).mapNotNull { i ->
-                retriever.getFrameAtTime(i * duration * 1000L / 12L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                retriever.getFrameAtTime(i * duration * 1000L / 12L, MediaMetadataRetriever.OPTION_CLOSEST)
                     ?.let { normalize(it) }
             }
         } catch (_: Exception) { emptyList() }
