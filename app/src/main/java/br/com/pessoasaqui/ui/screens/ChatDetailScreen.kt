@@ -863,7 +863,19 @@ fun ChatDetailScreen(
                                     }
                                 )
                             )
-                            val isOnline = person.isOnlineNow
+                            // Presença do app, não proximidade BLE nem vínculo mútuo:
+                            // apenas uma confirmação remota recente pode mostrar Online.
+                            var presenceClock by remember { mutableLongStateOf(System.currentTimeMillis()) }
+                            LaunchedEffect(Unit) {
+                                while (true) {
+                                    delay(5_000L)
+                                    presenceClock = System.currentTimeMillis()
+                                }
+                            }
+                            val remoteFresh = person.remotePresenceEpochMs > 0L &&
+                                presenceClock >= person.remotePresenceEpochMs &&
+                                presenceClock - person.remotePresenceEpochMs < 30_000L
+                            val isOnline = person.isOnline && remoteFresh
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(
                                     modifier = Modifier
@@ -873,7 +885,9 @@ fun ChatDetailScreen(
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = if (isOnline) "Online" else "Offline • Visto ${formatLastSeen(person.lastSeenEpochMs)}",
+                                    text = if (isOnline) "Online" else if (person.remotePresenceEpochMs > 0L)
+                                        "Offline • Visto ${formatLastSeen(person.remotePresenceEpochMs)}"
+                                    else "Offline",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         color = if (isOnline) EmeraldGreen else TextSecondary,
                                         fontSize = 10.sp,
