@@ -520,7 +520,15 @@ fun ImageEditorDialog(
             modifier = Modifier.fillMaxSize(),
             color = Color.Black
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            // Reserve the gesture/navigation inset at the dialog root so that
+            // the bottom labels remain inside the visible window on Samsung/One UI.
+            // A small fixed clearance also covers devices reporting zero nav inset.
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .navigationBarsPadding()
+                    .padding(bottom = 16.dp)
+            ) {
                 // ==========================================
                 // 1. BARRA SUPERIOR
                 // ==========================================
@@ -1004,8 +1012,7 @@ fun ImageEditorDialog(
                     color = Color.Black.copy(alpha = 0.94f),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(bottom = 12.dp)
+                        .padding(bottom = 8.dp)
                 ) {
                     if (isCropping) {
                         // Painel de Corte
