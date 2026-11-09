@@ -847,6 +847,7 @@ class PessoasAquiRepository(
     // criptografada das preferências nem o espelho em disco por uma lista parcial.
     // Recuperação dos dados deve ocorrer por fluxo explícito e autenticado.
     @Volatile private var savedContactsPrefsUnreadable = false
+    @Volatile private var savedContactsFileUnreadable = false
 
     internal fun loadSavedContactsFromPrefs(): List<NearbyPerson> {
         val list = mutableListOf<NearbyPerson>()
@@ -860,7 +861,8 @@ class PessoasAquiRepository(
                 parseContactsJson(jsonStr, list)
             }
         } catch (e: Exception) {
-            Log.e("PessoasAqui", "Erro ao carregar contatos de arquivo dedicado", e)
+            savedContactsFileUnreadable = true
+            Log.e("PessoasAqui", "Arquivo cifrado de contatos inacessível; mantido intacto", e)
         }
 
         // 2. Preferências legadas podem ter chave/envelope incompatível.
@@ -917,8 +919,8 @@ class PessoasAquiRepository(
     fun saveSavedContactsToPrefs() {
         // Um erro de leitura nunca pode virar sobrescrita destrutiva de um
         // backup criptografado antigo. Proteger os dois destinos persistentes.
-        if (savedContactsPrefsUnreadable) {
-            Log.w("PessoasAqui", "Gravação de contatos suspensa: backup cifrado legado requer recuperação")
+        if (savedContactsPrefsUnreadable || savedContactsFileUnreadable) {
+            Log.w("PessoasAqui", "Gravação de contatos suspensa: armazenamento cifrado requer recuperação")
             return
         }
         try {
@@ -930,7 +932,7 @@ class PessoasAquiRepository(
             }
             // A leitura pode descobrir falha de integridade durante esta mesma
             // chamada. Não prosseguir com gravações usando conjunto incompleto.
-            if (savedContactsPrefsUnreadable) {
+            if (savedContactsPrefsUnreadable || savedContactsFileUnreadable) {
                 Log.w("PessoasAqui", "Gravação cancelada: contatos persistidos não foram decifrados")
                 return
             }
