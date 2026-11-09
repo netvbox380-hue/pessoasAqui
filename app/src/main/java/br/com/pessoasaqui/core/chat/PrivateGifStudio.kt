@@ -89,8 +89,17 @@ class PrivateGifStudio(private val context: Context) {
     fun loadPictures(uris: List<Uri>): List<Bitmap> =
         uris.take(MAX_FRAMES).mapNotNull { uri -> decodeSampled(uri) }
 
-    fun loadGif(uri: Uri): List<Bitmap> {
-        val bytes = readBounded(uri, MAX_GIF_BYTES) ?: return emptyList()
+    fun loadGif(uri: Uri): List<Bitmap> =
+        readBounded(uri, MAX_GIF_BYTES)?.let { decodeGif(it) } ?: emptyList()
+
+    fun loadSavedGif(file: File): List<Bitmap> {
+        if (file.parentFile?.canonicalPath != directory.canonicalPath ||
+            !VALID_NAME.matches(file.name) || file.length() !in 14..MAX_GIF_BYTES.toLong()
+        ) return emptyList()
+        return decodeGif(file.readBytes())
+    }
+
+    private fun decodeGif(bytes: ByteArray): List<Bitmap> {
         if (!isGif(bytes)) return emptyList()
         val movie = Movie.decodeByteArray(bytes, 0, bytes.size) ?: return emptyList()
         if (movie.width() !in 1..2048 || movie.height() !in 1..2048) return emptyList()
