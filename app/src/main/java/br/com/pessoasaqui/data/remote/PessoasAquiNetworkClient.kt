@@ -883,6 +883,38 @@ open class PessoasAquiNetworkClient(
     }
 
     /**
+     * Presença visual separada da conexão WS: fechar a interface não cancela
+     * mensagens pendentes, chamadas ou processamento E2EE em segundo plano.
+     */
+    suspend fun sendPresenceVisibility(identityHash: String, alias: String, visible: Boolean): Result<Boolean> =
+        withContext(Dispatchers.IO) {
+            try {
+                val safeAlias = alias.trim().take(64)
+                val json = JSONObject().apply {
+                    put("identityHash", identityHash)
+                    put("alias", safeAlias)
+                    put("visible", visible)
+                    put("identityProof", signedHttpProof(
+                        "PRESENCE_VISIBILITY", identityHash, safeAlias,
+                        br.com.pessoasaqui.core.crypto.InviteIdentityProof.digestParts(visible.toString())
+                    ))
+                }
+                val request = Request.Builder()
+                    .url("$baseUrl/api/presence/visibility")
+                    .post(json.toString().toRequestBody(jsonMediaType))
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        return@withContext Result.failure(IOException("Visibilidade: HTTP ${response.code}"))
+                    }
+                    Result.success(JSONObject(response.body?.string() ?: "{}").optBoolean("success"))
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    /**
      * Busca usuários ativos recentemente no radar via API REST
      */
     suspend fun fetchNearbyPresence(myIdentity: String, myAlias: String = ""): Result<List<RemotePeer>> = withContext(Dispatchers.IO) {
