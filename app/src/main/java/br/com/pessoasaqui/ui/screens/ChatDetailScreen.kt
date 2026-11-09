@@ -14,6 +14,7 @@ import br.com.pessoasaqui.core.media.VoiceNoteManager
 import br.com.pessoasaqui.core.media.DocumentViewerHelper
 import br.com.pessoasaqui.core.media.ImageSearchHelper
 import br.com.pessoasaqui.core.chat.StickerPersistenceManager
+import br.com.pessoasaqui.core.chat.PrivateGifStudio
 import br.com.pessoasaqui.core.chat.SafeChatImageDecoder
 import br.com.pessoasaqui.core.link.WebLinkPolicy
 import kotlinx.coroutines.withContext
@@ -516,6 +517,8 @@ fun ChatDetailScreen(
     var stickerBitmapToCreate by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var editingStickerId by remember { mutableStateOf<String?>(null) }
     var stickerCollectionRevision by remember { mutableIntStateOf(0) }
+    var gifCollectionRevision by remember { mutableIntStateOf(0) }
+    var gifEditorFrames by remember { mutableStateOf<List<android.graphics.Bitmap>?>(null) }
 
     val createStickerPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -641,6 +644,35 @@ fun ChatDetailScreen(
                     }
                 }
             }
+        }
+    }
+
+    // Importação e edição são locais; nenhuma imagem ou vídeo sai do aparelho.
+    val createGifPicturesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) scope.launch {
+            val frames = withContext(Dispatchers.IO) { PrivateGifStudio(context).loadPictures(uris) }
+            if (frames.size >= 2) gifEditorFrames = frames
+            else Toast.makeText(context, "Escolha pelo menos duas imagens válidas", Toast.LENGTH_LONG).show()
+        }
+    }
+    val createGifVideoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            val frames = withContext(Dispatchers.IO) { PrivateGifStudio(context).loadVideo(uri) }
+            if (frames.size >= 2) gifEditorFrames = frames
+            else Toast.makeText(context, "Escolha um vídeo válido de até 15 segundos e 40 MB", Toast.LENGTH_LONG).show()
+        }
+    }
+    val editExistingGifLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            val frames = withContext(Dispatchers.IO) { PrivateGifStudio(context).loadGif(uri) }
+            if (frames.size >= 2) gifEditorFrames = frames
+            else Toast.makeText(context, "GIF inválido ou incompatível (máximo 8 MB)", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2152,6 +2184,20 @@ fun ChatDetailScreen(
                         onCreateStickerRequested = {
                             createStickerPickerLauncher.launch("image/*")
                         },
+                        onCreateGifPicturesRequested = { createGifPicturesLauncher.launch("image/*") },
+                        onCreateGifVideoRequested = { createGifVideoLauncher.launch("video/*") },
+                        onEditGifRequested = { editExistingGifLauncher.launch("image/gif") },
+                        onSavedGifSelected = { file ->
+                            if (!isMutualOrFamily) restrictedFeatureDialog = "Envio de GIFs"
+                            else scope.launch(Dispatchers.IO) {
+                                val payload = PrivateGifStudio(context).payload(file)
+                                if (payload != null) onSendDocumentMessage(person, "animacao.gif", payload.first, payload.second)
+                                else withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "GIF indisponível", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        gifCollectionRevision = gifCollectionRevision,
                         onChooseGifRequested = {
                             if (isMutualOrFamily) gifPickerLauncher.launch("image/gif")
                             else restrictedFeatureDialog = "Envio de GIFs"
@@ -2178,6 +2224,17 @@ fun ChatDetailScreen(
                     )
                 }
             }
+        }
+
+        gifEditorFrames?.let { frames ->
+            LocalGifEditorDialog(
+                initialFrames = frames,
+                onDismiss = { gifEditorFrames = null },
+                onSaved = {
+                    gifCollectionRevision++
+                    gifEditorFrames = null
+                }
+            )
         }
 
         // Gaveta de Recursos (Fotos, Documentos, Lembretes, Transmissão)
@@ -3977,6 +4034,11 @@ fun EmojiPickerPanel(
     onStickerSelected: (String) -> Unit = {},
     onCreateStickerRequested: () -> Unit = {},
     onChooseGifRequested: () -> Unit = {},
+    onCreateGifPicturesRequested: () -> Unit = {},
+    onCreateGifVideoRequested: () -> Unit = {},
+    onEditGifRequested: () -> Unit = {},
+    onSavedGifSelected: (java.io.File) -> Unit = {},
+    gifCollectionRevision: Int = 0,
     onEditStickerRequested: (String, android.graphics.Bitmap) -> Unit = { _, _ -> },
     stickerCollectionRevision: Int = 0,
     onBackspace: () -> Unit,
@@ -3985,9 +4047,19 @@ fun EmojiPickerPanel(
 ) {
     val context = LocalContext.current
     val manager = remember(context) { StickerPersistenceManager(context) }
+    val gifStudio = remember(context) { PrivateGifStudio(context) }
+    var gifRefreshKey by remember { mutableIntStateOf(0) }
+    var gifToDelete by remember { mutableStateOf<java.io.File?>(null) }
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
     val panelHeight = (screenHeight * 0.50f).coerceIn(265.dp, 520.dp)
     var selectedCategory by remember { mutableIntStateOf(0) }
+    val personalGifs by produceState<List<java.io.File>>(
+        initialValue = emptyList(), selectedCategory, gifRefreshKey, gifCollectionRevision
+    ) {
+        value = if (selectedCategory == 6) {
+            withContext(Dispatchers.IO) { gifStudio.list() }
+        } else emptyList()
+    }
     var stickersRefreshKey by remember { mutableIntStateOf(0) }
     var stickerToManage by remember { mutableStateOf<Pair<String, android.graphics.Bitmap>?>(null) }
     var stickerToDelete by remember { mutableStateOf<String?>(null) }
@@ -4155,31 +4227,37 @@ fun EmojiPickerPanel(
             }
 
             if (selectedCategory == 6) {
-                // Não converter GIF para imagem estática: o fluxo de arquivos
-                // existente preserva a animação e a criptografia E2EE.
-                Column(
-                    modifier = Modifier.fillMaxSize().padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text("🎞️ GIFs animados", color = TextPrimary, fontWeight = FontWeight.Bold)
-                    Text(
-                        "Selecione um GIF do aparelho para enviá-lo como arquivo animado e criptografado.",
-                        color = TextSecondary,
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Button(onClick = onChooseGifRequested) {
-                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Escolher GIF do aparelho")
+                Column(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text("🎞️ Meus GIFs animados (${personalGifs.size})",
+                        color = TextPrimary, fontWeight = FontWeight.Bold)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        item { TextButton(onClick = onCreateGifPicturesRequested) { Text("+ Fotos") } }
+                        item { TextButton(onClick = onCreateGifVideoRequested) { Text("+ Vídeo") } }
+                        item { TextButton(onClick = onEditGifRequested) { Text("Editar GIF") } }
+                        item { TextButton(onClick = onChooseGifRequested) { Text("Enviar arquivo") } }
                     }
-                    Text(
-                        "Galeria de GIFs e editor de animações: em preparação.",
-                        color = TextSecondary,
-                        style = MaterialTheme.typography.labelSmall,
-                        textAlign = TextAlign.Center
-                    )
+                    Text("Crie animações no aparelho. Toque para enviar; segure para excluir.",
+                        color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+                    LazyVerticalGrid(columns = GridCells.Adaptive(88.dp),
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(personalGifs, key = { it.name }) { file ->
+                            Surface(shape = RoundedCornerShape(12.dp),
+                                color = DarkCardElevated,
+                                modifier = Modifier.size(88.dp).combinedClickable(
+                                    onClick = { onSavedGifSelected(file) },
+                                    onLongClick = { gifToDelete = file }
+                                )) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center) {
+                                    Text("🎞️", fontSize = 27.sp)
+                                    Text("GIF", color = RadarCyan, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
                 }
             } else if (selectedCategory == 5) {
                 // Aba de Figurinhas (Stickers)
@@ -4318,6 +4396,22 @@ fun EmojiPickerPanel(
                     }) { Text("Excluir", color = AlertRed) }
                 },
                 containerColor = DarkSurface
+            )
+        }
+        gifToDelete?.let { file ->
+            AlertDialog(
+                onDismissRequest = { gifToDelete = null },
+                title = { Text("Excluir GIF do acervo?", color = TextPrimary) },
+                text = { Text("As mensagens já enviadas não serão modificadas.", color = TextSecondary) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        if (gifStudio.delete(file)) gifRefreshKey++
+                        gifToDelete = null
+                    }) { Text("Excluir", color = AlertRed) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { gifToDelete = null }) { Text("Cancelar", color = RadarCyan) }
+                }, containerColor = DarkSurface
             )
         }
         stickerToDelete?.let { id ->
