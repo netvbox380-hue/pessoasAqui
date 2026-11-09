@@ -4250,9 +4250,19 @@ fun EmojiPickerPanel(
                                     onClick = { onSavedGifSelected(file) },
                                     onLongClick = { gifToDelete = file }
                                 )) {
+                                val thumbnail by produceState<android.graphics.Bitmap?>(null, file, gifRefreshKey) {
+                                    value = withContext(Dispatchers.IO) { gifStudio.thumbnail(file) }
+                                }
                                 Column(horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center) {
-                                    Text("🎞️", fontSize = 27.sp)
+                                    if (thumbnail != null) {
+                                        Image(bitmap = thumbnail!!.asImageBitmap(),
+                                            contentDescription = "Prévia do GIF",
+                                            contentScale = ContentScale.Fit,
+                                            modifier = Modifier.size(68.dp))
+                                    } else {
+                                        Text("🎞️", fontSize = 27.sp)
+                                    }
                                     Text("GIF", color = RadarCyan, fontSize = 12.sp)
                                 }
                             }
