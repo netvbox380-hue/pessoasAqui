@@ -62,7 +62,9 @@ data class NearbyPerson(
     val lastSeenEpochMs: Long = System.currentTimeMillis(),
     val hasPendingFamilyRequest: Boolean = false,
     val pendingFamilyRole: FamilyRole? = null,
-    val isOnline: Boolean = false
+    val isOnline: Boolean = false,
+    /** Última confirmação remota; separada do relógio BLE de proximidade. */
+    val remotePresenceEpochMs: Long = 0L
 ) {
     val isOnlineNow: Boolean get() = isOnline || (System.currentTimeMillis() - lastSeenEpochMs) < 60_000L
 }
