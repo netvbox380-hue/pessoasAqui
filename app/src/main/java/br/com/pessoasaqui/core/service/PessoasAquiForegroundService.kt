@@ -49,12 +49,20 @@ class PessoasAquiForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureServiceChannel()
-        startForegroundCompat()
-        startReminderTicker()
+        if (startForegroundCompat()) {
+            startReminderTicker()
+        } else {
+            // Um startForegroundService que não alcança foreground pode matar
+            // o processo inteiro por timeout no Android 14+. Encerrar o serviço.
+            stopSelf()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForegroundCompat()
+        if (!startForegroundCompat()) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         startReminderTicker()
         // Garante que o repositório singleton esteja inicializado
         (application as? PessoasAquiApp)?.repository
@@ -100,8 +108,8 @@ class PessoasAquiForegroundService : Service() {
         }
     }
 
-    private fun startForegroundCompat() {
-        try {
+    private fun startForegroundCompat(): Boolean {
+        return try {
             val openIntent = Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP or
@@ -142,8 +150,12 @@ class PessoasAquiForegroundService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            true
         } catch (e: Exception) {
-            Log.w(TAG, "Erro em startForegroundCompat: ${e.message}")
+            // Não mascarar falha de promoção com um serviço START_STICKY:
+            // isso podia desencadear ForegroundServiceDidNotStartInTimeException.
+            Log.w(TAG, "Falha ao promover serviço para primeiro plano; encerrando serviço", e)
+            false
         }
     }
 
