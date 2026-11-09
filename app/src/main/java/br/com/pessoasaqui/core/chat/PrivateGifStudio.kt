@@ -36,7 +36,8 @@ class PrivateGifStudio(private val context: Context) {
         ?.sortedByDescending { it.lastModified() }?.take(MAX_LIBRARY) ?: emptyList()
 
     /** Quadro inicial para a grade; renderização local, limitada e sem carregar o GIF inteiro na UI. */
-    fun thumbnail(file: File): Bitmap? = try {
+    fun thumbnail(file: File): Bitmap? {
+        return try {
         if (file.parentFile?.canonicalPath != directory.canonicalPath ||
             !VALID_NAME.matches(file.name) || file.length() !in 14..MAX_GIF_BYTES.toLong()) return null
         val bytes = file.readBytes()
@@ -53,6 +54,7 @@ class PrivateGifStudio(private val context: Context) {
         movie.draw(canvas, 0f, 0f)
         bmp
     } catch (_: Exception) { null }
+    }
 
     fun delete(file: File): Boolean =
         file.parentFile?.canonicalPath == directory.canonicalPath && VALID_NAME.matches(file.name) && file.delete()
@@ -166,7 +168,8 @@ class PrivateGifStudio(private val context: Context) {
         return target
     }
 
-    private fun readBounded(uri: Uri, limit: Int): ByteArray? = try {
+    private fun readBounded(uri: Uri, limit: Int): ByteArray? {
+        return try {
         val out = ByteArrayOutputStream()
         context.contentResolver.openInputStream(uri)?.use { input ->
             val buffer = ByteArray(8192)
@@ -179,6 +182,7 @@ class PrivateGifStudio(private val context: Context) {
         } ?: return null
         out.toByteArray()
     } catch (_: Exception) { null }
+    }
 
     private fun isGif(bytes: ByteArray): Boolean =
         bytes.size >= 14 && (String(bytes, 0, 6, Charsets.US_ASCII) == "GIF89a" ||
