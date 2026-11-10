@@ -142,179 +142,16 @@ fun CallOverlayDialog(
             val endCallBtnSize = if (isCompactScreen) 62.dp else 68.dp
             val btnIconSize = if (isCompactScreen) 24.dp else 28.dp
 
-            Column(
+            // A janela fullscreen recebe os insets no BoxWithConstraints acima.
+            // O Scaffold organiza os controles em uma barra independente do corpo.
+            // Insets zerados apenas aqui para não duplicar os já consumidos pelo pai.
+            Scaffold(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 20.dp, vertical = if (isCompactScreen) 6.dp else 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                // ================= TOPO: BADGE CRIPTOGRAFIA E2EE =================
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = DarkCardElevated.copy(alpha = 0.85f),
-                    modifier = Modifier.padding(top = if (isCompactScreen) 4.dp else 10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = null,
-                            tint = EmeraldGreen,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Chamada Criptografada Ponta a Ponta (E2EE)",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                color = EmeraldGreen,
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(centerSpacing))
-
-                // ================= CORPO CENTRAL: AVATAR / VÍDEO / NOME / STATUS =================
-                val callRoleColor = if (callState.isIncoming) AlertRed else EmeraldGreen
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    // Só o conteúdo central rola; atender/recusar ficam sempre
-                    // dentro da área segura, mesmo com fonte grande ou 3 botões.
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    // Avatar com pulso animado se estiver chamando
-                    Box(
-                        modifier = Modifier
-                            .size(avatarSize)
-                            .scale(if (!callState.isConnected) pulseScale else 1f)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.linearGradient(
-                                    colors = listOf(callRoleColor.copy(alpha = 0.35f), FamilyPurple.copy(alpha = 0.35f))
-                                )
-                            )
-                            .border(3.dp, if (callState.isConnected) EmeraldGreen else callRoleColor, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = callState.peerAlias.take(1).uppercase(),
-                            style = MaterialTheme.typography.headlineLarge.copy(
-                                fontWeight = FontWeight.ExtraBold,
-                                color = TextPrimary,
-                                fontSize = avatarFontSize
-                            )
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(if (isCompactScreen) 12.dp else 18.dp))
-
-                    Text(
-                        text = callState.peerAlias,
-                        style = MaterialTheme.typography.headlineSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = TextPrimary
-                        ),
-                        textAlign = TextAlign.Center
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Text(
-                        text = when {
-                            callState.isConnected -> "Conectado • $formattedDuration"
-                            callState.isIncoming -> "Chamada de ${if (callState.isVideo) "Vídeo" else "Voz"} Recebida..."
-                            else -> "Chamando ${if (callState.isVideo) "(Vídeo)" else "(Voz)"}..."
-                        },
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            color = if (callState.isConnected) EmeraldGreen else callRoleColor,
-                            fontWeight = FontWeight.Medium
-                        ),
-                        textAlign = TextAlign.Center
-                    )
-
-                    // Se for chamada de vídeo conectada, exibe container de vídeo responsivo
-                    if (callState.isVideo && callState.isConnected) {
-                        Spacer(modifier = Modifier.height(14.dp))
-                        val remoteBitmap = remember(callState.remoteVideoFrameBase64) {
-                            try {
-                                if (!callState.remoteVideoFrameBase64.isNullOrBlank()) {
-                                    val decoded = Base64.decode(callState.remoteVideoFrameBase64, Base64.DEFAULT)
-                                    BitmapFactory.decodeByteArray(decoded, 0, decoded.size)?.asImageBitmap()
-                                } else null
-                            } catch (_: Exception) { null }
-                        }
-
-                        val videoHeight = if (isCompactScreen) 160.dp else 220.dp
-
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(videoHeight)
-                                .clip(RoundedCornerShape(16.dp))
-                                .border(1.dp, RadarCyan.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
-                            color = DarkCard
-                        ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (remoteBitmap != null) {
-                                    Image(
-                                        bitmap = remoteBitmap,
-                                        contentDescription = "Vídeo de ${callState.peerAlias}",
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Crop
-                                    )
-                                    Surface(
-                                        color = DeepBlack.copy(alpha = 0.65f),
-                                        shape = RoundedCornerShape(8.dp),
-                                        modifier = Modifier
-                                            .align(Alignment.BottomStart)
-                                            .padding(8.dp)
-                                    ) {
-                                        Text(
-                                            text = "● Ao Vivo • ${callState.peerAlias}",
-                                            style = MaterialTheme.typography.labelSmall.copy(color = EmeraldGreen),
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                } else if (callState.isCameraOn) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Icon(
-                                            imageVector = Icons.Default.Videocam,
-                                            contentDescription = null,
-                                            tint = RadarCyan,
-                                            modifier = Modifier.size(38.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            text = "Câmera ativa • Conectando transmissão segura...",
-                                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary),
-                                            textAlign = TextAlign.Center
-                                        )
-                                    }
-                                } else {
-                                    Text(
-                                        text = "Câmera desativada",
-                                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(centerSpacing))
-
+                containerColor = Color.Transparent,
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                bottomBar = {
                 // Os controles ficam fixos após o conteúdo rolável. A proteção
                 // contra barras do sistema e gestos vem de WindowInsets.safeContent
                 // no contêiner, sem espaçamentos fixos de compensação por fabricante.
@@ -460,6 +297,178 @@ fun CallOverlayDialog(
                             }
                         }
                     }
+                }
+                }
+            ) { innerPadding ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                // ================= TOPO: BADGE CRIPTOGRAFIA E2EE =================
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = DarkCardElevated.copy(alpha = 0.85f),
+                    modifier = Modifier.padding(top = if (isCompactScreen) 4.dp else 10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = null,
+                            tint = EmeraldGreen,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Chamada Criptografada Ponta a Ponta (E2EE)",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = EmeraldGreen,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(centerSpacing))
+
+                // ================= CORPO CENTRAL: AVATAR / VÍDEO / NOME / STATUS =================
+                val callRoleColor = if (callState.isIncoming) AlertRed else EmeraldGreen
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    // Conteúdo medido pelo Scaffold e rolável com o corpo.
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    // Avatar com pulso animado se estiver chamando
+                    Box(
+                        modifier = Modifier
+                            .size(avatarSize)
+                            .scale(if (!callState.isConnected) pulseScale else 1f)
+                            .clip(CircleShape)
+                            .background(
+                                Brush.linearGradient(
+                                    colors = listOf(callRoleColor.copy(alpha = 0.35f), FamilyPurple.copy(alpha = 0.35f))
+                                )
+                            )
+                            .border(3.dp, if (callState.isConnected) EmeraldGreen else callRoleColor, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = callState.peerAlias.take(1).uppercase(),
+                            style = MaterialTheme.typography.headlineLarge.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                color = TextPrimary,
+                                fontSize = avatarFontSize
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(if (isCompactScreen) 12.dp else 18.dp))
+
+                    Text(
+                        text = callState.peerAlias,
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        ),
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = when {
+                            callState.isConnected -> "Conectado • $formattedDuration"
+                            callState.isIncoming -> "Chamada de ${if (callState.isVideo) "Vídeo" else "Voz"} Recebida..."
+                            else -> "Chamando ${if (callState.isVideo) "(Vídeo)" else "(Voz)"}..."
+                        },
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            color = if (callState.isConnected) EmeraldGreen else callRoleColor,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        textAlign = TextAlign.Center
+                    )
+
+                    // Se for chamada de vídeo conectada, exibe container de vídeo responsivo
+                    if (callState.isVideo && callState.isConnected) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        val remoteBitmap = remember(callState.remoteVideoFrameBase64) {
+                            try {
+                                if (!callState.remoteVideoFrameBase64.isNullOrBlank()) {
+                                    val decoded = Base64.decode(callState.remoteVideoFrameBase64, Base64.DEFAULT)
+                                    BitmapFactory.decodeByteArray(decoded, 0, decoded.size)?.asImageBitmap()
+                                } else null
+                            } catch (_: Exception) { null }
+                        }
+
+                        val videoHeight = if (isCompactScreen) 160.dp else 220.dp
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(videoHeight)
+                                .clip(RoundedCornerShape(16.dp))
+                                .border(1.dp, RadarCyan.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
+                            color = DarkCard
+                        ) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (remoteBitmap != null) {
+                                    Image(
+                                        bitmap = remoteBitmap,
+                                        contentDescription = "Vídeo de ${callState.peerAlias}",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Surface(
+                                        color = DeepBlack.copy(alpha = 0.65f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomStart)
+                                            .padding(8.dp)
+                                    ) {
+                                        Text(
+                                            text = "● Ao Vivo • ${callState.peerAlias}",
+                                            style = MaterialTheme.typography.labelSmall.copy(color = EmeraldGreen),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                } else if (callState.isCameraOn) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            imageVector = Icons.Default.Videocam,
+                                            contentDescription = null,
+                                            tint = RadarCyan,
+                                            modifier = Modifier.size(38.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = "Câmera ativa • Conectando transmissão segura...",
+                                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary),
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                } else {
+                                    Text(
+                                        text = "Câmera desativada",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+
                 }
             }
         }
