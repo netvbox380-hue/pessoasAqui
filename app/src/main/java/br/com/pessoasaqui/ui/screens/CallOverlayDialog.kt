@@ -146,7 +146,6 @@ fun CallOverlayDialog(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp, vertical = if (isCompactScreen) 6.dp else 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
@@ -186,7 +185,12 @@ fun CallOverlayDialog(
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.weight(1f, fill = false)
+                    // Só o conteúdo central rola; atender/recusar ficam sempre
+                    // dentro da área segura, mesmo com fonte grande ou 3 botões.
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                 ) {
                     // Avatar com pulso animado se estiver chamando
                     Box(
@@ -319,7 +323,7 @@ fun CallOverlayDialog(
                     color = Color.Transparent,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = if (isCompactScreen) 26.dp else 22.dp)
+                        .padding(bottom = if (isCompactScreen) 8.dp else 12.dp)
                 ) {
                     if (!callState.isConnected && callState.isIncoming) {
                         // Chamada recebida aguardando resposta (Recusar vs Atender)
