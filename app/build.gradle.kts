@@ -13,7 +13,7 @@ android {
         applicationId = "br.com.pessoasaqui"
         minSdk = 24
         targetSdk = 36
-        versionCode = 33
+        versionCode = 34
         versionName = "1.3.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
