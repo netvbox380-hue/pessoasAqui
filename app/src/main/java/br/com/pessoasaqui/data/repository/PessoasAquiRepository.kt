@@ -1640,7 +1640,9 @@ class PessoasAquiRepository(
                         estimatedDistanceMeters = 3.0,
                         proximityLabel = "Familiar"
                     )
-                _pendingFamilyRequest.value = Pair(person, role)
+                // O convite descreve como o remetente vê o destinatário.
+                // O destinatário deve ver o parentesco na perspectiva inversa.
+                _pendingFamilyRequest.value = Pair(person, role.reciprocal())
             }
             payload.startsWith("[FAMILY_ACCEPT:") -> {
                 val parts = payload.removePrefix("[FAMILY_ACCEPT:").removeSuffix("]").split(":")
@@ -3826,8 +3828,11 @@ class PessoasAquiRepository(
 
     fun acceptFamilyRole(person: NearbyPerson, role: FamilyRole) {
         val cleanRecipient = person.technicalIdentityHash.removePrefix("peer-")
+        // Aqui role é como o destinatário vê o remetente. O ACK conserva
+        // o papel originalmente solicitado, para autenticar o aceite contra
+        // pendingOutgoingFamilyRequests sem modificar o protocolo.
         setFamilyRole(cleanRecipient, role)
-        sendPrivateMessage(cleanRecipient, "[FAMILY_ACCEPT:${role.name}:${_currentAlias.value}]")
+        sendPrivateMessage(cleanRecipient, "[FAMILY_ACCEPT:${role.reciprocal().name}:${_currentAlias.value}]")
         _pendingFamilyRequest.value = null
     }
 
@@ -3854,6 +3859,9 @@ class PessoasAquiRepository(
         }
         proximitySimulator.setFamilyRole(personId, role)
         updateUnifiedData()
+        // O papel deve sobreviver a uma reabertura: gravar a perspectiva local.
+        // saveSavedContactsToPrefs é fail-closed quando há dados ilegíveis.
+        saveSavedContactsToPrefs()
         recoveryEnrollmentApproved.add(cleanId.uppercase())
         enrollFamilyRecoveryIfPossible(cleanId)
     }
