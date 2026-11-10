@@ -2504,7 +2504,14 @@ app.get('/invite', (req, res) => {
 
     <div class="instructions">
       <strong style="color:#F0F6FC;">Dica de Conexão:</strong><br>
-      Se o app não abrir automaticamente, você pode tocar em <strong>"Copiar Link do Convite"</strong>, abrir o aplicativo <strong>PessoasAqui</strong>, ir na aba <strong>Conversas</strong> e tocar em <strong>"Colar Convite"</strong>.
+      Se o app não abrir automaticamente, use <strong>"Abrir no Aplicativo PessoasAqui"</strong>.
+      No Samsung, Motorola ou outro Android, confira em
+      <strong>Configurações &gt; Aplicativos &gt; PessoasAqui &gt; Abrir por padrão</strong>
+      se a opção <strong>"Abrir links compatíveis"</strong> está ativada para
+      <strong>pessoasaqui3.onrender.com</strong>.
+      Se preferir, toque em <strong>"Copiar Link do Convite"</strong>,
+      abra <strong>PessoasAqui &gt; Conversas &gt; Colar Convite</strong>.
+      O vínculo só será criado após sua confirmação no aplicativo.
     </div>
     <div class="security-note">Este link é exclusivo e expira após o primeiro uso.</div>
   </div>
