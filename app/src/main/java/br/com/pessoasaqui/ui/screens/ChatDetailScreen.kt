@@ -817,54 +817,18 @@ fun ChatDetailScreen(
                             )
                         }
                         Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = person.alias,
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        color = TextPrimary
-                                    )
-                                )
-                                val pCleanId = person.technicalIdentityHash.ifBlank { person.id }.removePrefix("peer-").trim().uppercase()
-                                val pTagIds = contactTagAssignments[pCleanId] ?: emptySet()
-                                val pTags = contactTags.filter { pTagIds.contains(it.id) }
-                                pTags.take(2).forEach { t ->
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    val tColor = try { Color(android.graphics.Color.parseColor(t.colorHex)) } catch (_: Exception) { RadarCyan }
-                                    Surface(
-                                        shape = RoundedCornerShape(4.dp),
-                                        color = tColor.copy(alpha = 0.2f),
-                                        border = BorderStroke(1.dp, tColor.copy(alpha = 0.6f))
-                                    ) {
-                                        Text(
-                                            text = t.name,
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                color = tColor,
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.Bold
-                                            ),
-                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                        )
-                                    }
-                                }
-                            }
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
                             Text(
-                                text = when {
-                                    person.isFamily -> "Família • ${person.familyRole?.label ?: "Vínculo Seguro"}"
-                                    person.isMutualConnection -> "Conexão Mútua"
-                                    else -> "Pessoas no local • ~${person.estimatedDistanceMeters}m"
-                                },
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = when {
-                                        person.isFamily -> FamilyPurple
-                                        person.isMutualConnection -> EmeraldGreen
-                                        else -> RadarCyan
-                                    }
-                                )
+                                text = person.alias,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary
+                                ),
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                             )
-                            // Presença do app, não proximidade BLE nem vínculo mútuo:
-                            // apenas uma confirmação remota recente pode mostrar Online.
+                            // Atualizar presença sem adicionar uma terceira linha ao TopAppBar:
+                            // em fontes grandes e janelas estreitas ela invadia a status bar.
                             var presenceClock by remember { mutableLongStateOf(System.currentTimeMillis()) }
                             LaunchedEffect(Unit) {
                                 while (true) {
@@ -877,6 +841,24 @@ fun ChatDetailScreen(
                                 presenceClock - person.remotePresenceEpochMs < 30_000L
                             val isOnline = person.isOnline && remoteFresh
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = when {
+                                        person.isFamily -> "Família • ${person.familyRole?.label ?: "Vínculo Seguro"}"
+                                        person.isMutualConnection -> "Conexão Mútua"
+                                        else -> "Pessoas no local"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = when {
+                                            person.isFamily -> FamilyPurple
+                                            person.isMutualConnection -> EmeraldGreen
+                                            else -> RadarCyan
+                                        }
+                                    ),
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Box(
                                     modifier = Modifier
                                         .size(6.dp)
@@ -885,16 +867,15 @@ fun ChatDetailScreen(
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = if (isOnline) "Online" else if (person.remotePresenceEpochMs > 0L)
-                                        "Offline • Visto ${formatLastSeen(person.remotePresenceEpochMs)}"
-                                    else "Offline",
+                                    text = if (isOnline) "Online" else "Offline",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         color = if (isOnline) EmeraldGreen else TextSecondary,
-                                        fontSize = 10.sp,
-                                        fontWeight = if (isOnline) FontWeight.Bold else FontWeight.Normal
-                                    )
+                                        fontSize = 10.sp
+                                    ),
+                                    maxLines = 1
                                 )
                             }
+
                         }
                     }
                 },
