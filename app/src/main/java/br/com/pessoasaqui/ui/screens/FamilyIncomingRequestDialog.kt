@@ -44,7 +44,7 @@ fun FamilyIncomingRequestDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "✨ ${person.alias} convidou você para o papel de \"${role.label}\" na Rede Familiar Protegida.",
+                    text = "✨ ${person.alias} quer ser reconhecido(a) como \"${role.label}\" no seu aparelho. Para essa pessoa, você será \"${role.reciprocal().label}\". Confirma esse vínculo familiar?",
                     style = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary)
                 )
                 Surface(
