@@ -28,7 +28,25 @@ enum class FamilyRole(val label: String) {
     FILHA("Filha"),
     IRMAO("Irmão"),
     IRMA("Irmã"),
-    OUTRO("Familiar")
+    OUTRO("Familiar");
+
+    /**
+     * O parentesco é visto do outro lado: se eu marco alguém como PAI,
+     * essa pessoa me verá como FILHO. Não usar o mesmo papel nos dois lados.
+     * As opções atuais são binárias; a escolha do par é uma convenção de UI,
+     * não uma inferência sobre gênero ou identidade pessoal.
+     */
+    fun reciprocal(): FamilyRole = when (this) {
+        PAI -> FILHO
+        FILHO -> PAI
+        MAE -> FILHA
+        FILHA -> MAE
+        MARIDO -> ESPOSA
+        ESPOSA -> MARIDO
+        IRMAO -> IRMAO
+        IRMA -> IRMA
+        OUTRO -> OUTRO
+    }
 }
 
 @Serializable
