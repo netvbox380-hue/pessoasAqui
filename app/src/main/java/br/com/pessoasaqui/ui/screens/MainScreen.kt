@@ -804,7 +804,7 @@ fun MainScreen(
                             val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                                 type = "text/plain"
                                 putExtra(android.content.Intent.EXTRA_TEXT,
-                                    "Convite pessoal PessoasAqui (uso único):\\n$url")
+                                    "Convite pessoal PessoasAqui (uso único):\n$url")
                             }
                             context.startActivity(android.content.Intent.createChooser(sendIntent,
                                 "Compartilhar link de convite"))
