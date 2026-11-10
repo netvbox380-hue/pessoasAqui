@@ -564,10 +564,16 @@ fun PeopleRadarTab(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(20.dp),
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
+                // O mural vazio também precisa rolar em aparelhos menores,
+                // modo paisagem e com fontes ampliadas. O campo de envio fica fixo.
                 Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
