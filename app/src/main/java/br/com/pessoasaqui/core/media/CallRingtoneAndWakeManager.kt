@@ -335,12 +335,14 @@ class CallRingtoneAndWakeManager(private val context: Context) {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            val callTypeLabel = if (isVideo) "Chamada de Vídeo Criptografada" else "Chamada de Voz Criptografada"
+            // Texto conciso: fabricantes variam o espaço disponível no heads-up.
+            // Não depender de duas frases longas para identificar a chamada.
+            val callTypeLabel = if (isVideo) "Vídeo criptografado" else "Voz criptografada"
 
             val notification = NotificationCompat.Builder(context, CALL_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.sym_action_call)
-                .setContentTitle("📞 $callerAlias está ligando")
-                .setContentText("$callTypeLabel (E2EE) • Toque para atender")
+                .setContentTitle("📞 ${callerAlias.take(26)}")
+                .setContentText("$callTypeLabel • Toque para atender")
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_CALL)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
