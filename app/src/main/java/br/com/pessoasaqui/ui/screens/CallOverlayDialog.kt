@@ -316,14 +316,18 @@ fun CallOverlayDialog(
 
                 Spacer(modifier = Modifier.height(centerSpacing))
 
-                // ================= BARRA INFERIOR DE CONTROLES (PROTEGIDA CONTRA SISTEMA) =================
-                // navigationBarsPadding já adicionou o espaço da barra de 3 botões ou gestos.
-                // O padding bottom garante respiro visual ergonômico acima dos botões físicos/virtuais.
+                // ================= CONTROLES CRÍTICOS FORA DA ÁREA DE NAVEGAÇÃO =================
+                // Em alguns diálogos fullscreen de fabricantes, os WindowInsets
+                // de navegação são reportados como 0 mesmo com a barra de
+                // gestos/3 botões visível. navigationBarsPadding() continua
+                // sendo aplicado no container externo, e esta reserva física
+                // adicional mantém Atender/Recusar/Encerrar acima do sistema.
+                // O conteúdo central usa weight + scroll para ceder espaço.
                 Surface(
                     color = Color.Transparent,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = if (isCompactScreen) 8.dp else 12.dp)
+                        .padding(bottom = if (isCompactScreen) 64.dp else 72.dp)
                 ) {
                     if (!callState.isConnected && callState.isIncoming) {
                         // Chamada recebida aguardando resposta (Recusar vs Atender)
