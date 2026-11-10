@@ -111,7 +111,9 @@
                     android:pathPrefix="/recover" />
             </intent-filter>
 
-            <!-- Deep Link para convites de conexão mútua (URL web HTTPS / Android App Links) -->
+            <!-- App Links verificados: apenas o host HTTPS que gera os convites.
+                 Domínios legados e HTTP no mesmo filtro prejudicavam a verificação
+                 em versões antigas do Android; o parser continua validando o URL. -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -119,18 +121,6 @@
                 <data
                     android:scheme="https"
                     android:host="pessoasaqui3.onrender.com"
-                    android:pathPrefix="/invite" />
-                <data
-                    android:scheme="http"
-                    android:host="pessoasaqui3.onrender.com"
-                    android:pathPrefix="/invite" />
-                <data
-                    android:scheme="https"
-                    android:host="pessoasaqui.onrender.com"
-                    android:pathPrefix="/invite" />
-                <data
-                    android:scheme="http"
-                    android:host="pessoasaqui.onrender.com"
                     android:pathPrefix="/invite" />
             </intent-filter>
         </activity>
