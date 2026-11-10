@@ -54,6 +54,7 @@ fun MainScreen(
     var showIntentSelector by remember { mutableStateOf(false) }
     var showPlayground by remember { mutableStateOf(false) }
     var showTopMenu by remember { mutableStateOf(false) }
+    var showAppLinksHelp by remember { mutableStateOf(false) }
     var showAvatarGallery by remember { mutableStateOf(false) }
     var avatarError by remember { mutableStateOf<String?>(null) }
     var showEditProfileDialog by remember { mutableStateOf(false) }
@@ -68,6 +69,56 @@ fun MainScreen(
     var showContestRecoveryDialog by remember { mutableStateOf(false) }
     var contestNotice by remember { mutableStateOf<String?>(null) }
     var isContestingRecovery by remember { mutableStateOf(false) }
+
+    if (showAppLinksHelp) {
+        AlertDialog(
+            onDismissRequest = { showAppLinksHelp = false },
+            title = { Text("Abrir convites pelo link") },
+            text = {
+                Text(
+                    "Se um convite abrir no navegador em vez do PessoasAqui, " +
+                    "ative ‘Abrir links compatíveis’ para pessoasaqui3.onrender.com " +
+                    "nas configurações do aplicativo. Essa escolha pertence ao Android " +
+                    "e pode variar entre Samsung, Motorola e outros fabricantes. " +
+                    "Você também pode copiar o convite completo e colá-lo em Conversas."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showAppLinksHelp = false
+                    val packageUri = android.net.Uri.parse("package:${context.packageName}")
+                    val primaryAction = if (android.os.Build.VERSION.SDK_INT >= 31) {
+                        android.provider.Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS
+                    } else {
+                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                    }
+                    try {
+                        context.startActivity(android.content.Intent(primaryAction).apply {
+                            data = packageUri
+                        })
+                    } catch (_: android.content.ActivityNotFoundException) {
+                        try {
+                            context.startActivity(
+                                android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                                    .apply { data = packageUri }
+                            )
+                        } catch (_: Exception) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Abra Configurações > Aplicativos > PessoasAqui > Abrir por padrão.",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }) { Text("Abrir configurações") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAppLinksHelp = false }) {
+                    Text("Agora não")
+                }
+            }
+        )
+    }
 
     val people by repository.discoveredPeople.collectAsState()
     val radarPausedForBattery by repository.radarPausedForBattery.collectAsState()
@@ -239,6 +290,16 @@ fun MainScreen(
                                 text = { Text("Minha foto de perfil • Animais / Foto real") },
                                 leadingIcon = { Icon(Icons.Default.AccountCircle, contentDescription = null) },
                                 onClick = { showTopMenu = false; showAvatarGallery = true }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Abrir links de convite", color = RadarCyan) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Link, contentDescription = null, tint = RadarCyan)
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    showAppLinksHelp = true
+                                }
                             )
                             if (selectedTabIndex == 1) {
                                 // Recursos continuam acessíveis quando os chips
