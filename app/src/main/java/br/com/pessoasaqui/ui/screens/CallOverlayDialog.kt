@@ -130,8 +130,7 @@ fun CallOverlayDialog(
                         )
                     )
                 )
-                .statusBarsPadding()
-                .navigationBarsPadding()
+                .safeContentPadding()
         ) {
             val screenHeight = maxHeight
             val isCompactScreen = screenHeight < 680.dp // Ex: 6,2" com barra clássica de 3 botões
@@ -316,18 +315,12 @@ fun CallOverlayDialog(
 
                 Spacer(modifier = Modifier.height(centerSpacing))
 
-                // ================= CONTROLES CRÍTICOS FORA DA ÁREA DE NAVEGAÇÃO =================
-                // Em alguns diálogos fullscreen de fabricantes, os WindowInsets
-                // de navegação são reportados como 0 mesmo com a barra de
-                // gestos/3 botões visível. navigationBarsPadding() continua
-                // sendo aplicado no container externo, e esta reserva física
-                // adicional mantém Atender/Recusar/Encerrar acima do sistema.
-                // O conteúdo central usa weight + scroll para ceder espaço.
+                // Os controles ficam fixos após o conteúdo rolável. A proteção
+                // contra barras do sistema e gestos vem de WindowInsets.safeContent
+                // no contêiner, sem espaçamentos fixos de compensação por fabricante.
                 Surface(
                     color = Color.Transparent,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = if (isCompactScreen) 64.dp else 72.dp)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     if (!callState.isConnected && callState.isIncoming) {
                         // Chamada recebida aguardando resposta (Recusar vs Atender)
