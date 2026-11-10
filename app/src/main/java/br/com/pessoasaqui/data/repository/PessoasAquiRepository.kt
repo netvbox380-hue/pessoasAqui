@@ -1177,6 +1177,15 @@ class PessoasAquiRepository(
     val accountBannedAlert: StateFlow<String?> = _accountBannedAlert.asStateFlow()
     private var lastSupportSyncMs = 0L
 
+    // Inicializar antes do bloco init: as corrotinas disparadas no cold start
+    // podem executar ensureIdentityRegistered() antes do construtor terminar.
+    // A presença WebSocket não equivale a cadastro no PostgreSQL. Serializar
+    // o registro evita corridas entre onboarding, polling e marcações.
+    private val identityRegistrationMutex = kotlinx.coroutines.sync.Mutex()
+    private var confirmedIdentityRegistration: String? = null
+    private var confirmedIdentityAlias: String? = null
+    private var lastIdentityRegistrationAtMs = 0L
+
     init {
         networkClient.configureIdentityCredentials(
             cryptoIdentityManager.getPublicKeyBase64(), cryptoIdentityManager::signChallenge)
@@ -2475,12 +2484,6 @@ class PessoasAquiRepository(
         setDemoMode(false)
     }
 
-    // A presença WebSocket não equivale a cadastro no PostgreSQL. Serializar
-    // o registro evita corridas entre onboarding, polling e marcações.
-    private val identityRegistrationMutex = kotlinx.coroutines.sync.Mutex()
-    private var confirmedIdentityRegistration: String? = null
-    private var confirmedIdentityAlias: String? = null
-    private var lastIdentityRegistrationAtMs = 0L
 
     private suspend fun ensureIdentityRegistered(force: Boolean = false): Result<Boolean> {
         identityRegistrationMutex.lock()
