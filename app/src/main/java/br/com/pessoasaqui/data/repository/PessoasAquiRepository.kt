@@ -166,6 +166,7 @@ class PessoasAquiRepository(
 
     private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.IO)
+    private var presencePollingJob: Job? = null
     private val lastVerifiedKeySyncMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val keyLookupRetryPolicy = br.com.pessoasaqui.core.crypto.KeyLookupRetryPolicy()
     private val keyLookupLocks =
@@ -2035,8 +2036,6 @@ class PessoasAquiRepository(
             }
         }
     }
-
-    private var presencePollingJob: Job? = null
 
     private fun startPresencePollingLoop() {
         if (presencePollingJob?.isActive == true) return
