@@ -17,12 +17,18 @@ class PeerKeyLookupCoordinatorTest {
         val coordinator = PeerKeyLookupCoordinator()
         val releaseFirstLookup = CompletableDeferred<Unit>()
         var networkInvocations = 0
+        var authenticatedKeyCached = false
 
         val requests = (1..10).map {
             async {
                 coordinator.withPeerLock("PEER-A") {
-                    networkInvocations += 1
-                    releaseFirstLookup.await()
+                    // Mirrors the repository's mandatory cache re-check after
+                    // acquiring the per-peer lock and before making HTTP.
+                    if (!authenticatedKeyCached) {
+                        networkInvocations += 1
+                        releaseFirstLookup.await()
+                        authenticatedKeyCached = true
+                    }
                     "authenticated"
                 }
             }
@@ -36,7 +42,7 @@ class PeerKeyLookupCoordinatorTest {
 
         assertEquals(10, requests.size)
         assertTrue(requests.all { it.await() == "authenticated" })
-        assertEquals("All queued callers re-enter sequentially; a successful first lookup should be rechecked by the caller's cache before network I/O.", 10, networkInvocations)
+        assertEquals("The cache re-check under the lock must reduce ten concurrent requests to one network lookup.", 1, networkInvocations)
     }
 
     @Test
