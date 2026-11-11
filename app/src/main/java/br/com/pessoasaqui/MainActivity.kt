@@ -136,9 +136,8 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Ao desbloquear e voltar ao app, restaura a UI apenas quando não há chamada.
         if (callWindowMode.value &&
-            (application as? PessoasAquiApp)?.repository?.activeCallState?.value == null &&
-            !isSystemKeyguardShowing()) {
-            callWindowMode.value = false
+            (application as? PessoasAquiApp)?.repository?.activeCallState?.value == null) {
+            revokeCallWindowPrivileges()
         }
         val repo = (application as? PessoasAquiApp)?.repository
         repo?.callRingtoneWakeManager?.isAppInForeground = true
@@ -182,6 +181,10 @@ class MainActivity : ComponentActivity() {
         val incomingCall = action ==
             br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_INCOMING_CALL ||
             action == br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_ANSWER_CALL
+        if (!incomingCall && callWindowMode.value) {
+            revokeCallWindowPrivileges()
+            return
+        }
         callWindowMode.value = incomingCall
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(incomingCall)
