@@ -2053,6 +2053,9 @@ app.post('/api/connections/unmark', async (req, res) => {
     try {
       const txRunner = (typeof withTransaction === 'function') ? withTransaction : async (cb) => cb(query);
       await txRunner(async (txQuery) => {
+        // A revogação usa o mesmo lock transacional de /connections/mark,
+        // para que mark e unmark do mesmo par não sejam intercalados.
+        await txQuery('SELECT pg_advisory_xact_lock(hashtext($1))', [pairKey(from, to)]);
         // 1. Exclusão bilateral dos vínculos na tabela connections
         await txQuery(
           `DELETE FROM connections
