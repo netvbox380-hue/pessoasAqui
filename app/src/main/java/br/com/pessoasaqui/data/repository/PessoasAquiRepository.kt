@@ -2192,11 +2192,10 @@ class PessoasAquiRepository(
                 // Push pelo WebSocket mantém resposta rápida sem repetir toda a
                 // bateria de consultas HTTPS a cada quatro segundos.
                 // Sem WS em primeiro plano, conservar fallback REST responsivo.
-                delay(when {
-                    !uiForeground -> 30_000L
-                    networkClient.isWebSocketConnected -> 15_000L
-                    else -> 4_000L
-                })
+                delay(br.com.pessoasaqui.core.crypto.PresencePollingCadence.intervalMs(
+                    appForeground = uiForeground,
+                    websocketConnected = networkClient.isWebSocketConnected
+                ))
             }
         }
     }
