@@ -504,9 +504,11 @@ class PessoasAquiRepository(
                 lastSeenEpochMs = System.currentTimeMillis()
             )
             current.add(0, synthetic)
-            saveSavedContactsToPrefs()
         }
         _realDiscoveredPeople.value = current
+        // Persistir o novo contato SOMENTE depois de publicá-lo no estado local;
+        // antes disso, o primeiro snapshot podia salvar o catálogo sem o peer.
+        saveSavedContactsToPrefs()
         updateUnifiedData()
         promoteTemporarySessionToMutual(cid) // Opção A, somente depois da confirmação
         // Compartilhamento exclusivamente E2EE e após reciprocidade confirmada.
