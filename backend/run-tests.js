@@ -17,7 +17,7 @@ if (suites.length === 0) {
   process.exit(1);
 }
 
-const result = spawnSync(process.execPath, ['--test', ...suites], {
+const result = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...suites], {
   cwd: __dirname,
   env: process.env,
   stdio: 'inherit'
