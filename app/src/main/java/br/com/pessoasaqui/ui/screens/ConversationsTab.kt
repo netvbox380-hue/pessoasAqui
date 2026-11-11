@@ -46,6 +46,7 @@ import java.util.Locale
 @Composable
 fun ConversationsTab(
     connectedPeople: List<NearbyPerson>,
+    savedContacts: List<NearbyPerson> = emptyList(),
     privateChats: Map<String, List<ChatMessage>> = emptyMap(),
     nearbyPeople: List<NearbyPerson> = emptyList(),
     onOpenChat: (NearbyPerson) -> Unit,
@@ -95,9 +96,14 @@ fun ConversationsTab(
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showAllImportant by rememberSaveable { mutableStateOf(false) }
 
-    val realConnectedPeople = remember(connectedPeople) {
-        connectedPeople.filter { !it.id.startsWith("sim-", ignoreCase = true) }
+    // Mostrar também o catálogo local quando a autorização de conexão estiver
+    // indisponível. Contato histórico não recebe privilégios de Modo B.
+    val inboxPeople = remember(connectedPeople, savedContacts) {
+        (connectedPeople + savedContacts)
+            .filter { !it.id.startsWith("sim-", ignoreCase = true) }
+            .distinctBy { ConversationPriority.canonicalPeerId(it.technicalIdentityHash.ifBlank { it.id }) }
     }
+    val realConnectedPeople = inboxPeople
     // Inclui o suporte oficial na mesma política de prioridades, sem
     // duplicá-lo em uma linha fixa acima das conversas não lidas.
     val supportHistory = remember(privateChats) {
@@ -106,11 +112,11 @@ fun ConversationsTab(
             ?: privateChats["SUPORTE-OFICIAL"]
             ?: emptyList()
     }
-    val contactsForInbox = remember(connectedPeople, supportHistory) {
-        if (supportHistory.isEmpty() || connectedPeople.any {
+    val contactsForInbox = remember(inboxPeople, supportHistory) {
+        if (supportHistory.isEmpty() || inboxPeople.any {
                 ConversationPriority.canonicalPeerId(it.technicalIdentityHash.ifBlank { it.id }) == "SUPORTE-OFICIAL"
             }
-        ) connectedPeople else connectedPeople + NearbyPerson(
+        ) inboxPeople else inboxPeople + NearbyPerson(
             id = "suporte-oficial",
             technicalIdentityHash = "suporte-oficial",
             alias = "Suporte PessoasAqui",
