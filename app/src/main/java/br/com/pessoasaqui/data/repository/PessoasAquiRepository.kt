@@ -752,6 +752,9 @@ class PessoasAquiRepository(
     // Lista unificada exibida na UI
     private val _unifiedDiscoveredPeople = MutableStateFlow<List<NearbyPerson>>(emptyList())
     val discoveredPeople: StateFlow<List<NearbyPerson>> = _unifiedDiscoveredPeople.asStateFlow()
+    // Catálogo local cifrado separado da autorização de conexão permanente.
+    private val _savedConversationContacts = MutableStateFlow<List<NearbyPerson>>(emptyList())
+    val savedConversationContacts: StateFlow<List<NearbyPerson>> = _savedConversationContacts.asStateFlow()
 
     private fun loadUserOffersFromPrefs(): List<OfferItem> {
         val jsonStr = prefs?.getString("saved_user_offers", null) ?: return emptyList()
@@ -2203,6 +2206,9 @@ class PessoasAquiRepository(
 
     private fun updateUnifiedData() {
         val savedContacts = loadSavedContactsFromPrefs().filter { !it.id.startsWith("sim-", ignoreCase = true) }
+        _savedConversationContacts.value = savedContacts
+            .filter { cleanId(it.technicalIdentityHash.ifBlank { it.id }) !in revokedMutualPeople }
+            .map { applyConnectionState(it) }
         // PRODUÇÃO PURA: Somente pessoas e ofertas reais no radar e contatos mútuos/familiares legítimos
         val applied = (_realDiscoveredPeople.value + savedContacts)
             .filter { !it.id.startsWith("sim-", ignoreCase = true) }
