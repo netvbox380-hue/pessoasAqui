@@ -121,6 +121,7 @@ fun MainScreen(
     }
 
     val people by repository.discoveredPeople.collectAsState()
+    val savedConversationContacts by repository.savedConversationContacts.collectAsState()
     val radarPausedForBattery by repository.radarPausedForBattery.collectAsState()
     val scope = rememberCoroutineScope()
     val offers by repository.localOffers.collectAsState()
@@ -624,6 +625,7 @@ fun MainScreen(
 
                     1 -> ConversationsTab(
                         connectedPeople = connectedPeople,
+                        savedContacts = savedConversationContacts,
                         privateChats = privateChats,
                         nearbyPeople = people,
                         onOpenChat = onOpenChat,
