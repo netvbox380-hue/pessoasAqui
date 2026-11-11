@@ -476,7 +476,8 @@ class PessoasAquiRepository(
     private var lastAppliedConnectionStatusRequest = 0L
 
     /** Somente confirmação vinda do backend (ou montagem explícita de cenário em teste). */
-    internal fun confirmMutualConnectionFromServer(peerId: String, partnerAlias: String? = null) = synchronized(connectionStateLock) {
+    internal fun confirmMutualConnectionFromServer(peerId: String, partnerAlias: String? = null) {
+        synchronized(connectionStateLock) {
         connectionEventGeneration++
         val cid = cleanId(peerId)
         if (cid.isBlank() || cid in revokedMutualPeople) return
@@ -521,10 +522,12 @@ class PessoasAquiRepository(
         promoteTemporarySessionToMutual(cid) // Opção A, somente depois da confirmação
         // Compartilhamento exclusivamente E2EE e após reciprocidade confirmada.
         scope.launch { sendRealPhotoToMutual(cid) }
+        }
     }
 
     /** Derruba o privilégio permanente imediatamente, inclusive com UI e cache antigos. */
-    internal fun revokeMutualLocally(peerId: String, removeMyMark: Boolean = false, queueRemoteUnmark: Boolean = false) = synchronized(connectionStateLock) {
+    internal fun revokeMutualLocally(peerId: String, removeMyMark: Boolean = false, queueRemoteUnmark: Boolean = false) {
+        synchronized(connectionStateLock) {
         connectionEventGeneration++
         val cid = cleanId(peerId)
         if (cid.isBlank()) return
@@ -553,12 +556,14 @@ class PessoasAquiRepository(
         }
         saveConnectionsToPrefs()
         updateUnifiedData()
+        }
     }
 
     /** Reconciliação de mão única: servidor informa o estado, cliente NÃO o recria no servidor. */
     internal fun reconcileConnectionStatus(
         markedByMe: Collection<String>, markingMe: Collection<String>, mutual: Collection<String>
-    ) = synchronized(connectionStateLock) {
+    ) {
+        synchronized(connectionStateLock) {
         val blocked = revokedMutualPeople.toSet()
         val own = markedByMe.map(::cleanId).filter { it.isNotBlank() && it !in blocked }.toSet()
         val remote = markingMe.map(::cleanId).filter { it.isNotBlank() && it !in blocked }.toSet()
@@ -612,6 +617,7 @@ class PessoasAquiRepository(
         // Após reconectar, publicar foto E2EE apenas às identidades confirmadas.
         // Versão/hash impede reenvios a cada heartbeat.
         scope.launch { confirmed.forEach { sendRealPhotoToMutual(it) } }
+        }
     }
 
     /**
