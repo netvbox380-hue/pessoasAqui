@@ -12,6 +12,7 @@ const WebSocket = require('ws');
 const cors = require('cors');
 const crypto = require('crypto');
 const { initDatabase, localStore, resetCircuitBreaker, closeDatabase, registerDbRecoveredCallback, isPostgres, query, withTransaction } = require('./db');
+const { revisionsEnabled, stateFromDirections, advancePairRevision } = require('./connectionRevisions');
 const { hashPin, verifyPinHash, generateNonce, calculateLockoutDurationSeconds } = require('./crypto');
 const {
   INVITE_LIFETIME_MS, tokenDigest, verifyStoredToken, validateInviteId, validateInviteToken
@@ -1762,18 +1763,49 @@ app.post('/api/connections/status', async (req, res) => {
   let markedByMe = [];
   let markingMe = [];
   let mutual = [];
+  const pairRevisions = {};
+  const useRevisions = revisionsEnabled();
+  if (useRevisions && !isPostgres()) {
+    return res.status(503).json({success:false,error:'Revisões de conexões indisponíveis.'});
+  }
 
   // Em produção, somente o PostgreSQL é autoritativo: nunca misturar
   // conexões em RAM de outro ciclo do servidor com o snapshot durável.
   if (isPostgres()) {
     try {
+      // UNION ALL retorna ambos os conjuntos no MESMO snapshot MVCC do banco.
       const result = await query(
-        `SELECT from_identity, to_identity, is_mutual FROM connections
-         WHERE LOWER(from_identity) = LOWER($1) OR LOWER(to_identity) = LOWER($1)`,
+        useRevisions
+          ? `SELECT 'connection'::text AS row_kind, from_identity, to_identity,
+                    is_mutual, NULL::text AS pair_key, NULL::text AS current_state,
+                    NULL::bigint AS revision, NULL::varchar(64) AS identity_low,
+                    NULL::varchar(64) AS identity_high
+             FROM connections
+             WHERE LOWER(from_identity) = LOWER($1) OR LOWER(to_identity) = LOWER($1)
+             UNION ALL
+             SELECT 'revision'::text AS row_kind, NULL::varchar(64), NULL::varchar(64),
+                    NULL::boolean, pair_key, current_state, revision, identity_low, identity_high
+             FROM connection_revisions
+             WHERE LOWER(identity_low) = LOWER($1) OR LOWER(identity_high) = LOWER($1)`
+          : `SELECT from_identity, to_identity, is_mutual FROM connections
+             WHERE LOWER(from_identity) = LOWER($1) OR LOWER(to_identity) = LOWER($1)`,
         [myId]
       );
       const directions = new Map();
       for (const row of result.rows) {
+        if (useRevisions && row.row_kind === 'revision') {
+          const low = cleanId(row.identity_low);
+          const high = cleanId(row.identity_high);
+          const peer = keyId(low) === kMyId ? high : low;
+          const revision = Number(row.revision);
+          if (!Number.isSafeInteger(revision) || revision < 1) {
+            throw new Error('Revisao do par invalida');
+          }
+          if (peer && keyId(peer) !== kMyId) {
+            pairRevisions[peer] = { revision, state: row.current_state };
+          }
+          continue;
+        }
         const from = cleanId(row.from_identity);
         const to = cleanId(row.to_identity);
         const kFrom = keyId(from);
@@ -1824,7 +1856,8 @@ app.post('/api/connections/status', async (req, res) => {
     return res.status(503).json({ success: false, error: 'Banco de conexões indisponível.' });
   }
 
-  res.json({ success: true, markedByMe, markingMe, mutual });
+  res.json({ success: true, markedByMe, markingMe, mutual,
+    ...(useRevisions ? { pairRevisions } : {}) });
 });
 
 /**
@@ -1911,6 +1944,7 @@ app.post('/api/connections/mark', async (req, res) => {
 
   // Verifica se o contato de destino já havia marcado a origem
   let isReciprocal = false;
+  let connectionRevision = null;
 
   const kFrom = keyId(from);
   const kTo = keyId(to);
@@ -1926,7 +1960,7 @@ app.post('/api/connections/mark', async (req, res) => {
       // INSERT + UPDATE devem ser um único evento atômico, inclusive quando
       // os dois aparelhos marcam simultaneamente.
       const txRunner = withTransaction;
-      isReciprocal = await txRunner(async (txQuery) => {
+      const transactionResult = await txRunner(async (txQuery) => {
         await txQuery('SELECT pg_advisory_xact_lock(hashtext($1))', [pairKey(from, to)]);
         const existing = await txQuery(
           `SELECT 1 FROM connections
@@ -1949,8 +1983,24 @@ app.post('/api/connections/mark', async (req, res) => {
             [from, to]
           );
         }
-        return reciprocal;
+        let revision = null;
+        if (revisionsEnabled()) {
+          const directions = await txQuery(
+            `SELECT from_identity, to_identity FROM connections
+             WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
+                OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
+            [from, to]
+          );
+          const forward = directions.rows.some(row => keyId(row.from_identity) === kFrom);
+          const backward = directions.rows.some(row => keyId(row.from_identity) === kTo);
+          const state = stateFromDirections(from, to, forward, backward);
+          revision = await advancePairRevision(txQuery, from, to, state,
+            state === 'MUTUAL' ? 'MUTUAL' : 'MARK');
+        }
+        return { reciprocal, revision };
       });
+      isReciprocal = transactionResult.reciprocal;
+      connectionRevision = transactionResult.revision;
     } catch (e) {
       console.error('[DB] Erro ao gravar marcação no PostgreSQL:', e.message);
       return res.status(503).json({ success: false, error: 'Marcação não confirmada no banco.' });
@@ -1977,6 +2027,7 @@ app.post('/api/connections/mark', async (req, res) => {
       type: 'MUTUAL_CONNECTION_ESTABLISHED',
       partnerIdentity: from,
       partnerAlias: myAlias,
+      ...(connectionRevision !== null ? { revision: connectionRevision } : {}),
       timestamp: Date.now()
     };
     if (targetWs && targetWs.readyState === WebSocket.OPEN) {
@@ -1991,6 +2042,7 @@ app.post('/api/connections/mark', async (req, res) => {
         type: 'MUTUAL_CONNECTION_ESTABLISHED',
         partnerIdentity: to,
         partnerAlias: activePresence.get(kTo)?.alias || 'Conexão',
+        ...(connectionRevision !== null ? { revision: connectionRevision } : {}),
         timestamp: Date.now()
       }));
     }
@@ -2000,6 +2052,7 @@ app.post('/api/connections/mark', async (req, res) => {
       type: 'PEER_MARKED_YOU',
       partnerIdentity: from,
       partnerAlias: myAlias,
+      ...(connectionRevision !== null ? { revision: connectionRevision } : {}),
       timestamp: Date.now()
     };
     if (targetWs && targetWs.readyState === WebSocket.OPEN) {
@@ -2012,6 +2065,7 @@ app.post('/api/connections/mark', async (req, res) => {
   res.json({
     success: true,
     isMutualConnection: isReciprocal,
+    ...(connectionRevision !== null ? { revision: connectionRevision } : {}),
     message: isReciprocal
       ? '✨ Conexão Mútua Estabelecida! Vínculo à distância liberado.'
       : 'Marcação registrada. Aguardando marcação recíproca.'
@@ -2040,6 +2094,7 @@ app.post('/api/connections/unmark', async (req, res) => {
 
   const kFrom = keyId(from);
   const kTo = keyId(to);
+  let connectionRevision = null;
 
   const isDbConfigured = () => (typeof process !== 'undefined' && Boolean(process.env && process.env.DATABASE_URL)) || (typeof isPostgres === 'function' && isPostgres());
 
@@ -2052,7 +2107,7 @@ app.post('/api/connections/unmark', async (req, res) => {
   if (isPostgres()) {
     try {
       const txRunner = (typeof withTransaction === 'function') ? withTransaction : async (cb) => cb(query);
-      await txRunner(async (txQuery) => {
+      connectionRevision = await txRunner(async (txQuery) => {
         // A revogação usa o mesmo lock transacional de /connections/mark,
         // para que mark e unmark do mesmo par não sejam intercalados.
         await txQuery('SELECT pg_advisory_xact_lock(hashtext($1))', [pairKey(from, to)]);
@@ -2075,6 +2130,10 @@ app.post('/api/connections/unmark', async (req, res) => {
                OR (LOWER(sender_identity) = LOWER($2) AND LOWER(recipient_identity) = LOWER($1)))`,
           [from, to]
         );
+        if (revisionsEnabled()) {
+          return advancePairRevision(txQuery, from, to, 'NONE', 'UNMARK');
+        }
+        return null;
       });
     } catch (e) {
       console.error('[DB] Erro na transação atômica de revogação no PostgreSQL:', e.message);
@@ -2099,6 +2158,7 @@ app.post('/api/connections/unmark', async (req, res) => {
     type: 'MUTUAL_CONNECTION_BROKEN',
     partnerIdentity: from,
     partnerAlias: myAlias,
+    ...(connectionRevision !== null ? { revision: connectionRevision } : {}),
     timestamp: Date.now()
   };
   if (targetWs && targetWs.readyState === WebSocket.OPEN) {
@@ -2109,6 +2169,7 @@ app.post('/api/connections/unmark', async (req, res) => {
 
   res.json({
     success: true,
+    ...(connectionRevision !== null ? { revision: connectionRevision } : {}),
     message: 'Marcação removida com sucesso.'
   });
 });
