@@ -141,8 +141,10 @@ class MainActivity : ComponentActivity() {
      */
     @Suppress("DEPRECATION")
     private fun enableLockscreenWakeupFlags() {
-        val incomingCall = intent?.action ==
-            br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_INCOMING_CALL
+        val action = intent?.action
+        val incomingCall = action ==
+            br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_INCOMING_CALL ||
+            action == br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_ANSWER_CALL
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(incomingCall)
             setTurnScreenOn(incomingCall)
