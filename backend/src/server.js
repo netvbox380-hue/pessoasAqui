@@ -1763,20 +1763,8 @@ app.post('/api/connections/status', async (req, res) => {
   let markingMe = [];
   let mutual = [];
 
-  // Lê as conexões em memória local com filtro rigoroso de isolamento
-  for (const [key, val] of localStore.connections.entries()) {
-    const f = cleanId(val.fromIdentity);
-    const t = cleanId(val.toIdentity);
-    const kF = keyId(f);
-    const kT = keyId(t);
-    if (kF === kMyId && !markedByMe.includes(t)) markedByMe.push(t);
-    if (kT === kMyId && !markingMe.includes(f)) markingMe.push(f);
-    if (val.isMutual && (kF === kMyId || kT === kMyId)) {
-      const partner = (kF === kMyId) ? t : f;
-      if (!mutual.includes(partner)) mutual.push(partner);
-    }
-  }
-
+  // Em produção, somente o PostgreSQL é autoritativo: nunca misturar
+  // conexões em RAM de outro ciclo do servidor com o snapshot durável.
   if (isPostgres()) {
     try {
       const result = await query(
@@ -1784,22 +1772,56 @@ app.post('/api/connections/status', async (req, res) => {
          WHERE LOWER(from_identity) = LOWER($1) OR LOWER(to_identity) = LOWER($1)`,
         [myId]
       );
+      const directions = new Map();
       for (const row of result.rows) {
-        const f = cleanId(row.from_identity);
-        const t = cleanId(row.to_identity);
-        const kF = keyId(f);
-        const kT = keyId(t);
-        if (kF === kMyId && !markedByMe.includes(t)) markedByMe.push(t);
-        if (kT === kMyId && !markingMe.includes(f)) markingMe.push(f);
-        if (row.is_mutual && (kF === kMyId || kT === kMyId)) {
-          const partner = (kF === kMyId) ? t : f;
-          if (!mutual.includes(partner)) mutual.push(partner);
+        const from = cleanId(row.from_identity);
+        const to = cleanId(row.to_identity);
+        const kFrom = keyId(from);
+        const kTo = keyId(to);
+        if (kFrom === kMyId && kTo !== kMyId) {
+          markedByMe.push(to);
+          const state = directions.get(kTo) || { outgoing: false, incoming: false };
+          state.outgoing = row.is_mutual === true;
+          directions.set(kTo, state);
+        } else if (kTo === kMyId && kFrom !== kMyId) {
+          markingMe.push(from);
+          const state = directions.get(kFrom) || { outgoing: false, incoming: false };
+          state.incoming = row.is_mutual === true;
+          directions.set(kFrom, state);
+        }
+      }
+      const own = new Set(markedByMe.map(keyId));
+      const incoming = new Set(markingMe.map(keyId));
+      for (const [peer, state] of directions) {
+        if (state.outgoing && state.incoming && own.has(peer) && incoming.has(peer)) {
+          const partner = markedByMe.find(id => keyId(id) === peer);
+          if (partner) mutual.push(partner);
         }
       }
     } catch (e) {
       console.error('[DB] Erro ao buscar connections:', e.message);
       return res.status(503).json({ success: false, error: 'Estado de conexões indisponível.' });
     }
+  } else if (!process.env.DATABASE_URL) {
+    // Apenas desenvolvimento explicitamente sem banco configurado.
+    for (const val of localStore.connections.values()) {
+      const f = cleanId(val.fromIdentity);
+      const t = cleanId(val.toIdentity);
+      const kF = keyId(f);
+      const kT = keyId(t);
+      if (kF === kMyId && kT !== kMyId) markedByMe.push(t);
+      if (kT === kMyId && kF !== kMyId) markingMe.push(f);
+    }
+    for (const peer of markedByMe) {
+      const kPeer = keyId(peer);
+      if (!markingMe.some(id => keyId(id) === kPeer)) continue;
+      if (localStore.connections.get(`${kMyId}->${kPeer}`)?.isMutual === true &&
+          localStore.connections.get(`${kPeer}->${kMyId}`)?.isMutual === true) {
+        mutual.push(peer);
+      }
+    }
+  } else {
+    return res.status(503).json({ success: false, error: 'Banco de conexões indisponível.' });
   }
 
   res.json({ success: true, markedByMe, markingMe, mutual });
