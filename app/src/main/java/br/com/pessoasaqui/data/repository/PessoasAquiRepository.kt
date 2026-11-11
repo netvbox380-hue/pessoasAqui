@@ -468,8 +468,16 @@ class PessoasAquiRepository(
         return p?.isFamily == true || (cid !in revokedMutualPeople && cid in savedMutualPeople)
     }
 
+    // Serializa alterações locais e snapshots HTTP, independentemente da thread
+    // que recebeu a confirmação (WS, REST ou interface).
+    private val connectionStateLock = Any()
+    private var connectionEventGeneration = 0L
+    private var nextConnectionStatusRequest = 0L
+    private var lastAppliedConnectionStatusRequest = 0L
+
     /** Somente confirmação vinda do backend (ou montagem explícita de cenário em teste). */
-    internal fun confirmMutualConnectionFromServer(peerId: String, partnerAlias: String? = null) {
+    internal fun confirmMutualConnectionFromServer(peerId: String, partnerAlias: String? = null) = synchronized(connectionStateLock) {
+        connectionEventGeneration++
         val cid = cleanId(peerId)
         if (cid.isBlank() || cid in revokedMutualPeople) return
         savedMarkedPeople.add(cid)
@@ -516,7 +524,8 @@ class PessoasAquiRepository(
     }
 
     /** Derruba o privilégio permanente imediatamente, inclusive com UI e cache antigos. */
-    internal fun revokeMutualLocally(peerId: String, removeMyMark: Boolean = false, queueRemoteUnmark: Boolean = false) {
+    internal fun revokeMutualLocally(peerId: String, removeMyMark: Boolean = false, queueRemoteUnmark: Boolean = false) = synchronized(connectionStateLock) {
+        connectionEventGeneration++
         val cid = cleanId(peerId)
         if (cid.isBlank()) return
         revokedMutualPeople.add(cid)
@@ -549,7 +558,7 @@ class PessoasAquiRepository(
     /** Reconciliação de mão única: servidor informa o estado, cliente NÃO o recria no servidor. */
     internal fun reconcileConnectionStatus(
         markedByMe: Collection<String>, markingMe: Collection<String>, mutual: Collection<String>
-    ) {
+    ) = synchronized(connectionStateLock) {
         val blocked = revokedMutualPeople.toSet()
         val own = markedByMe.map(::cleanId).filter { it.isNotBlank() && it !in blocked }.toSet()
         val remote = markingMe.map(::cleanId).filter { it.isNotBlank() && it !in blocked }.toSet()
@@ -603,6 +612,31 @@ class PessoasAquiRepository(
         // Após reconectar, publicar foto E2EE apenas às identidades confirmadas.
         // Versão/hash impede reenvios a cada heartbeat.
         scope.launch { confirmed.forEach { sendRealPhotoToMutual(it) } }
+    }
+
+    /**
+     * Respostas REST são snapshots de leitura e podem chegar fora de ordem.
+     * Um evento local/WS mais recente invalida requisições emitidas antes dele.
+     * O banco continua autoritativo para o conteúdo de snapshots novos.
+     */
+    private suspend fun fetchAndReconcileConnectionStatus(
+        identity: String
+    ): br.com.pessoasaqui.data.remote.ConnectionStatusResponse? {
+        val (requestId, eventGeneration) = synchronized(connectionStateLock) {
+            Pair(++nextConnectionStatusRequest, connectionEventGeneration)
+        }
+        val status = networkClient.fetchConnectionStatus(identity).getOrNull() ?: return null
+        return synchronized(connectionStateLock) {
+            if (requestId < lastAppliedConnectionStatusRequest ||
+                eventGeneration != connectionEventGeneration) {
+                Log.i("PessoasAqui", "Snapshot de conexão defasado ignorado")
+                null
+            } else {
+                lastAppliedConnectionStatusRequest = requestId
+                reconcileConnectionStatus(status.markedByMe, status.markingMe, status.mutual)
+                status
+            }
+        }
     }
 
     /**
@@ -2022,9 +2056,7 @@ class PessoasAquiRepository(
                             saveConnectionsToPrefs()
                         }
                     }
-                    val statusResult = networkClient.fetchConnectionStatus(myId)
-                    statusResult.getOrNull()?.let { st ->
-                        reconcileConnectionStatus(st.markedByMe, st.markingMe, st.mutual)
+                    fetchAndReconcileConnectionStatus(myId)?.let { st ->
                         // A chave autenticada deve ser renovada também para contatos
                         // offline; presença WS não é requisito para troca segura de chave.
                         st.mutual.forEach { refreshPeerBindingIfDue(it) }
@@ -2104,11 +2136,10 @@ class PessoasAquiRepository(
                                     if (!partnerAlias.isNullOrBlank() && !partnerAlias.startsWith("Pessoa Próxima #")) {
                                         prefs?.edit()?.putString("alias_$cid", partnerAlias)?.apply()
                                     }
+                                    // O backend publica este evento após confirmar a transação.
+                                    // Não consultar REST imediatamente: snapshot em voo
+                                    // pode ser anterior ao evento do WebSocket.
                                     confirmMutualConnectionFromServer(cid, partnerAlias)
-                                    val status = networkClient.fetchConnectionStatus(myId).getOrNull()
-                                    if (status != null) {
-                                        reconcileConnectionStatus(status.markedByMe, status.markingMe, status.mutual)
-                                    }
                                 }
                             },
                             onMutualConnectionBroken = { partnerId, _ ->
@@ -4167,8 +4198,8 @@ class PessoasAquiRepository(
             if(guardians.size<2) return Result.failure(SecurityException(
                 "É necessário ter dois guardiões distintos do emissor do QR/LINK."
             ))
-            val active=networkClient.fetchConnectionStatus(owner).getOrThrow()
-            reconcileConnectionStatus(active.markedByMe,active.markingMe,active.mutual)
+            val active=fetchAndReconcileConnectionStatus(owner)
+                ?: return Result.failure(IllegalStateException("Estado das conexões ainda não sincronizado"))
             expectedV3Guardians.clear()
             expectedV3Guardians.addAll(guardians)
             val request="[VAULT_SHARE_REQUEST_V1:${session.recoveryCode}:${session.originalDeviceId}]"
@@ -4290,10 +4321,7 @@ class PessoasAquiRepository(
         // 4. Sincroniza e recarrega os contatos mútuos desta identidade no backend
         scope.launch {
             try {
-                val statusResult = networkClient.fetchConnectionStatus(cleanHash)
-                statusResult.getOrNull()?.let { st ->
-                    reconcileConnectionStatus(st.markedByMe, st.markingMe, st.mutual)
-                }
+                fetchAndReconcileConnectionStatus(cleanHash)
             } catch (e: Exception) {
                 Log.w("PessoasAqui", "Aviso ao sincronizar conexões da identidade recuperada: ${e.message}")
             }
@@ -4632,12 +4660,8 @@ class PessoasAquiRepository(
         // os vínculos mútuos do servidor antes de declarar que não há familiares.
         val ids = targets.map { cleanId(it.technicalIdentityHash) }.filter { it.isNotBlank() }
             .ifEmpty {
-                val status = networkClient.fetchConnectionStatus(myIdentity).getOrNull()
-                if (status != null) {
-                    // Após formatar, reidratar vínculos persistentes antes de
-                    // tentar o canal permanente de cofre criptografado.
-                    reconcileConnectionStatus(status.markedByMe, status.markingMe, status.mutual)
-                }
+                // Após formatar, reidratar apenas o snapshot mais recente.
+                val status = fetchAndReconcileConnectionStatus(myIdentity)
                 status?.mutual?.map { cleanId(it) }?.filter { it.isNotBlank() }
                     ?: emptyList()
             }.distinct()
