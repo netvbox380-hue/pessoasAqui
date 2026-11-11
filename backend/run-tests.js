@@ -17,9 +17,16 @@ if (suites.length === 0) {
   process.exit(1);
 }
 
+// Testes devem partir da raiz do workspace. Executar com cwd=backend faria
+// dotenv carregar backend/.env e poderia conectar os testes locais ao Supabase.
+// DATABASE_URL é removida explicitamente: suítes que precisam de PostgreSQL
+// criam e configuram seu próprio banco isolado durante o teste.
+const testEnv = { ...process.env };
+delete testEnv.DATABASE_URL;
+
 const result = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...suites], {
-  cwd: __dirname,
-  env: process.env,
+  cwd: path.resolve(__dirname, '..'),
+  env: testEnv,
   stdio: 'inherit'
 });
 
