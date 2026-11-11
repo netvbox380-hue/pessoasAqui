@@ -56,12 +56,17 @@ WITH canonical_directions AS (
             ELSE LOWER(c.to_identity) || '<->' || LOWER(c.from_identity)
         END AS pair_key,
         CASE WHEN LOWER(c.from_identity) < LOWER(c.to_identity)
-            THEN c.from_identity ELSE c.to_identity END AS identity_low,
+            THEN i1.id ELSE i2.id END AS identity_low,
         CASE WHEN LOWER(c.from_identity) < LOWER(c.to_identity)
-            THEN c.to_identity ELSE c.from_identity END AS identity_high,
+            THEN i2.id ELSE i1.id END AS identity_high,
         LOWER(c.from_identity) < LOWER(c.to_identity) AS low_marked,
         c.created_at
     FROM connections c
+    -- Bases historicas podem conter linhas orfas. Somente vinculos
+    -- com ambas as identidades validas entram no backfill; utilizar i1.id
+    -- e i2.id preserva a grafia canonica exigida pelas foreign keys.
+    INNER JOIN identities i1 ON LOWER(i1.id) = LOWER(c.from_identity)
+    INNER JOIN identities i2 ON LOWER(i2.id) = LOWER(c.to_identity)
     WHERE c.from_identity IS NOT NULL
       AND c.to_identity IS NOT NULL
       AND LOWER(c.from_identity) <> LOWER(c.to_identity)
