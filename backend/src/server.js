@@ -1916,35 +1916,41 @@ app.post('/api/connections/mark', async (req, res) => {
   const kTo = keyId(to);
 
   const reverseKey = `${kTo}->${kFrom}`;
-  if (localStore.connections.has(reverseKey)) {
+  if (!isPostgres() && localStore.connections.has(reverseKey)) {
     isReciprocal = true;
   }
 
   if (isPostgres()) {
     try {
-      const existing = await query(
-        `SELECT * FROM connections WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))`,
-        [to, from]
-      );
-      if (existing.rows.length > 0) {
-        isReciprocal = true;
-      }
-
-      await query(
-        `INSERT INTO connections (from_identity, to_identity, is_mutual)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (from_identity, to_identity) DO UPDATE SET is_mutual = EXCLUDED.is_mutual`,
-        [from, to, isReciprocal]
-      );
-
-      if (isReciprocal) {
-        await query(
-          `UPDATE connections SET is_mutual = TRUE
-           WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
-              OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
-          [from, to]
+      // Ambos os sentidos da relação compartilham o mesmo advisory lock.
+      // INSERT + UPDATE devem ser um único evento atômico, inclusive quando
+      // os dois aparelhos marcam simultaneamente.
+      const txRunner = withTransaction;
+      isReciprocal = await txRunner(async (txQuery) => {
+        await txQuery('SELECT pg_advisory_xact_lock(hashtext($1))', [pairKey(from, to)]);
+        const existing = await txQuery(
+          `SELECT 1 FROM connections
+           WHERE LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2)`,
+          [to, from]
         );
-      }
+        const reciprocal = existing.rows.length > 0;
+        await txQuery(
+          `INSERT INTO connections (from_identity, to_identity, is_mutual)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (from_identity, to_identity)
+           DO UPDATE SET is_mutual = EXCLUDED.is_mutual`,
+          [from, to, reciprocal]
+        );
+        if (reciprocal) {
+          await txQuery(
+            `UPDATE connections SET is_mutual = TRUE
+             WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
+                OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
+            [from, to]
+          );
+        }
+        return reciprocal;
+      });
     } catch (e) {
       console.error('[DB] Erro ao gravar marcação no PostgreSQL:', e.message);
       return res.status(503).json({ success: false, error: 'Marcação não confirmada no banco.' });
