@@ -134,20 +134,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * A tela principal não pode acordar ou atravessar a tela de bloqueio
+     * durante aberturas comuns. Essas permissões de janela são necessárias
+     * apenas para exibir a interface de uma chamada recebida.
+     */
     @Suppress("DEPRECATION")
     private fun enableLockscreenWakeupFlags() {
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
-                setShowWhenLocked(true)
-                setTurnScreenOn(true)
-            }
-            window.addFlags(
-                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                        android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                        android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-                        android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
-            )
-        } catch (_: Exception) {}
+        val incomingCall = intent?.action ==
+            br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_INCOMING_CALL
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(incomingCall)
+            setTurnScreenOn(incomingCall)
+        } else {
+            val flags = android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            if (incomingCall) window.addFlags(flags) else window.clearFlags(flags)
+        }
     }
 
     private fun handleIncomingCallIntent(intent: Intent?, repository: PessoasAquiRepository) {
