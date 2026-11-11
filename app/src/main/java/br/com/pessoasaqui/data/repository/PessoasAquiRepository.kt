@@ -481,6 +481,12 @@ class PessoasAquiRepository(
         connectionEventGeneration++
         val cid = cleanId(peerId)
         if (cid.isBlank() || cid in revokedMutualPeople) return
+        // Somente um vínculo recém-confirmado libera uma nova tentativa
+        // antecipada de busca da chave: não invalidar TTL em WS duplicados.
+        if (cid !in savedMutualPeople) {
+            keyLookupRetryPolicy.invalidate(cid)
+            lastVerifiedKeySyncMs.remove(cid)
+        }
         savedMarkedPeople.add(cid)
         savedMarkingMePeople.add(cid)
         savedMutualPeople.add(cid)
