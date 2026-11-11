@@ -182,3 +182,28 @@ test('PostgreSQL status confirms only two durable mutual directions', async () =
   assert.equal(status.code,200);
   assert.deepEqual(Array.from(status.payload.mutual),[ID_B]);
 });
+
+
+test('PostgreSQL marking takes pair lock before mutation and uses reciprocal rows', async () => {
+  const f=fixture({postgres:true,registeredIdentities:[ID_A,ID_B]});
+  const first=await f.call('POST','/api/connections/mark',{fromIdentity:ID_A,toIdentity:ID_B});
+  const second=await f.call('POST','/api/connections/mark',{fromIdentity:ID_B,toIdentity:ID_A});
+  assert.equal(first.code,200);
+  assert.equal(second.code,200);
+  assert.equal(second.payload.isMutualConnection,true);
+  const statements=f.dbOps.map(o=>o.sql);
+  const lockIndex=statements.findIndex(sql=>sql.includes('pg_advisory_xact_lock'));
+  const insertIndex=statements.findIndex(sql=>sql.includes('INSERT INTO connections'));
+  assert.ok(lockIndex>=0 && insertIndex>lockIndex,'pair lock must precede the insert');
+  assert.ok(statements.some(sql=>sql.includes('UPDATE connections SET is_mutual = TRUE')));
+});
+
+test('PostgreSQL revocation takes same pair lock before bilateral DELETE', async () => {
+  const f=fixture({postgres:true,registeredIdentities:[ID_A,ID_B]});
+  const result=await f.call('POST','/api/connections/unmark',{fromIdentity:ID_A,toIdentity:ID_B});
+  assert.equal(result.code,200);
+  const statements=f.dbOps.map(op=>op.sql);
+  const lockIndex=statements.findIndex(sql=>sql.includes('pg_advisory_xact_lock'));
+  const deleteIndex=statements.findIndex(sql=>sql.includes('DELETE FROM connections'));
+  assert.ok(lockIndex>=0 && deleteIndex>lockIndex,'pair lock must precede revocation');
+});
