@@ -13,7 +13,7 @@ assert.ok(handlerSection.startsWith('app.get('));
 const ID_A = 'A1A1A1A1A1A1A1A1';
 const ID_B = 'B2B2B2B2B2B2B2B2';
 
-function fixture({postgres=false, databaseError=false, registeredIdentities=[]} = {}) {
+function fixture({postgres=false, databaseError=false, registeredIdentities=[], connectionRows=[]} = {}) {
   const routes = new Map();
   const conns = new Map();
   const sent = [];
@@ -26,6 +26,12 @@ function fixture({postgres=false, databaseError=false, registeredIdentities=[]} 
       if(databaseError)throw Error('DB down');
       if(sql.includes('SELECT id FROM identities WHERE id = ANY')) {
         const rows=args[0].filter(id=>registeredIdentities.includes(id)).map(id=>({id}));
+        return {rows,rowCount:rows.length};
+      }
+      if (sql.includes('SELECT from_identity, to_identity, is_mutual FROM connections')) {
+        const rows = connectionRows.filter(row =>
+          row.from_identity.toUpperCase() === args[0].toUpperCase() ||
+          row.to_identity.toUpperCase() === args[0].toUpperCase());
         return {rows,rowCount:rows.length};
       }
       return {rows:[],rowCount:0};
@@ -131,4 +137,28 @@ test('PostgreSQL permits reciprocal consent with both identities registered',asy
   assert.equal(b.code,200);
   assert.equal(b.payload.isMutualConnection,true);
   assert.ok(f.dbOps.some(op=>/INSERT INTO connections/i.test(op.sql)));
+});
+
+
+test('PostgreSQL snapshot ignores stale RAM links and requires reciprocal committed flags', async () => {
+  const f = fixture({postgres:true, connectionRows:[
+    {from_identity:ID_A, to_identity:ID_B, is_mutual:true}
+  ]});
+  f.conns.set(`${ID_A}->${ID_B}`, {fromIdentity:ID_A,toIdentity:ID_B,isMutual:true});
+  f.conns.set(`${ID_B}->${ID_A}`, {fromIdentity:ID_B,toIdentity:ID_A,isMutual:true});
+  const oneWay = await f.call('POST','/api/connections/status',{myIdentity:ID_A});
+  assert.equal(oneWay.code,200);
+  assert.deepEqual(Array.from(oneWay.payload.markedByMe),[ID_B]);
+  assert.deepEqual(Array.from(oneWay.payload.markingMe),[]);
+  assert.deepEqual(Array.from(oneWay.payload.mutual),[]);
+});
+
+test('PostgreSQL status confirms only two durable mutual directions', async () => {
+  const f = fixture({postgres:true, connectionRows:[
+    {from_identity:ID_A,to_identity:ID_B,is_mutual:true},
+    {from_identity:ID_B,to_identity:ID_A,is_mutual:true}
+  ]});
+  const status = await f.call('POST','/api/connections/status',{myIdentity:ID_A});
+  assert.equal(status.code,200);
+  assert.deepEqual(Array.from(status.payload.mutual),[ID_B]);
 });
