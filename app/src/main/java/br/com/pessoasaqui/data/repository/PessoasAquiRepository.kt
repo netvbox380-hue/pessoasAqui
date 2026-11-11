@@ -2024,8 +2024,11 @@ class PessoasAquiRepository(
         }
     }
 
+    private var presencePollingJob: Job? = null
+
     private fun startPresencePollingLoop() {
-        scope.launch {
+        if (presencePollingJob?.isActive == true) return
+        presencePollingJob = scope.launch {
             while (true) {
                 try {
                     val myId = cryptoIdentityManager.getTechnicalIdentity()
@@ -2035,7 +2038,7 @@ class PessoasAquiRepository(
                     // O banco pode ter sido restaurado ou o cadastro inicial falhado.
                     // Nunca confundir heartbeat/WS com identidade persistida.
                     if (ensureIdentityRegistered().getOrNull() != true) {
-                        delay(4000)
+                        delay(if (uiForeground) 4_000L else 30_000L)
                         continue
                     }
 
@@ -2187,7 +2190,14 @@ class PessoasAquiRepository(
                 } catch (e: Throwable) {
                     Log.w("PessoasAqui", "Polling de presença: ${e.message}")
                 }
-                delay(4000)
+                // Push pelo WebSocket mantém resposta rápida sem repetir toda a
+                // bateria de consultas HTTPS a cada quatro segundos.
+                // Sem WS em primeiro plano, conservar fallback REST responsivo.
+                delay(when {
+                    !uiForeground -> 30_000L
+                    networkClient.isWebSocketConnected -> 15_000L
+                    else -> 4_000L
+                })
             }
         }
     }
