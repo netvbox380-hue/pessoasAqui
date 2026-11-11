@@ -18,6 +18,7 @@ function fixture({postgres=false, databaseError=false, registeredIdentities=[], 
   const conns = new Map();
   const sent = [];
   const dbOps = [];
+  const durableRows = connectionRows.map(row => ({...row}));
   const app = {get: (route, handler) => routes.set(`GET ${route}`, handler),post: (route, handler) => routes.set(`POST ${route}`, handler)};
   const cleanId = v => String(v || '').replace(/^peer-/i,'').trim().toUpperCase();
   const context = {app, localStore:{connections:conns}, isPostgres:()=>postgres,
@@ -29,10 +30,28 @@ function fixture({postgres=false, databaseError=false, registeredIdentities=[], 
         return {rows,rowCount:rows.length};
       }
       if (sql.includes('SELECT from_identity, to_identity, is_mutual FROM connections')) {
-        const rows = connectionRows.filter(row =>
+        const rows = durableRows.filter(row =>
           row.from_identity.toUpperCase() === args[0].toUpperCase() ||
           row.to_identity.toUpperCase() === args[0].toUpperCase());
         return {rows,rowCount:rows.length};
+      }
+      if (sql.includes('SELECT 1 FROM connections')) {
+        const rows = durableRows.filter(row =>
+          row.from_identity.toUpperCase() === args[0].toUpperCase() &&
+          row.to_identity.toUpperCase() === args[1].toUpperCase());
+        return {rows,rowCount:rows.length};
+      }
+      if (sql.includes('INSERT INTO connections')) {
+        const [from_identity,to_identity,is_mutual] = args;
+        const existing = durableRows.find(row => row.from_identity === from_identity && row.to_identity === to_identity);
+        if (existing) existing.is_mutual = is_mutual;
+        else durableRows.push({from_identity,to_identity,is_mutual});
+        return {rows:[],rowCount:1};
+      }
+      if (sql.includes('UPDATE connections SET is_mutual = TRUE')) {
+        durableRows.filter(row => [args[0],args[1]].includes(row.from_identity) &&
+          [args[0],args[1]].includes(row.to_identity)).forEach(row => {row.is_mutual=true});
+        return {rows:[],rowCount:2};
       }
       return {rows:[],rowCount:0};
     },
