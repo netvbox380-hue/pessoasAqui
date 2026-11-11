@@ -1190,11 +1190,15 @@ open class PessoasAquiNetworkClient(
                         id
                     }.distinct()
                 }
-                Result.success(ConnectionStatusResponse(
-                    readIdentities(markedArr),
-                    readIdentities(markingArr),
-                    readIdentities(mutualArr)
-                ))
+                val own = readIdentities(markedArr)
+                val remote = readIdentities(markingArr)
+                val mutual = readIdentities(mutualArr)
+                if (!own.containsAll(mutual) || !remote.containsAll(mutual)) {
+                    return@withContext Result.failure(
+                        IOException("Snapshot de conexões contraditório: mutual sem reciprocidade")
+                    )
+                }
+                Result.success(ConnectionStatusResponse(own, remote, mutual))
             }
         } catch (e: Exception) {
             Result.failure(e)
