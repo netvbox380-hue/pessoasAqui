@@ -3,6 +3,8 @@ package br.com.pessoasaqui
 import br.com.pessoasaqui.core.qrcode.InviteLinkParser
 
 import android.app.Activity
+import android.app.KeyguardManager
+import android.content.Context
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.os.Bundle
@@ -12,6 +14,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
@@ -30,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import br.com.pessoasaqui.ui.theme.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 data class IncomingInvite(
@@ -46,6 +50,8 @@ class MainActivity : ComponentActivity() {
     private val incomingInvite = mutableStateOf<IncomingInvite?>(null)
     private val incomingRecoveryKey = mutableStateOf<String?>(null)
     private val targetPeerToOpen = mutableStateOf<NearbyPerson?>(null)
+    // Enquanto uma chamada puder aparecer sobre o Keyguard, nunca compor conversas sob ela.
+    private val callWindowMode = mutableStateOf(false)
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,6 +64,16 @@ class MainActivity : ComponentActivity() {
         val repository = app?.repository ?: PessoasAquiRepository()
         handleIncomingCallIntent(intent, repository)
         handleReminderIntent(intent, repository)
+
+        // A permissão de aparecer sobre o bloqueio dura apenas durante a chamada.
+        // Observa também encerramentos remotos e timeouts, não apenas botões da UI.
+        lifecycleScope.launch {
+            repository.activeCallState.collect { call ->
+                if (call == null && callWindowMode.value) {
+                    revokeCallWindowPrivileges()
+                }
+            }
+        }
 
         // Solicita POST_NOTIFICATIONS em aparelhos Android 13+ que já haviam passado pelo onboarding
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -76,15 +92,30 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = DeepBlack
                 ) {
-                    PessoasAquiNavHost(
-                        repository = repository,
-                        incomingInvite = incomingInvite.value,
-                        onClearIncomingInvite = { incomingInvite.value = null },
-                        incomingRecoveryKey = incomingRecoveryKey.value,
-                        onClearIncomingRecovery = { incomingRecoveryKey.value = null },
-                        targetPeerToOpen = targetPeerToOpen.value,
-                        onClearTargetPeerToOpen = { targetPeerToOpen.value = null }
-                    )
+                    if (callWindowMode.value) {
+                        // Não renderizar telas privadas sob a chamada visível no bloqueio.
+                        val call by repository.activeCallState.collectAsState()
+                        call?.let { active ->
+                            CallOverlayDialog(
+                                callState = active,
+                                onAnswer = { repository.answerCall() },
+                                onEnd = { repository.endCall() },
+                                onToggleMute = { repository.toggleCallMute() },
+                                onToggleCamera = { repository.toggleCallCamera() },
+                                onToggleSpeakerphone = { repository.toggleCallSpeakerphone() }
+                            )
+                        }
+                    } else {
+                        PessoasAquiNavHost(
+                            repository = repository,
+                            incomingInvite = incomingInvite.value,
+                            onClearIncomingInvite = { incomingInvite.value = null },
+                            incomingRecoveryKey = incomingRecoveryKey.value,
+                            onClearIncomingRecovery = { incomingRecoveryKey.value = null },
+                            targetPeerToOpen = targetPeerToOpen.value,
+                            onClearTargetPeerToOpen = { targetPeerToOpen.value = null }
+                        )
+                    }
                 }
             }
         }
@@ -103,6 +134,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Ao desbloquear e voltar ao app, restaura a UI apenas quando não há chamada.
+        if (callWindowMode.value &&
+            (application as? PessoasAquiApp)?.repository?.activeCallState?.value == null &&
+            !isSystemKeyguardShowing()) {
+            callWindowMode.value = false
+        }
         val repo = (application as? PessoasAquiApp)?.repository
         repo?.callRingtoneWakeManager?.isAppInForeground = true
         repo?.playBillingManager?.queryActivePurchases()
@@ -145,6 +182,7 @@ class MainActivity : ComponentActivity() {
         val incomingCall = action ==
             br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_INCOMING_CALL ||
             action == br.com.pessoasaqui.core.media.CallRingtoneAndWakeManager.ACTION_ANSWER_CALL
+        callWindowMode.value = incomingCall
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(incomingCall)
             setTurnScreenOn(incomingCall)
@@ -153,6 +191,28 @@ class MainActivity : ComponentActivity() {
                 android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
             if (incomingCall) window.addFlags(flags) else window.clearFlags(flags)
         }
+    }
+
+    private fun isSystemKeyguardShowing(): Boolean =
+        (getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
+
+    private fun revokeCallWindowPrivileges() {
+        // Mantém a superfície privada desmontada enquanto o Keyguard ainda está visível.
+        if (isSystemKeyguardShowing()) {
+            moveTaskToBack(true)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(false)
+            setTurnScreenOn(false)
+        } else {
+            @Suppress("DEPRECATION")
+            val flags = android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            window.clearFlags(flags)
+        }
+        // A ação antiga não pode conceder acesso ao Keyguard em um ciclo futuro.
+        setIntent(Intent(this, MainActivity::class.java).apply { action = Intent.ACTION_MAIN })
+        if (!isSystemKeyguardShowing()) callWindowMode.value = false
     }
 
     private fun handleIncomingCallIntent(intent: Intent?, repository: PessoasAquiRepository) {
