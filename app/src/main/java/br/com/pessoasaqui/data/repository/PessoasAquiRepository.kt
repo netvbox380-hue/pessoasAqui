@@ -916,7 +916,7 @@ class PessoasAquiRepository(
         return distinct
     }
 
-    fun saveSavedContactsToPrefs() {
+    fun saveSavedContactsToPrefs(excludedContactIds: Set<String> = emptySet()) {
         // Um erro de leitura nunca pode virar sobrescrita destrutiva de um
         // backup criptografado antigo. Proteger os dois destinos persistentes.
         if (savedContactsPrefsUnreadable || savedContactsFileUnreadable) {
@@ -937,23 +937,19 @@ class PessoasAquiRepository(
                 return
             }
 
-            // Mescla apenas contatos que ainda permanecem ativos em savedMutualPeople ou família
+            // O catálogo cifrado de contatos/histórico não é uma lista de
+            // autorizações: ausência num snapshot REST nunca pode apagá-lo.
+            // Privilégios de comunicação/foto continuam derivados exclusivamente
+            // de savedMutualPeople, família e das revogações locais.
+            val excluded = excludedContactIds.map(::cleanId).toSet()
             val mergedMap = LinkedHashMap<String, NearbyPerson>()
             existingSaved.forEach { p ->
                 val k = cleanId(p.technicalIdentityHash.ifBlank { p.id })
-                if (k.isNotBlank() && (p.isFamily || (k in savedMutualPeople && k !in revokedMutualPeople))) {
-                    mergedMap[k] = p
-                }
+                if (k.isNotBlank() && k !in excluded) mergedMap[k] = p
             }
             currentList.forEach { p ->
                 val k = cleanId(p.technicalIdentityHash.ifBlank { p.id })
-                if (k.isNotBlank()) {
-                    if (p.isFamily || (k in savedMutualPeople && k !in revokedMutualPeople)) {
-                        mergedMap[k] = p
-                    } else {
-                        mergedMap.remove(k)
-                    }
-                }
+                if (k.isNotBlank() && k !in excluded) mergedMap[k] = p
             }
 
             val array = JSONArray()
@@ -963,7 +959,7 @@ class PessoasAquiRepository(
                 val obj = JSONObject()
                 obj.put("id", cid)
                 obj.put("alias", person.alias)
-                obj.put("isMutual", person.isMutualConnection)
+                obj.put("isMutual", cid in savedMutualPeople && cid !in revokedMutualPeople)
                 obj.put("isFamily", person.isFamily)
                 obj.put("familyRole", person.familyRole?.name ?: "")
                 array.put(obj)
@@ -3666,7 +3662,8 @@ class PessoasAquiRepository(
         _realDiscoveredPeople.value = curReal
 
         saveConnectionsToPrefs()
-        saveSavedContactsToPrefs()
+        // Exclusão explícita do usuário remove também o registro do catálogo.
+        saveSavedContactsToPrefs(excludedContactIds = setOf(cleanPeerId))
         updateUnifiedData()
 
         // 3. Notifica backend Supabase / Render para desmarcar conexão mútua
