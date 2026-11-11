@@ -350,7 +350,11 @@ class BleManager(
         foreground = isForeground
         if (!isBluetoothEnabled || discoverySuspended) return
         lastScanCallback?.let { startScanning(it) }
-        if (!advertisingActive) ensureDiscoveryContinuity()
+        // Reconfigurar somente na transição efetiva de foreground/background;
+        // manter anúncio conectável para sessões BLE GATT já autorizadas.
+        if (advertisingActive) {
+            lastIdentityHash?.let { startAdvertising(it, lastAlias ?: "", lastIntent ?: UserIntent.QUERO_CONVERSAR) }
+        } else ensureDiscoveryContinuity()
     }
 
     /** Compatibilidade com a API do repositório: não reinicia rádio saudável. */
@@ -453,8 +457,10 @@ class BleManager(
 
         val params = AdvertisingParams(
             isConnectable = true, // <--- CONECTÁVEL: habilita canal de transporte GATT (ADV_IND)
-            mode = AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY,
-            txPowerLevel = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH,
+            mode = if (foreground) AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
+                else AdvertiseSettings.ADVERTISE_MODE_BALANCED,
+            txPowerLevel = if (foreground) AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
+                else AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM,
             timeoutMillis = 0,
             primaryPayload = primaryPayload,
             scanResponsePayload = scanResponsePayload
@@ -552,7 +558,9 @@ class BleManager(
                 if (foreground && highAccuracyRequested) ScanSettings.SCAN_MODE_LOW_LATENCY
                 else ScanSettings.SCAN_MODE_BALANCED
             )
-            .setReportDelay(0)
+            // Em segundo plano, agrupar resultados; no Radar manter reação imediata.
+            // onBatchScanResults já usa o mesmo validador de distância/identidade.
+            .setReportDelay(if (foreground) 0L else 3_000L)
             .build()
 
         // Os anúncios do PessoasAqui carregam o UUID em SERVICE DATA, não na
