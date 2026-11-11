@@ -50,6 +50,7 @@ open class PessoasAquiNetworkClient(
     private var lastOnPeerOffline: ((String) -> Unit)? = null
     private var lastOnMutualConnection: ((String, String) -> Unit)? = null
     private var lastOnMutualConnectionBroken: ((String, String) -> Unit)? = null
+    private var lastOnConnectionRevisionEvent: ((String, String, String, Long) -> Unit)? = null
     private var lastOnPeerMarkedYou: ((String, String) -> Unit)? = null
 
     var onOfferPublished: ((OfferItem) -> Unit)? = null
@@ -78,6 +79,7 @@ open class PessoasAquiNetworkClient(
                     onPeerOffline = lastOnPeerOffline,
                     onMutualConnection = lastOnMutualConnection,
                     onMutualConnectionBroken = lastOnMutualConnectionBroken,
+                    onConnectionRevisionEvent = lastOnConnectionRevisionEvent,
                     onPeerMarkedYou = lastOnPeerMarkedYou,
                     myPublicKeyBase64 = lastPublicKeyBase64,
                     signChallenge = lastSignChallenge
@@ -535,7 +537,8 @@ open class PessoasAquiNetworkClient(
         onMutualConnectionBroken: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
         onPeerMarkedYou: ((partnerIdentity: String, partnerAlias: String) -> Unit)? = null,
         myPublicKeyBase64: String? = null,
-        signChallenge: ((ByteArray) -> String)? = null
+        signChallenge: ((ByteArray) -> String)? = null,
+        onConnectionRevisionEvent: ((String, String, String, Long) -> Unit)? = null
     ) {
         disconnectSocket()
 
@@ -553,6 +556,7 @@ open class PessoasAquiNetworkClient(
         lastOnPeerOffline = onPeerOffline
         lastOnMutualConnection = onMutualConnection
         lastOnMutualConnectionBroken = onMutualConnectionBroken
+        lastOnConnectionRevisionEvent = onConnectionRevisionEvent
         lastOnPeerMarkedYou = onPeerMarkedYou
 
         val request = Request.Builder().url(wsUrl).build()
@@ -622,19 +626,39 @@ open class PessoasAquiNetworkClient(
                                     br.com.pessoasaqui.core.crypto.TrustedIdentityKeys.acceptAuthenticatedBinding(cleanPartner, partnerPublicKey, 1L)
                                     br.com.pessoasaqui.core.crypto.E2eeCryptoEngine.registerPeerPublicKey(cleanPartner, partnerPublicKey)
                                 }
-                                onMutualConnection?.invoke(partnerId, partnerAlias)
+                                val revision = obj.optLong("revision", 0L)
+                                if (revision > 0L && onConnectionRevisionEvent != null) {
+                                    onConnectionRevisionEvent.invoke(
+                                        "MUTUAL_CONNECTION_ESTABLISHED", partnerId, partnerAlias, revision)
+                                } else {
+                                    onMutualConnection?.invoke(partnerId, partnerAlias)
+                                }
                             }
                         }
                         "MUTUAL_CONNECTION_BROKEN" -> {
                             val partnerId = obj.optString("partnerIdentity")
                             val partnerAlias = obj.optString("partnerAlias", "Contato")
-                            if (partnerId.isNotBlank()) onMutualConnectionBroken?.invoke(partnerId, partnerAlias)
+                            if (partnerId.isNotBlank()) {
+                                val revision = obj.optLong("revision", 0L)
+                                if (revision > 0L && onConnectionRevisionEvent != null) {
+                                    onConnectionRevisionEvent.invoke(
+                                        "MUTUAL_CONNECTION_BROKEN", partnerId, partnerAlias, revision)
+                                } else {
+                                    onMutualConnectionBroken?.invoke(partnerId, partnerAlias)
+                                }
+                            }
                         }
                         "PEER_MARKED_YOU" -> {
                             val partnerId = obj.optString("partnerIdentity")
                             val partnerAlias = obj.optString("partnerAlias", "Alguém")
                             if (partnerId.isNotBlank()) {
-                                onPeerMarkedYou?.invoke(partnerId, partnerAlias)
+                                val revision = obj.optLong("revision", 0L)
+                                if (revision > 0L && onConnectionRevisionEvent != null) {
+                                    onConnectionRevisionEvent.invoke(
+                                        "PEER_MARKED_YOU", partnerId, partnerAlias, revision)
+                                } else {
+                                    onPeerMarkedYou?.invoke(partnerId, partnerAlias)
+                                }
                             }
                         }
                         "SESSION_REVOKED" -> {
@@ -1198,7 +1222,30 @@ open class PessoasAquiNetworkClient(
                         IOException("Snapshot de conexões contraditório: mutual sem reciprocidade")
                     )
                 }
-                Result.success(ConnectionStatusResponse(own, remote, mutual))
+                val hasPairRevisions = obj.has("pairRevisions")
+                val pairRevisions = mutableMapOf<String, PairConnectionRevision>()
+                if (hasPairRevisions) {
+                    val versionObj = obj.optJSONObject("pairRevisions")
+                        ?: throw IOException("Formato invalido de revisoes de conexao")
+                    val keys = versionObj.keys()
+                    while (keys.hasNext()) {
+                        val peer = keys.next().trim().uppercase(java.util.Locale.ROOT)
+                        if (!Regex("^[A-F0-9]{16}$").matches(peer)) {
+                            throw IOException("Identidade invalida em revisoes de conexao")
+                        }
+                        val revisionObj = versionObj.optJSONObject(peer)
+                            ?: versionObj.optJSONObject(peer.lowercase(java.util.Locale.ROOT))
+                            ?: throw IOException("Entrada de revisao invalida")
+                        val rev = revisionObj.optLong("revision", 0L)
+                        val state = revisionObj.optString("state")
+                        if (rev <= 0L || state !in setOf("NONE", "MARKED_LOW", "MARKED_HIGH", "MUTUAL")) {
+                            throw IOException("Revisao ou estado de conexao invalido")
+                        }
+                        pairRevisions[peer] = PairConnectionRevision(rev, state)
+                    }
+                }
+                Result.success(ConnectionStatusResponse(
+                    own, remote, mutual, pairRevisions, hasPairRevisions))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -1667,10 +1714,17 @@ data class RedeemInviteResponse(
     val message: String
 )
 
+data class PairConnectionRevision(
+    val revision: Long,
+    val state: String
+)
+
 data class ConnectionStatusResponse(
     val markedByMe: List<String>,
     val markingMe: List<String>,
-    val mutual: List<String>
+    val mutual: List<String>,
+    val pairRevisions: Map<String, PairConnectionRevision> = emptyMap(),
+    val hasPairRevisions: Boolean = false
 )
 
 data class RemotePeer(
