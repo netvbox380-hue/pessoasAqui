@@ -50,6 +50,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /**
@@ -2280,33 +2281,67 @@ class PessoasAquiRepository(
     }
 
     private val lastVerifiedKeySyncMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val keyLookupRetryPolicy = br.com.pessoasaqui.core.crypto.KeyLookupRetryPolicy()
+    private val keyLookupLocks =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+    private val keyLookupInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val KEY_RECHECK_INTERVAL_MS = 5 * 60_000L
 
+    /**
+     * Single-flight por identidade, com cache negativo apenas para agendamento.
+     * Chaves só são publicadas por refreshAuthenticatedPeerKey do NetworkClient
+     * depois de passar pelo pinning autenticado de TrustedIdentityKeys.
+     */
     internal suspend fun refreshAuthenticatedPeerKey(peerIdentity: String): Boolean {
-        if (context == null) return true
+        if (context == null) return true // Nenhum transporte real nos testes JVM.
         val peer = cleanId(peerIdentity)
-        val myId = cryptoIdentityManager.getTechnicalIdentity()
-        val result = networkClient.refreshAuthenticatedPeerKey(myId, peer)
-        if (result.isSuccess) {
-            lastVerifiedKeySyncMs[peer] = System.currentTimeMillis()
-            return true
+        if (peer.isBlank() || peer in revokedMutualPeople || !isPeerPermanent(peer)) return false
+        val lock = keyLookupLocks.getOrPut(peer) { kotlinx.coroutines.sync.Mutex() }
+        return lock.withLock {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (peer in revokedMutualPeople || !isPeerPermanent(peer) ||
+                !keyLookupRetryPolicy.shouldAttempt(peer, now)) return@withLock false
+            val lastSuccess = lastVerifiedKeySyncMs[peer] ?: 0L
+            if (lastSuccess > 0 && now >= lastSuccess &&
+                now - lastSuccess < KEY_RECHECK_INTERVAL_MS &&
+                E2eeCryptoEngine.getPeerPublicKeyBase64(peer) != null) return@withLock true
+
+            val result = networkClient.refreshAuthenticatedPeerKey(
+                cryptoIdentityManager.getTechnicalIdentity(), peer)
+            // Revogação durante a requisição não pode deixar a chave utilizável.
+            if (peer in revokedMutualPeople || !isPeerPermanent(peer)) {
+                E2eeCryptoEngine.clearPeerPublicKey(peer)
+                return@withLock false
+            }
+            if (result.isSuccess) {
+                lastVerifiedKeySyncMs[peer] = android.os.SystemClock.elapsedRealtime()
+                keyLookupRetryPolicy.recordSuccess(peer)
+                true
+            } else {
+                val notFound = result.exceptionOrNull()?.message.orEmpty().contains("HTTP 404")
+                val delayMs = keyLookupRetryPolicy.recordFailure(
+                    peer, android.os.SystemClock.elapsedRealtime(), notFound)
+                Log.w("PessoasAqui",
+                    "Consulta autenticada de chave indisponível (404=$notFound); nova tentativa após ${delayMs / 1000}s")
+                false
+            }
         }
-        return false
     }
 
     private fun refreshPeerBindingIfDue(peerIdentity: String) {
-        if (context == null) return // Testes JVM não fazem rede real.
+        if (context == null) return
         val peer = cleanId(peerIdentity)
-        if (!isPeerPermanent(peer)) return
-        val now = System.currentTimeMillis()
+        if (!isPeerPermanent(peer)) return // Modo A BLE não consulta chave no Render.
+        val now = android.os.SystemClock.elapsedRealtime()
         val last = lastVerifiedKeySyncMs[peer] ?: 0L
-        if (now - last < 5 * 60_000L) return
-        lastVerifiedKeySyncMs[peer] = now
+        if (last > 0 && now >= last && now - last < KEY_RECHECK_INTERVAL_MS) return
+        if (!keyLookupRetryPolicy.shouldAttempt(peer, now)) return
+        if (!keyLookupInFlight.add(peer)) return
         scope.launch {
-            val result = networkClient.refreshAuthenticatedPeerKey(
-                cryptoIdentityManager.getTechnicalIdentity(), peer)
-            if (result.isFailure) {
-                lastVerifiedKeySyncMs.remove(peer)
-                Log.w("PessoasAqui", "Falha ao confirmar chave ECDH de contato: $peer")
+            try {
+                refreshAuthenticatedPeerKey(peer)
+            } finally {
+                keyLookupInFlight.remove(peer)
             }
         }
     }
