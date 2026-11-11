@@ -234,14 +234,35 @@ class BleAdvertisingAndDiscoveryTest {
         ble.isMockBluetoothEnabled = true
         ble.startAdvertising("1122334455667788", "Teste", UserIntent.QUERO_CONVERSAR)
         val startCount = driver.startAdvertisingCallCount
+        assertEquals(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY, driver.lastParams!!.mode)
+        assertEquals(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH, driver.lastParams!!.txPowerLevel)
 
+        // Retomar sem transição de visibilidade não deve reiniciar rádio saudável.
         ble.refreshDiscoveryOnForeground()
-        assertEquals("Retorno rápido não deve reiniciar rádio", startCount, driver.startAdvertisingCallCount)
+        assertEquals("Retorno sem transição não deve reiniciar rádio",
+            startCount, driver.startAdvertisingCallCount)
+
+        // Uma mudança real de visibilidade precisa reaplicar os parâmetros de rádio.
+        ble.setAppForeground(false)
+        assertEquals(startCount + 1, driver.startAdvertisingCallCount)
+        assertEquals(AdvertiseSettings.ADVERTISE_MODE_BALANCED, driver.lastParams!!.mode)
+        assertEquals(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM, driver.lastParams!!.txPowerLevel)
+        assertTrue("Anúncio econômico deve continuar conectável", driver.lastParams!!.isConnectable)
 
         ble.setAppForeground(false)
+        assertEquals("Mesmo estado de background não deve reiniciar anúncio",
+            startCount + 1, driver.startAdvertisingCallCount)
+
         ble.refreshDiscoveryOnForeground(System.currentTimeMillis() + 2 * 60 * 60 * 1000L)
-        assertEquals("Foreground deve mudar modo do scanner sem reiniciar anúncio saudável",
-            startCount, driver.startAdvertisingCallCount)
+        assertEquals("Retorno real ao foreground deve restaurar anúncio rápido",
+            startCount + 2, driver.startAdvertisingCallCount)
+        assertEquals(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY, driver.lastParams!!.mode)
+        assertEquals(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH, driver.lastParams!!.txPowerLevel)
+        assertTrue("Anúncio em foreground deve continuar conectável", driver.lastParams!!.isConnectable)
+
+        ble.refreshDiscoveryOnForeground()
+        assertEquals("Monitor de continuidade não deve reiniciar anúncio saudável",
+            startCount + 2, driver.startAdvertisingCallCount)
     }
 
     @Test
