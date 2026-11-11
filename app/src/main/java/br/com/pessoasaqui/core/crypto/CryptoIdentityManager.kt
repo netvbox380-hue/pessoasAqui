@@ -22,7 +22,7 @@ import java.util.UUID
 class CryptoIdentityManager(
     private val context: Context? = null
 ) {
-    private var activeKeyPair: KeyPair? = null
+    @Volatile private var activeKeyPair: KeyPair? = null
     private var technicalIdentityHash: String = ""
     private var savedPublicKeyBase64: String? = null
     private val identityLock = Any()
