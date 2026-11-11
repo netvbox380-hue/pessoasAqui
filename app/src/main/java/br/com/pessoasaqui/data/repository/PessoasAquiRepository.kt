@@ -166,6 +166,13 @@ class PessoasAquiRepository(
 
     private val prefs = context?.getSharedPreferences("pessoasaqui_prefs", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.IO)
+    private val lastVerifiedKeySyncMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val keyLookupRetryPolicy = br.com.pessoasaqui.core.crypto.KeyLookupRetryPolicy()
+    private val keyLookupLocks =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+    private val keyLookupInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val KEY_RECHECK_INTERVAL_MS = 5 * 60_000L
+
     private val profilePhotoStore = context?.let {
         br.com.pessoasaqui.core.profile.ProfilePhotoStore(it)
     }
@@ -2293,13 +2300,6 @@ class PessoasAquiRepository(
         _unifiedLocalChatMessages.value = proximitySimulator.localChatMessages.value
         _unifiedPrivateChats.value = proximitySimulator.privateChats.value
     }
-
-    private val lastVerifiedKeySyncMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
-    private val keyLookupRetryPolicy = br.com.pessoasaqui.core.crypto.KeyLookupRetryPolicy()
-    private val keyLookupLocks =
-        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
-    private val keyLookupInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    private val KEY_RECHECK_INTERVAL_MS = 5 * 60_000L
 
     /**
      * Single-flight por identidade, com cache negativo apenas para agendamento.
