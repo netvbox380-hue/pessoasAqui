@@ -50,7 +50,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /**
@@ -2307,34 +2306,36 @@ class PessoasAquiRepository(
         val peer = cleanId(peerIdentity)
         if (peer.isBlank() || peer in revokedMutualPeople || !isPeerPermanent(peer)) return false
         val lock = keyLookupLocks.getOrPut(peer) { kotlinx.coroutines.sync.Mutex() }
-        return lock.withLock {
+        lock.lock()
+        try {
             val now = android.os.SystemClock.elapsedRealtime()
             if (peer in revokedMutualPeople || !isPeerPermanent(peer) ||
-                !keyLookupRetryPolicy.shouldAttempt(peer, now)) return@withLock false
+                !keyLookupRetryPolicy.shouldAttempt(peer, now)) return false
             val lastSuccess = lastVerifiedKeySyncMs[peer] ?: 0L
             if (lastSuccess > 0 && now >= lastSuccess &&
                 now - lastSuccess < KEY_RECHECK_INTERVAL_MS &&
-                E2eeCryptoEngine.getPeerPublicKeyBase64(peer) != null) return@withLock true
+                E2eeCryptoEngine.getPeerPublicKeyBase64(peer) != null) return true
 
             val result = networkClient.refreshAuthenticatedPeerKey(
                 cryptoIdentityManager.getTechnicalIdentity(), peer)
             // Revogação durante a requisição não pode deixar a chave utilizável.
             if (peer in revokedMutualPeople || !isPeerPermanent(peer)) {
                 E2eeCryptoEngine.clearPeerPublicKey(peer)
-                return@withLock false
+                return false
             }
             if (result.isSuccess) {
                 lastVerifiedKeySyncMs[peer] = android.os.SystemClock.elapsedRealtime()
                 keyLookupRetryPolicy.recordSuccess(peer)
-                true
-            } else {
-                val notFound = result.exceptionOrNull()?.message.orEmpty().contains("HTTP 404")
-                val delayMs = keyLookupRetryPolicy.recordFailure(
-                    peer, android.os.SystemClock.elapsedRealtime(), notFound)
-                Log.w("PessoasAqui",
-                    "Consulta autenticada de chave indisponível (404=$notFound); nova tentativa após ${delayMs / 1000}s")
-                false
+                return true
             }
+            val notFound = result.exceptionOrNull()?.message.orEmpty().contains("HTTP 404")
+            val delayMs = keyLookupRetryPolicy.recordFailure(
+                peer, android.os.SystemClock.elapsedRealtime(), notFound)
+            Log.w("PessoasAqui",
+                "Consulta autenticada de chave indisponível (404=$notFound); nova tentativa após ${delayMs / 1000}s")
+            return false
+        } finally {
+            lock.unlock()
         }
     }
 
