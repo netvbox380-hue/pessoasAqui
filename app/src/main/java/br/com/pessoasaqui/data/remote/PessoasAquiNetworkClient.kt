@@ -1170,20 +1170,31 @@ open class PessoasAquiNetworkClient(
                 if (!response.isSuccessful || !obj.optBoolean("success", false)) {
                     return@withContext Result.failure(IOException("Falha ao consultar status de conexões: HTTP ${response.code}"))
                 }
+                // HTTP 200 sem as três listas NÃO é um snapshot válido.
+                // Nunca converter omissão/erro de serialização em revogação.
+                if (!obj.has("markedByMe") || !obj.has("markingMe") || !obj.has("mutual")) {
+                    return@withContext Result.failure(IOException("Snapshot de conexões incompleto"))
+                }
                 val markedArr = obj.optJSONArray("markedByMe")
                 val markingArr = obj.optJSONArray("markingMe")
                 val mutualArr = obj.optJSONArray("mutual")
-
-                val markedList = mutableListOf<String>()
-                markedArr?.let { for (i in 0 until it.length()) markedList.add(it.getString(i)) }
-
-                val markingList = mutableListOf<String>()
-                markingArr?.let { for (i in 0 until it.length()) markingList.add(it.getString(i)) }
-
-                val mutualList = mutableListOf<String>()
-                mutualArr?.let { for (i in 0 until it.length()) mutualList.add(it.getString(i)) }
-
-                Result.success(ConnectionStatusResponse(markedList, markingList, mutualList))
+                if (markedArr == null || markingArr == null || mutualArr == null) {
+                    return@withContext Result.failure(IOException("Formato inválido do snapshot de conexões"))
+                }
+                fun readIdentities(array: org.json.JSONArray): List<String> {
+                    return (0 until array.length()).map { index ->
+                        val id = array.getString(index).trim().uppercase(java.util.Locale.ROOT)
+                        if (!Regex("^[A-F0-9]{16}$").matches(id)) {
+                            throw IOException("Identidade inválida no snapshot de conexões")
+                        }
+                        id
+                    }.distinct()
+                }
+                Result.success(ConnectionStatusResponse(
+                    readIdentities(markedArr),
+                    readIdentities(markingArr),
+                    readIdentities(mutualArr)
+                ))
             }
         } catch (e: Exception) {
             Result.failure(e)
