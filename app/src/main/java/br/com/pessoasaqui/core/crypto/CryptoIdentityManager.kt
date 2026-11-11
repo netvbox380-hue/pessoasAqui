@@ -1,6 +1,8 @@
 package br.com.pessoasaqui.core.crypto
 
 import android.content.Context
+import android.os.SystemClock
+import android.util.Log
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -23,6 +25,14 @@ class CryptoIdentityManager(
     private var activeKeyPair: KeyPair? = null
     private var technicalIdentityHash: String = ""
     private var savedPublicKeyBase64: String? = null
+    private val identityLock = Any()
+    private var lastRestoreAttemptElapsedMs = 0L
+    private var hasRetriedRestore = false
+
+    companion object {
+        private const val RETRY_RESTORE_INTERVAL_MS = 15_000L
+        private const val TAG = "CryptoIdentityManager"
+    }
 
     init {
         initializeIdentity()
@@ -36,23 +46,11 @@ class CryptoIdentityManager(
 
         val localDiskCrypto = LocalDiskCryptoManager(context)
 
-        // 1. Tenta restaurar par de chaves EC persistido criptograficamente
+        // A chave existente NUNCA é substituída quando sua restauração falha.
         if (!savedPrivEnc.isNullOrBlank() && !savedPubKey.isNullOrBlank()) {
-            try {
-                val decPrivB64 = localDiskCrypto.decrypt(savedPrivEnc)
-                val privBytes = E2eeCryptoEngine.Base64Helper.decode(decPrivB64)
-                val pubBytes = E2eeCryptoEngine.Base64Helper.decode(savedPubKey)
-
-                val kf = KeyFactory.getInstance("EC")
-                val privKey = kf.generatePrivate(PKCS8EncodedKeySpec(privBytes))
-                val pubKey = kf.generatePublic(X509EncodedKeySpec(pubBytes))
-                activeKeyPair = KeyPair(pubKey, privKey)
-                savedPublicKeyBase64 = savedPubKey
-                if (!savedHash.isNullOrBlank()) {
-                    technicalIdentityHash = savedHash
-                }
-                return
-            } catch (_: Exception) {}
+            technicalIdentityHash = savedHash.orEmpty()
+            savedPublicKeyBase64 = savedPubKey
+            if (restoreSavedKeyPair(savedPrivEnc, savedPubKey, localDiskCrypto)) return
         }
 
         // Chave cifrada perdida/Keystore inválido: não substituir silenciosamente
@@ -103,6 +101,66 @@ class CryptoIdentityManager(
         }
     }
 
+    /**
+     * Recupera exclusivamente a chave já persistida. Falha de Keystore não
+     * autoriza gerar outra identidade nem trocar os dados cifrados.
+     * A prova de assinatura impede aceitar par público/privado divergente.
+     */
+    private fun restoreSavedKeyPair(
+        encryptedPrivateKey: String,
+        publicKeyBase64: String,
+        crypto: LocalDiskCryptoManager
+    ): Boolean {
+        return try {
+            val privateBytes = E2eeCryptoEngine.Base64Helper.decode(crypto.decrypt(encryptedPrivateKey))
+            val publicBytes = E2eeCryptoEngine.Base64Helper.decode(publicKeyBase64)
+            val factory = KeyFactory.getInstance("EC")
+            val privateKey = factory.generatePrivate(PKCS8EncodedKeySpec(privateBytes))
+            val publicKey = factory.generatePublic(X509EncodedKeySpec(publicBytes))
+            val challenge = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+            val signer = Signature.getInstance("SHA256withECDSA")
+            signer.initSign(privateKey)
+            signer.update(challenge)
+            val signature = signer.sign()
+            val verifier = Signature.getInstance("SHA256withECDSA")
+            verifier.initVerify(publicKey)
+            verifier.update(challenge)
+            if (!verifier.verify(signature)) throw SecurityException("Par criptográfico inconsistente")
+            activeKeyPair = KeyPair(publicKey, privateKey)
+            savedPublicKeyBase64 = publicKeyBase64
+            true
+        } catch (e: Exception) {
+            // Nunca emitir chaves, envelope cifrado ou material da identidade no log.
+            Log.w(TAG, "Restauração da chave existente indisponível (${e.javaClass.simpleName}); identidade preservada")
+            false
+        }
+    }
+
+    /**
+     * O Keystore pode falhar durante a inicialização do processo e voltar a
+     * funcionar depois. Tentativas sob demanda têm limite e não fazem writes.
+     */
+    private fun recoverExistingIdentityIfDue(): KeyPair? = synchronized(identityLock) {
+        activeKeyPair?.let { return@synchronized it }
+        val ctx = context ?: return@synchronized null
+        val now = SystemClock.elapsedRealtime()
+        if (hasRetriedRestore && now - lastRestoreAttemptElapsedMs < RETRY_RESTORE_INTERVAL_MS) {
+            return@synchronized null
+        }
+        hasRetriedRestore = true
+        lastRestoreAttemptElapsedMs = now
+        val prefs = ctx.getSharedPreferences("pessoasaqui_crypto_prefs", Context.MODE_PRIVATE)
+        val savedId = prefs.getString("tech_id_hash", null)
+        val savedPub = prefs.getString("tech_pub_key", null)
+        val savedEncryptedPrivate = prefs.getString("tech_priv_key_enc", null)
+        // O material persistido precisa corresponder à identidade pública em memória.
+        if (savedId.isNullOrBlank() || savedId != technicalIdentityHash ||
+            savedPub.isNullOrBlank() || savedPub != savedPublicKeyBase64 ||
+            savedEncryptedPrivate.isNullOrBlank()) return@synchronized null
+        restoreSavedKeyPair(savedEncryptedPrivate, savedPub, LocalDiskCryptoManager(ctx))
+        activeKeyPair
+    }
+
     fun getTechnicalIdentity(): String {
         return technicalIdentityHash
     }
@@ -134,13 +192,13 @@ class CryptoIdentityManager(
             ?: ""
     }
 
-    fun getActiveKeyPair(): KeyPair? = activeKeyPair
-    fun getActivePrivateKey(): PrivateKey? = activeKeyPair?.private
-    fun getActivePublicKey(): PublicKey? = activeKeyPair?.public
+    fun getActiveKeyPair(): KeyPair? = activeKeyPair ?: recoverExistingIdentityIfDue()
+    fun getActivePrivateKey(): PrivateKey? = getActiveKeyPair()?.private
+    fun getActivePublicKey(): PublicKey? = getActiveKeyPair()?.public
 
     fun signChallenge(data: ByteArray): String {
         return try {
-            val privateKey = activeKeyPair?.private ?: throw SecurityException("Chave privada indisponível")
+            val privateKey = getActivePrivateKey() ?: throw SecurityException("Chave privada indisponível")
             val signer = Signature.getInstance("SHA256withECDSA")
             signer.initSign(privateKey)
             signer.update(data)
