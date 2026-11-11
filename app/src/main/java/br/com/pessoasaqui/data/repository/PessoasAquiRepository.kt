@@ -169,8 +169,8 @@ class PessoasAquiRepository(
     private var presencePollingJob: Job? = null
     private val lastVerifiedKeySyncMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val keyLookupRetryPolicy = br.com.pessoasaqui.core.crypto.KeyLookupRetryPolicy()
-    private val keyLookupLocks =
-        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+    private val keyLookupCoordinator =
+        br.com.pessoasaqui.core.crypto.PeerKeyLookupCoordinator()
     private val keyLookupInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val KEY_RECHECK_INTERVAL_MS = 5 * 60_000L
 
@@ -2309,37 +2309,33 @@ class PessoasAquiRepository(
         if (context == null) return true // Nenhum transporte real nos testes JVM.
         val peer = cleanId(peerIdentity)
         if (peer.isBlank() || peer in revokedMutualPeople || !isPeerPermanent(peer)) return false
-        val lock = keyLookupLocks.getOrPut(peer) { kotlinx.coroutines.sync.Mutex() }
-        lock.lock()
-        try {
+        return keyLookupCoordinator.withPeerLock(peer) {
             val now = android.os.SystemClock.elapsedRealtime()
             if (peer in revokedMutualPeople || !isPeerPermanent(peer) ||
-                !keyLookupRetryPolicy.shouldAttempt(peer, now)) return false
+                !keyLookupRetryPolicy.shouldAttempt(peer, now)) return@withPeerLock false
             val lastSuccess = lastVerifiedKeySyncMs[peer] ?: 0L
             if (lastSuccess > 0 && now >= lastSuccess &&
                 now - lastSuccess < KEY_RECHECK_INTERVAL_MS &&
-                E2eeCryptoEngine.getPeerPublicKeyBase64(peer) != null) return true
+                E2eeCryptoEngine.getPeerPublicKeyBase64(peer) != null) return@withPeerLock true
 
             val result = networkClient.refreshAuthenticatedPeerKey(
                 cryptoIdentityManager.getTechnicalIdentity(), peer)
             // Revogação durante a requisição não pode deixar a chave utilizável.
             if (peer in revokedMutualPeople || !isPeerPermanent(peer)) {
                 E2eeCryptoEngine.clearPeerPublicKey(peer)
-                return false
+                return@withPeerLock false
             }
             if (result.isSuccess) {
                 lastVerifiedKeySyncMs[peer] = android.os.SystemClock.elapsedRealtime()
                 keyLookupRetryPolicy.recordSuccess(peer)
-                return true
+                return@withPeerLock true
             }
             val notFound = result.exceptionOrNull()?.message.orEmpty().contains("HTTP 404")
             val delayMs = keyLookupRetryPolicy.recordFailure(
                 peer, android.os.SystemClock.elapsedRealtime(), notFound)
             Log.w("PessoasAqui",
                 "Consulta autenticada de chave indisponível (404=$notFound); nova tentativa após ${delayMs / 1000}s")
-            return false
-        } finally {
-            lock.unlock()
+            false
         }
     }
 
