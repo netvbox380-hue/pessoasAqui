@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const crypto = require('node:crypto');
 const guard = require('../src/inviteSecurity');
 const auth = require('../src/inviteAuth');
+const revisionEngine = require('../src/connectionRevisions');
 
 const src = fs.readFileSync(path.join(__dirname, '../src/server.js'), 'utf8').replace(/\r\n/g, '\n');
 const start = src.indexOf('// Um convite é uma credencial bearer.');
@@ -33,9 +34,11 @@ function proof(who, operation, alias, inviteId = '', token = '', nonce = crypto.
   };
 }
 
-function fixture({postgres=false,failDb=false,shared=null}={}) {
+function fixture({postgres=false,failDb=false,shared=null,revisions=false}={}) {
   const store=shared||{invites:new Map(),conns:new Map()};
   const activeInvites=new Map(),routes=new Map();
+  const revisionWrites=[];
+  const pairLocks=[];
   const app={post(url,handler){routes.set(url,handler);}};
   let seq=0;
   const query=async(sql,args)=>{
@@ -44,6 +47,23 @@ function fixture({postgres=false,failDb=false,shared=null}={}) {
     // Simula a consulta nova sem mascarar consultas SQL inesperadas.
     if(sql.includes('SELECT public_key_spki FROM identity_key_bindings')) {
       return {rowCount:0,rows:[]};
+    }
+    if(sql.includes('SELECT sender_identity FROM invites WHERE id = $1')) {
+      const v=store.invites.get(args[0]);
+      return {rowCount:v?1:0,rows:v?[{sender_identity:v.sender}]:[]};
+    }
+    if(sql.includes('pg_advisory_xact_lock')) {
+      pairLocks.push(args[0]); return {rowCount:1,rows:[{}]};
+    }
+    if(sql.includes('SELECT id FROM identities WHERE LOWER(id)')) {
+      return {rowCount:2,rows:[{id:sender.identity},{id:receiver.identity}]};
+    }
+    if(sql.includes('INSERT INTO connection_revisions')) {
+      revisionWrites.push({type:'revision',args});
+      return {rowCount:1,rows:[{revision:'1'}]};
+    }
+    if(sql.includes('INSERT INTO connection_events')) {
+      revisionWrites.push({type:'event',args}); return {rowCount:1,rows:[]};
     }
     if(sql.includes('INSERT INTO invites')) {
       const [id,token,s,alias,signature,expiresAt]=args;
@@ -77,6 +97,10 @@ function fixture({postgres=false,failDb=false,shared=null}={}) {
     verifyActiveInviteProof:async (...args)=>auth.verifyInviteIdentityProof(...args),
     deriveInviteId:auth.deriveInviteId,
     isPostgres:()=>postgres,query,activeInvites,
+    revisionsEnabled:()=>revisions,
+    withTransaction:async work=>work(query),
+    advancePairRevision:revisionEngine.advancePairRevision,
+    pairKey:revisionEngine.pairIdentityKey,
     localStore:{invites:new Map(),connections:new Map()},
     activeSockets:new Map(),pendingMessages:new Map(),WebSocket:{OPEN:1}
   };
@@ -87,7 +111,7 @@ function fixture({postgres=false,failDb=false,shared=null}={}) {
     await routes.get(url)({body},res);
     return {code,json};
   }
-  return {post,store,activeInvites,ctx};
+  return {post,store,activeInvites,ctx,revisionWrites,pairLocks};
 }
 const createBody=(who=sender,alias='Fernando')=>({
   senderIdentity:who.identity,senderAlias:alias,
@@ -124,6 +148,22 @@ test('atomic postgres claim rejects concurrent recipient and survives restart',a
   assert.equal(db.conns.size,2);
   assert.equal((await redeem(fixture({postgres:true,shared:db}),c,other)).code,410);
 });
+test('revisioned invite redemption locks pair and appends MUTUAL revision in one transaction',async()=>{
+  const f=fixture({postgres:true,revisions:true});
+  const created=(await create(f)).json;
+  const accepted=await redeem(f,created);
+  assert.equal(accepted.code,200);
+  assert.equal(accepted.json.revision,1);
+  assert.equal(f.store.conns.size,2);
+  assert.deepEqual(f.pairLocks,[revisionEngine.pairIdentityKey(sender.identity,receiver.identity)]);
+  assert.deepEqual(f.revisionWrites.map(w=>w.type),['revision','event']);
+  assert.equal(f.revisionWrites[1].args[3],'MUTUAL');
+  assert.equal(f.revisionWrites[1].args[4],'MUTUAL');
+  const second=await redeem(f,created);
+  assert.equal(second.code,410);
+  assert.equal(f.revisionWrites.length,2);
+});
+
 test('database outage fails closed, no invitation or connection falsely approved',async()=>{
   const f=fixture({postgres:true,failDb:true});
   assert.equal((await create(f)).code,503);
