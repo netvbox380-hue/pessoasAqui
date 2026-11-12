@@ -41,6 +41,28 @@ test('revision upsert and event are composed on same transaction callback', asyn
   assert.deepEqual(queries[2].args, ['aaaa<->ffff', 'FFFF', 'AAAA', 'UNMARK', 'NONE', 42]);
 });
 
+test('revision writer resolves historical casing and rejects ambiguous DB identities', async () => {
+  const statements = [];
+  const tx = async (sql, args) => {
+    statements.push({sql, args});
+    if (sql.includes('FROM identities'))
+      return {rows: [{id: 'aAaA'}, {id: 'bbbb'}]};
+    if (sql.includes('RETURNING revision')) return {rows: [{revision: '4'}]};
+    return {rows: []};
+  };
+  assert.equal(await advancePairRevision(tx, 'AAAA', 'BBBB', 'MUTUAL', 'MUTUAL'), 4);
+  assert.deepEqual(statements[1].args.slice(1, 3), ['aAaA', 'bbbb']);
+  assert.deepEqual(statements[2].args.slice(1, 3), ['aAaA', 'bbbb']);
+
+  const ambiguousTx = async sql => sql.includes('FROM identities')
+    ? {rows: [{id: 'AAAA'}, {id: 'aaaa'}, {id: 'BBBB'}]}
+    : {rows: [{revision: '1'}]};
+  await assert.rejects(
+    () => advancePairRevision(ambiguousTx, 'AAAA', 'BBBB', 'MUTUAL', 'MUTUAL'),
+    /Missing or ambiguous/
+  );
+});
+
 test('invalid data and unsafe revisions fail closed', async () => {
   const unused = async () => { throw new Error('unexpected database call'); };
   await assert.rejects(() => advancePairRevision(unused, 'A', 'A', 'MUTUAL', 'MUTUAL'));
