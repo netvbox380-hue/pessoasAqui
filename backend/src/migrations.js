@@ -131,6 +131,26 @@ async function checkSchemaCompatibility(queryFn) {
       };
     }
 
+    // As tabelas da Etapa 4 so se tornam obrigatorias quando o novo
+    // protocolo tiver sido explicitamente ativado APOS a migracao 003.
+    // Preservar a compatibilidade das instalacoes legadas sem o flag.
+    if (process.env.CONNECTION_REVISIONS_ENABLED === 'true') {
+      const missingRevisionTables = ['connection_revisions', 'connection_events']
+        .filter(table => !existingTables.has(table));
+      if (missingRevisionTables.length > 0) {
+        return {
+          status: SCHEMA_STATUS.BLOCKING_INCOMPATIBLE,
+          compatible: false,
+          isFullyCompatible: false,
+          isLegacySupported: false,
+          isBlocked: true,
+          tables: existingTables,
+          missingStructures: missingRevisionTables.map(t => `tabela: ${t}`),
+          pendingMigrations: ['003_connection_monotonic_revisions.sql']
+        };
+      }
+    }
+
     // 5. Compatibilidade plena
     return {
       status: SCHEMA_STATUS.COMPATIBLE,
