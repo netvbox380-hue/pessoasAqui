@@ -1908,7 +1908,7 @@ app.post('/api/connections/mark', async (req, res) => {
   if(!/^[A-F0-9]{16}$/.test(from)|| !/^[A-F0-9]{16}$/.test(to)||from===to){
     return res.status(400).json({error:'Identidades válidas e distintas obrigatórias.'});
   }
-  if(process.env.DATABASE_URL && !isPostgres()){
+  if ((revisionsEnabled() || process.env.DATABASE_URL) && !isPostgres()) {
     return res.status(503).json({error:'Banco de vínculos indisponível.'});
   }
   if(!await authorizeConnectionWrite(req,res,'CONNECTION_MARK',from,to))return;
@@ -2083,7 +2083,7 @@ app.post('/api/connections/unmark', async (req, res) => {
   if(!/^[A-F0-9]{16}$/.test(from)|| !/^[A-F0-9]{16}$/.test(to)||from===to){
     return res.status(400).json({error:'Identidades válidas e distintas obrigatórias.'});
   }
-  if(process.env.DATABASE_URL && !isPostgres()){
+  if ((revisionsEnabled() || process.env.DATABASE_URL) && !isPostgres()) {
     return res.status(503).json({error:'Banco de vínculos indisponível.'});
   }
   if(!await authorizeConnectionWrite(req,res,'CONNECTION_UNMARK',from,to))return;
