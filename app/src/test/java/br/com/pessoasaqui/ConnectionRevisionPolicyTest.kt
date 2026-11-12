@@ -13,6 +13,19 @@ class ConnectionRevisionPolicyTest {
         assertTrue(ConnectionRevisionPolicy.isNewerEvent(9L, 8L))
     }
 
+    @Test fun snapshotMustMatchPairRevisionStateWithoutInventingMutualConsent() {
+        val policy = ConnectionRevisionPolicy
+        assertTrue(policy.stateMatchesSnapshot("AAAA", "BBBB", "NONE", false, false, false))
+        assertTrue(policy.stateMatchesSnapshot("AAAA", "BBBB", "MARKED_LOW", true, false, false))
+        assertTrue(policy.stateMatchesSnapshot("AAAA", "BBBB", "MARKED_HIGH", false, true, false))
+        assertTrue(policy.stateMatchesSnapshot("AAAA", "BBBB", "MUTUAL", true, true, true))
+        assertTrue(policy.stateMatchesSnapshot("BBBB", "AAAA", "MARKED_LOW", false, true, false))
+        assertTrue(policy.stateMatchesSnapshot("BBBB", "AAAA", "MARKED_HIGH", true, false, false))
+        assertFalse(policy.stateMatchesSnapshot("AAAA", "BBBB", "MUTUAL", true, false, true))
+        assertFalse(policy.stateMatchesSnapshot("AAAA", "BBBB", "NONE", true, false, false))
+        assertFalse(policy.stateMatchesSnapshot("AAAA", "BBBB", "UNTRUSTED", false, false, false))
+    }
+
     @Test fun oldOrMissingRestSnapshotCannotUndoVersionedWebsocketEvent() {
         assertTrue(ConnectionRevisionPolicy.preserveLocalSnapshotState(8L, 7L))
         assertTrue(ConnectionRevisionPolicy.preserveLocalSnapshotState(8L, null))
