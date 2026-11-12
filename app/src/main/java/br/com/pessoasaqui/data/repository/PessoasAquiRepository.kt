@@ -2253,7 +2253,7 @@ class PessoasAquiRepository(
                                 val cid = cleanId(partnerId)
                                 // Um evento legado sem revisao nao pode ressuscitar
                                 // estado mais novo previamente confirmado e persistido.
-                                if (cid !in revokedMutualPeople && cid !in savedPairRevisions) scope.launch {
+                                if (cid !in revokedMutualPeople && !savedPairRevisions.containsKey(cid)) scope.launch {
                                     if (!partnerAlias.isNullOrBlank() && !partnerAlias.startsWith("Pessoa Próxima #")) {
                                         prefs?.edit()?.putString("alias_$cid", partnerAlias)?.apply()
                                     }
@@ -2271,7 +2271,7 @@ class PessoasAquiRepository(
                             },
                             onPeerMarkedYou = { markerId, _ ->
                                 val cleanMarker = cleanId(markerId)
-                                if (cleanMarker !in savedPairRevisions) {
+                                if (!savedPairRevisions.containsKey(cleanMarker)) {
                                     savedMarkingMePeople.add(cleanMarker)
                                     saveConnectionsToPrefs()
                                 }
