@@ -2187,21 +2187,26 @@ class PessoasAquiRepository(
                         handleRemotePresenceSync(remotePeers)
                     }
 
-                    // 4. Busca mensagens pendentes na fila do servidor
-                    val pendingResult = networkClient.fetchPendingMessages(myId)
-                    val deliveredIds = mutableListOf<String>()
-                    pendingResult.getOrNull()?.forEach { pm ->
-                        val accepted = processIncomingPayload(pm.senderHash, pm.senderAlias, pm.ciphertext, pm.ivNonce, pm.messageId)
-                        if (accepted && pm.messageId.isNotBlank()) {
-                            deliveredIds.add(pm.messageId)
+                    // 4. O WS autenticado envia as pendências no AUTH e novos eventos em tempo real.
+                    // Não fazer polling HTTP simultâneo: isso baixa os mesmos ciphertexts
+                    // repetidamente enquanto o ACK ainda está em trânsito.
+                    // Se o WS cair, o HTTP continua sendo o fallback durável.
+                    if (!networkClient.isWebSocketConnected) {
+                        val pendingResult = networkClient.fetchPendingMessages(myId)
+                        val deliveredIds = mutableListOf<String>()
+                        pendingResult.getOrNull()?.forEach { pm ->
+                            val accepted = processIncomingPayload(pm.senderHash, pm.senderAlias, pm.ciphertext, pm.ivNonce, pm.messageId)
+                            if (accepted && pm.messageId.isNotBlank()) {
+                                deliveredIds.add(pm.messageId)
+                            }
                         }
-                    }
-                    if (deliveredIds.isNotEmpty()) {
-                        scope.launch {
-                            try {
-                                networkClient.sendHttpBatchAcks(myId, deliveredIds)
-                            } catch (e: Exception) {
-                                android.util.Log.w("PessoasAqui", "Falha ao enviar batch ACK via HTTP: ${e.message}")
+                        if (deliveredIds.isNotEmpty()) {
+                            scope.launch {
+                                try {
+                                    networkClient.sendHttpBatchAcks(myId, deliveredIds)
+                                } catch (e: Exception) {
+                                    android.util.Log.w("PessoasAqui", "Falha ao enviar batch ACK via HTTP: ${e.message}")
+                                }
                             }
                         }
                     }
