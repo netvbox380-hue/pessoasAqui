@@ -59,7 +59,7 @@ function fixture({postgres=false, databaseError=false, registeredIdentities=[], 
     pairKey: (a,b) => [cleanId(a),cleanId(b)].sort().join('<->'),
     withTransaction: async work => work((sql,args) => context.query(sql,args)),
     activePresence:new Map(), activeSockets:new Map(), pendingMessages:new Map(),
-    WebSocket:{OPEN:1}, console, Date, process:{env:{}}, verifySignedHttp:async()=>true};
+    WebSocket:{OPEN:1}, console, Date, process:{env:{}}, revisionsEnabled: () => false, verifySignedHttp:async()=>true};
   vm.runInNewContext(handlerSection, context);
   async function call(method, route, body={}, query={}) {
     let code = 200, payload;
