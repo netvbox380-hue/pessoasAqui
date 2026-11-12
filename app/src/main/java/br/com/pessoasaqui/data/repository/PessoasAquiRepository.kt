@@ -661,10 +661,30 @@ class PessoasAquiRepository(
      */
     private fun reconcileVersionedConnectionStatus(
         status: br.com.pessoasaqui.data.remote.ConnectionStatusResponse
-    ) {
+    ): Boolean {
         val own = status.markedByMe.map(::cleanId).toMutableSet()
         val remote = status.markingMe.map(::cleanId).toMutableSet()
         val mutual = status.mutual.map(::cleanId).toMutableSet()
+
+        // Uma revisao autoritativa nao pode contradizer o mesmo snapshot MVCC
+        // (as tabelas sao atualizadas em uma unica transacao no backend).
+        // Em caso de incoerencia, rejeitar o snapshot inteiro, sem tocar no cache.
+        val myId = cleanId(cryptoIdentityManager.getTechnicalIdentity())
+        for ((peer, version) in status.pairRevisions) {
+            val isLow = myId < peer
+            val shouldMark = version.state == "MUTUAL" ||
+                (version.state == "MARKED_LOW" && isLow) ||
+                (version.state == "MARKED_HIGH" && !isLow)
+            val shouldBeMarked = version.state == "MUTUAL" ||
+                (version.state == "MARKED_HIGH" && isLow) ||
+                (version.state == "MARKED_LOW" && !isLow)
+            if ((peer in own) != shouldMark ||
+                (peer in remote) != shouldBeMarked ||
+                (peer in mutual) != (version.state == "MUTUAL")) {
+                Log.w("PessoasAqui", "Snapshot de revisao inconsistente; rejeitado")
+                return false
+            }
+        }
         val peers = (own + remote + mutual + status.pairRevisions.keys.map(::cleanId) +
             savedPairRevisions.keys + savedMarkedPeople + savedMarkingMePeople + savedMutualPeople)
             .filter { it.isNotBlank() }.toSet()
@@ -684,6 +704,7 @@ class PessoasAquiRepository(
         // Todas as revisoes e os conjuntos de vinculos são gravados pela
         // mesma operacao de preferencias durante a reconciliacao.
         reconcileConnectionStatus(own, remote, mutual)
+        return true
     }
 
     /** Eventos versionados do WS nunca substituem estado local mais recente. */
@@ -726,7 +747,7 @@ class PessoasAquiRepository(
             } else {
                 lastAppliedConnectionStatusRequest = requestId
                 if (status.hasPairRevisions) {
-                    reconcileVersionedConnectionStatus(status)
+                    if (!reconcileVersionedConnectionStatus(status)) return@synchronized null
                 } else {
                     // Backend legado sem o protocolo: manter as salvaguardas
                     // existentes de geracao de evento e revogacao persistida.
