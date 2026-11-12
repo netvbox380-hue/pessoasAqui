@@ -1229,12 +1229,12 @@ open class PessoasAquiNetworkClient(
                         ?: throw IOException("Formato invalido de revisoes de conexao")
                     val keys = versionObj.keys()
                     while (keys.hasNext()) {
-                        val peer = keys.next().trim().uppercase(java.util.Locale.ROOT)
+                        val rawPeer = keys.next()
+                        val peer = rawPeer.trim().uppercase(java.util.Locale.ROOT)
                         if (!Regex("^[A-F0-9]{16}$").matches(peer)) {
                             throw IOException("Identidade invalida em revisoes de conexao")
                         }
-                        val revisionObj = versionObj.optJSONObject(peer)
-                            ?: versionObj.optJSONObject(peer.lowercase(java.util.Locale.ROOT))
+                        val revisionObj = versionObj.optJSONObject(rawPeer)
                             ?: throw IOException("Entrada de revisao invalida")
                         val rev = revisionObj.optLong("revision", 0L)
                         val state = revisionObj.optString("state")
