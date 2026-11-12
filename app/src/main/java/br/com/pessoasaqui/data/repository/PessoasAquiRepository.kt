@@ -2244,7 +2244,9 @@ class PessoasAquiRepository(
                             },
                             onMutualConnection = { partnerId: String, partnerAlias: String ->
                                 val cid = cleanId(partnerId)
-                                if (cid !in revokedMutualPeople) scope.launch {
+                                // Um evento legado sem revisao nao pode ressuscitar
+                                // estado mais novo previamente confirmado e persistido.
+                                if (cid !in revokedMutualPeople && cid !in savedPairRevisions) scope.launch {
                                     if (!partnerAlias.isNullOrBlank() && !partnerAlias.startsWith("Pessoa Próxima #")) {
                                         prefs?.edit()?.putString("alias_$cid", partnerAlias)?.apply()
                                     }
@@ -2262,8 +2264,10 @@ class PessoasAquiRepository(
                             },
                             onPeerMarkedYou = { markerId, _ ->
                                 val cleanMarker = cleanId(markerId)
-                                savedMarkingMePeople.add(cleanMarker)
-                                saveConnectionsToPrefs()
+                                if (cleanMarker !in savedPairRevisions) {
+                                    savedMarkingMePeople.add(cleanMarker)
+                                    saveConnectionsToPrefs()
+                                }
                                 val current = _realDiscoveredPeople.value.toMutableList()
                                 val idx = current.indexOfFirst { cleanId(it.technicalIdentityHash.ifBlank { it.id }) == cleanMarker }
                                 if (idx >= 0) {
