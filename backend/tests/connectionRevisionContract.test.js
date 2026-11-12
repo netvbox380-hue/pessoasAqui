@@ -25,19 +25,20 @@ test('revision upsert and event are composed on same transaction callback', asyn
   const queries = [];
   const tx = async (sql, args) => {
     queries.push({sql, args});
+    if (sql.includes('FROM identities')) return {rows: [{id: 'FFFF'}, {id: 'AAAA'}]};
     if (sql.includes('RETURNING revision')) return {rows: [{revision: '42'}]};
     return {rowCount: 1, rows: []};
   };
   const revision = await advancePairRevision(tx, 'FFFF', 'AAAA', 'NONE', 'UNMARK');
   assert.equal(revision, 42);
-  assert.equal(queries.length, 2);
-  assert.match(queries[0].sql, /ON CONFLICT \(pair_key\) DO UPDATE/);
-  assert.match(queries[0].sql, /revision = connection_revisions\.revision \+ 1/);
-  assert.equal(queries[0].args[0], 'aaaa<->ffff');
-  assert.equal(queries[0].args[1], 'AAAA');
-  assert.equal(queries[0].args[2], 'FFFF');
-  assert.match(queries[1].sql, /INSERT INTO connection_events/);
-  assert.deepEqual(queries[1].args, ['aaaa<->ffff', 'FFFF', 'AAAA', 'UNMARK', 'NONE', 42]);
+  assert.equal(queries.length, 3);
+  assert.match(queries[1].sql, /ON CONFLICT \(pair_key\) DO UPDATE/);
+  assert.match(queries[1].sql, /revision = connection_revisions\.revision \+ 1/);
+  assert.equal(queries[1].args[0], 'aaaa<->ffff');
+  assert.equal(queries[1].args[1], 'AAAA');
+  assert.equal(queries[1].args[2], 'FFFF');
+  assert.match(queries[2].sql, /INSERT INTO connection_events/);
+  assert.deepEqual(queries[2].args, ['aaaa<->ffff', 'FFFF', 'AAAA', 'UNMARK', 'NONE', 42]);
 });
 
 test('invalid data and unsafe revisions fail closed', async () => {
