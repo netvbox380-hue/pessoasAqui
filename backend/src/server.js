@@ -11,7 +11,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 const crypto = require('crypto');
-const { initDatabase, localStore, resetCircuitBreaker, closeDatabase, registerDbRecoveredCallback, isPostgres, query, withTransaction } = require('./db');
+const { initDatabase, localStore, resetCircuitBreaker, closeDatabase, isPostgres, query, withTransaction } = require('./db');
 const { revisionsEnabled, stateFromDirections, advancePairRevision } = require('./connectionRevisions');
 const { hashPin, verifyPinHash, generateNonce, calculateLockoutDurationSeconds } = require('./crypto');
 const {
@@ -132,8 +132,8 @@ async function verifySchemaCompatibility() {
       }
     } catch (_) {}
 
-    // Restaura mensagens pendentes na inicialização
-    await restorePendingMessagesFromDatabase();
+    // O PostgreSQL permanece a fonte autoritativa das pendências.
+    // Não baixar ciphertexts de todos os usuários ao iniciar o serviço.
     return check;
   } catch (err) {
     console.warn('[DB] Nota ao verificar compatibilidade:', err.message);
@@ -252,57 +252,10 @@ async function acknowledgePendingMessage(authenticatedRecipientId, messageId) {
   return { success: true, acknowledged: true, messageId };
 }
 
-async function restorePendingMessagesFromDatabase() {
-  if (!isPostgres()) return;
-  try {
-    let pendingRows;
-    try {
-      pendingRows = await query(
-        `SELECT id, sender_identity, recipient_identity, sender_alias, ciphertext_payload, iv_nonce, created_at
-         FROM e2ee_messages
-         WHERE is_delivered = FALSE AND (is_cancelled IS NULL OR is_cancelled = FALSE)
-         ORDER BY created_at ASC`
-      );
-    } catch (errCol) {
-      if (errCol.code === '42703' || String(errCol.message).includes('is_cancelled')) {
-        console.warn('[DB] Restauração de pendências suspensa: coluna is_cancelled ausente no banco (fail-closed).');
-        return;
-      }
-      throw errCol;
-    }
-    pendingMessages.clear();
-    for (const row of pendingRows.rows) {
-      const kRecip = keyId(row.recipient_identity);
-      if (!pendingMessages.has(kRecip)) {
-        pendingMessages.set(kRecip, []);
-      }
-      const q = pendingMessages.get(kRecip);
-      if (!q.some(m => m.messageId === row.id)) {
-        q.push({
-          type: 'E2EE_MESSAGE_RECEIVED',
-          messageId: row.id,
-          senderHash: cleanId(row.sender_identity),
-          senderAlias: row.sender_alias || 'Usuário',
-          recipientHash: cleanId(row.recipient_identity),
-          ciphertextPayload: row.ciphertext_payload,
-          ivNonce: row.iv_nonce || '',
-          isEphemeral: false,
-          timestamp: row.created_at ? new Date(row.created_at).getTime() : Date.now()
-        });
-        if (q.length > 50) q.shift();
-      }
-    }
-    if (pendingRows && pendingRows.rows.length > 0) {
-      console.log(`[DB] Mensagens pendentes restauradas do banco: ${pendingRows.rows.length}`);
-    }
-  } catch (errPending) {
-    console.warn('[DB] Nota ao restaurar mensagens pendentes:', errPending.message);
-  }
-}
+// A recuperação do pool não pré-carrega mensagens duráveis em RAM.
+// Os endpoints assinados HTTP/WS consultam pendências por destinatário no PostgreSQL.
+// Assim, uma reconexão não faz um SELECT global de ciphertext_payload.
 
-if (typeof registerDbRecoveredCallback === 'function') {
-  registerDbRecoveredCallback(restorePendingMessagesFromDatabase);
-}
 
 function purgePendingMessagesRam(idA, idB) {
   const cleanA = cleanId(idA);
