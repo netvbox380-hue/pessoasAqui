@@ -670,6 +670,13 @@ class PessoasAquiRepository(
         // (as tabelas sao atualizadas em uma unica transacao no backend).
         // Em caso de incoerencia, rejeitar o snapshot inteiro, sem tocar no cache.
         val myId = cleanId(cryptoIdentityManager.getTechnicalIdentity())
+        // Quando o servidor anuncia o protocolo revisionado, toda marcacao
+        // ativa precisa existir no mapa. Ausencia seria sinal de migracao
+        // incompleta ou deriva entre o legado e o novo esquema.
+        if ((own + remote + mutual).any { it !in status.pairRevisions }) {
+            Log.w("PessoasAqui", "Snapshot revisionado sem versao para vinculo ativo")
+            return false
+        }
         for ((peer, version) in status.pairRevisions) {
             if (!br.com.pessoasaqui.core.crypto.ConnectionRevisionPolicy.stateMatchesSnapshot(
                     myId, peer, version.state, peer in own, peer in remote, peer in mutual)) {
