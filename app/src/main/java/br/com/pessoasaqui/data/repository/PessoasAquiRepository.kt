@@ -671,16 +671,8 @@ class PessoasAquiRepository(
         // Em caso de incoerencia, rejeitar o snapshot inteiro, sem tocar no cache.
         val myId = cleanId(cryptoIdentityManager.getTechnicalIdentity())
         for ((peer, version) in status.pairRevisions) {
-            val isLow = myId < peer
-            val shouldMark = version.state == "MUTUAL" ||
-                (version.state == "MARKED_LOW" && isLow) ||
-                (version.state == "MARKED_HIGH" && !isLow)
-            val shouldBeMarked = version.state == "MUTUAL" ||
-                (version.state == "MARKED_HIGH" && isLow) ||
-                (version.state == "MARKED_LOW" && !isLow)
-            if ((peer in own) != shouldMark ||
-                (peer in remote) != shouldBeMarked ||
-                (peer in mutual) != (version.state == "MUTUAL")) {
+            if (!br.com.pessoasaqui.core.crypto.ConnectionRevisionPolicy.stateMatchesSnapshot(
+                    myId, peer, version.state, peer in own, peer in remote, peer in mutual)) {
                 Log.w("PessoasAqui", "Snapshot de revisao inconsistente; rejeitado")
                 return false
             }
