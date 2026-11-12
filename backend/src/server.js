@@ -2294,13 +2294,14 @@ app.post('/api/invites/redeem', async (req, res) => {
   }
 
   let sender, originalAlias;
+  let inviteConnectionRevision = null;
   if (inviteDbRequired) {
     try {
-      // A CTE é UMA instrução transacional. Se a atualização do vínculo falhar,
-      // o consumo do token também é revertido. OLD token plaintext e NEW hash
-      // continuam válidos; nenhum token novo é armazenado em texto puro.
-      const claim = await query(
-        `WITH claimed AS (
+      // Versioned writes MUST share the pair advisory lock and transaction used
+      // by /connections/mark and /connections/unmark. An unversioned invite
+      // redemption would otherwise bypass monotonic revisions and revive peers.
+      const useRevisions = typeof revisionsEnabled === 'function' && revisionsEnabled();
+      const claimSql = `WITH claimed AS (
            UPDATE invites
               SET is_used = TRUE, used_by = $3, used_at = NOW()
             WHERE id = $1
@@ -2321,9 +2322,44 @@ app.post('/api/invites/redeem', async (req, res) => {
            RETURNING 1
          )
          SELECT sender_identity, sender_alias,
-                (SELECT COUNT(*) FROM linked) AS linked_count FROM claimed`,
-        [inviteId, token, receiver, tokenDigest(token)]
-      );
+                (SELECT COUNT(*) FROM linked) AS linked_count FROM claimed`;
+      const claimArgs = [inviteId, token, receiver, tokenDigest(token)];
+      let claim;
+      if (useRevisions) {
+        if (!isPostgres() || typeof withTransaction !== 'function') {
+          return res.status(503).json({ error: 'Banco de revisões indisponível.' });
+        }
+        const outcome = await withTransaction(async (txQuery) => {
+          // Read the immutable invite creator before locking the pair. The
+          // claim below remains the sole authority for expiry/one-time usage.
+          const preliminary = await txQuery(
+            'SELECT sender_identity FROM invites WHERE id = $1', [inviteId]
+          );
+          if (preliminary.rowCount !== 1) return { claim: { rowCount: 0, rows: [] }, revision: null };
+          const inviteSender = cleanId(preliminary.rows[0].sender_identity);
+          if (!inviteSender || keyId(inviteSender) === keyId(receiver)) {
+            return { claim: { rowCount: 0, rows: [] }, revision: null };
+          }
+          await txQuery('SELECT pg_advisory_xact_lock(hashtext($1))', [pairKey(inviteSender, receiver)]);
+          const result = await txQuery(claimSql, claimArgs);
+          if (result.rowCount !== 1 || Number(result.rows[0]?.linked_count) !== 2) {
+            return { claim: result, revision: null };
+          }
+          if (keyId(result.rows[0].sender_identity) !== keyId(inviteSender)) {
+            throw new Error('Invite creator changed during redemption');
+          }
+          const revision = await advancePairRevision(
+            txQuery, inviteSender, receiver, 'MUTUAL', 'MUTUAL'
+          );
+          return { claim: result, revision };
+        });
+        claim = outcome.claim;
+        inviteConnectionRevision = outcome.revision;
+      } else {
+        // Legacy route retained byte-for-byte at the SQL contract level until
+        // feature activation, so existing deployments and clients still work.
+        claim = await query(claimSql, claimArgs);
+      }
       if (claim.rowCount !== 1 || Number(claim.rows[0]?.linked_count) !== 2) {
         return res.status(410).json({
           error: 'Convite inválido, já usado, expirado ou indisponível.'
@@ -2407,6 +2443,7 @@ app.post('/api/invites/redeem', async (req, res) => {
     partnerIdentity: receiver,
     partnerAlias: recAlias,
     partnerPublicKey: receiverPublicKey,
+    ...(inviteConnectionRevision !== null ? { revision: inviteConnectionRevision } : {}),
     timestamp: Date.now(),
     viaInvite: true
   };
@@ -2424,6 +2461,7 @@ app.post('/api/invites/redeem', async (req, res) => {
       partnerIdentity: sender,
       partnerAlias: originalAlias,
       partnerPublicKey: senderPublicKey,
+      ...(inviteConnectionRevision !== null ? { revision: inviteConnectionRevision } : {}),
       timestamp: Date.now(),
       viaInvite: true
     }));
@@ -2437,6 +2475,7 @@ app.post('/api/invites/redeem', async (req, res) => {
     senderPublicKey: senderPublicKey,
     senderGeneration: senderGeneration,
     receiverIdentity: receiver,
+    ...(inviteConnectionRevision !== null ? { revision: inviteConnectionRevision } : {}),
     receiverAlias: recAlias,
     message: `✨ Conexão Mútua Estabelecida com ${originalAlias}!`
   });
