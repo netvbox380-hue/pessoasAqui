@@ -35,6 +35,9 @@ function isFatalDbError(err) {
   if (!err) return false;
   const code = String(err.code || '');
   const msg = String(err.message || '');
+  // PostgreSQL 57014 cancela uma consulta; nao significa que a conexao morreu.
+  // Nao recriar o pool por um statement_timeout isolado.
+  if (code === '57014') return false;
   return (
     code === 'ENETUNREACH' ||
     code === 'EHOSTUNREACH' ||
