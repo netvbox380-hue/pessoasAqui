@@ -467,6 +467,63 @@ async function getConnectionStatus(myId, peerId) {
   return { isMarkedByMe, isMarkingMe, isMutual };
 }
 
+// Snapshot em lote para o AUTH do WebSocket: uma consulta por conexao, e nao
+// uma consulta por peer online. Em falha SQL, nenhuma relacao e autorizada.
+async function getConnectionStatusesForPeers(myId, peerIds) {
+  const from = cleanId(myId);
+  const peers = Array.from(new Set(peerIds.map(id => keyId(cleanId(id))).filter(id => id && id !== keyId(from))));
+  const empty = () => ({ isMarkedByMe: false, isMarkingMe: false, isMutual: false });
+  const statuses = new Map(peers.map(id => [id, empty()]));
+  if (!from || peers.length === 0) return statuses;
+
+  // Sem banco configurado, manter exatamente as regras locais de desenvolvimento.
+  if (!process.env.DATABASE_URL) {
+    await Promise.all(peers.map(async id => statuses.set(id, await getConnectionStatus(from, id))));
+    return statuses;
+  }
+  if (!isPostgres()) return statuses;
+
+  try {
+    const rows = await query(
+      `SELECT from_identity, to_identity, is_mutual FROM connections
+       WHERE (LOWER(from_identity) = $1 AND LOWER(to_identity) = ANY($2::text[]))
+          OR (LOWER(to_identity) = $1 AND LOWER(from_identity) = ANY($2::text[]))`,
+      [keyId(from), peers]
+    );
+    const directions = new Map();
+    for (const row of rows.rows) {
+      const rowFrom = keyId(row.from_identity);
+      const rowTo = keyId(row.to_identity);
+      const peer = rowFrom === keyId(from) ? rowTo : rowTo === keyId(from) ? rowFrom : null;
+      if (!peer || !statuses.has(peer)) continue;
+      const d = directions.get(peer) || { outbound: false, inbound: false, outboundMutual: false, inboundMutual: false };
+      if (rowFrom === keyId(from)) {
+        d.outbound = true;
+        d.outboundMutual = d.outboundMutual || row.is_mutual === true;
+      } else {
+        d.inbound = true;
+        d.inboundMutual = d.inboundMutual || row.is_mutual === true;
+      }
+      directions.set(peer, d);
+    }
+    for (const peer of peers) {
+      if (revokedConnections.has(pairKey(from, peer))) continue;
+      const d = directions.get(peer);
+      if (!d) continue;
+      statuses.set(peer, {
+        isMarkedByMe: d.outbound,
+        isMarkingMe: d.inbound,
+        isMutual: d.outbound && d.inbound && d.outboundMutual && d.inboundMutual
+      });
+    }
+  } catch (error) {
+    console.error('[DB] Falha na consulta de presenca em lote (fail-closed):', error.message);
+    // Manter mapa com autorizacoes negadas; nunca recorrer a cache legado.
+    for (const peer of peers) statuses.set(peer, empty());
+  }
+  return statuses;
+}
+
 // Backend não decifra nenhum envelope, inclusive os legados ENC:.
 // Mensagens históricas são encaminhadas intactas e decifradas somente pelo cliente.
 function unwrapE2eeIfCompatible(payload) {
@@ -1016,15 +1073,15 @@ wss.on('connection', (ws, req) => {
                        (!p.alias || !incomingAlias || p.alias.toLowerCase() !== incomingAlias.toLowerCase()) &&
                        p.visible !== false && (now - p.lastSeen < 120000));
 
-        const enrichedPeers = await Promise.all(existingPeers.map(async (p) => {
-          const status = await getConnectionStatus(authenticatedIdentity, p.identityHash);
-          return {
-            ...p,
-            isMutual: status.isMutual,
-            isMarkedByMe: status.isMarkedByMe,
-            isMarkingMe: status.isMarkingMe
-          };
-        }));
+        const statusByPeer = await getConnectionStatusesForPeers(
+          authenticatedIdentity,
+          [...existingPeers.map(p => p.identityHash), ...activeSockets.keys()]
+        );
+        const enrichedPeers = existingPeers.map(p => {
+          const status = statusByPeer.get(keyId(p.identityHash)) ||
+            { isMutual: false, isMarkedByMe: false, isMarkingMe: false };
+          return { ...p, isMutual: status.isMutual, isMarkedByMe: status.isMarkedByMe, isMarkingMe: status.isMarkingMe };
+        });
 
         // Transmite no PRESENCE_SYNC apenas quem já possui relação mútua ou de marcação
         const mutualOrRelatedPeers = enrichedPeers.filter(p => p.isMutual || p.isMarkedByMe || p.isMarkingMe);
@@ -1034,8 +1091,8 @@ wss.on('connection', (ws, req) => {
         const peerData = activePresence.get(kAuth);
         for (const [targetKey, client] of activeSockets.entries()) {
           if (client !== ws && client.readyState === WebSocket.OPEN) {
-            const status = await getConnectionStatus(authenticatedIdentity, targetKey);
-            if (status.isMutual && peerData?.visible !== false) {
+            const status = statusByPeer.get(keyId(targetKey));
+            if (status?.isMutual && peerData?.visible !== false) {
               client.send(JSON.stringify({ type: 'PEER_ONLINE', peer: { ...peerData, isMutual: true } }));
             }
           }
