@@ -496,14 +496,13 @@ async function getConnectionStatusesForPeers(myId, peerIds) {
       const rowTo = keyId(row.to_identity);
       const peer = rowFrom === keyId(from) ? rowTo : rowTo === keyId(from) ? rowFrom : null;
       if (!peer || !statuses.has(peer)) continue;
-      const d = directions.get(peer) || { outbound: false, inbound: false, outboundMutual: false, inboundMutual: false };
+      const d = directions.get(peer) || { outbound: false, inbound: false, allMutual: true };
       if (rowFrom === keyId(from)) {
         d.outbound = true;
-        d.outboundMutual = d.outboundMutual || row.is_mutual === true;
       } else {
         d.inbound = true;
-        d.inboundMutual = d.inboundMutual || row.is_mutual === true;
       }
+      d.allMutual = d.allMutual && row.is_mutual === true;
       directions.set(peer, d);
     }
     for (const peer of peers) {
@@ -513,7 +512,7 @@ async function getConnectionStatusesForPeers(myId, peerIds) {
       statuses.set(peer, {
         isMarkedByMe: d.outbound,
         isMarkingMe: d.inbound,
-        isMutual: d.outbound && d.inbound && d.outboundMutual && d.inboundMutual
+        isMutual: d.outbound && d.inbound && d.allMutual
       });
     }
   } catch (error) {
