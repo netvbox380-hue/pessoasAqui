@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS connections (
     UNIQUE (from_identity, to_identity)
 );
 
+-- ETAPA 4B / REVISOES MONOTONICAS:
+-- As tabelas connection_revisions e connection_events sao definidas pela
+-- migracao aditiva backend/migrations/003_connection_monotonic_revisions.sql.
+-- Nao duplicar esse DDL aqui antes de adaptar todos os fixtures de testes
+-- que executam TRUNCATE identities sem CASCADE (as novas FKs afetariam
+-- a execucao isolada). O protocolo de revisoes so e habilitado pelo flag
+-- explicito CONNECTION_REVISIONS_ENABLED=true APOS aplicacao/homologacao
+-- do esquema e reconciliacao do backfill.
+--
 -- 5. RELAÇÕES FAMILIARES (Rede de Confiança & Recuperação de Identidade)
 CREATE TABLE IF NOT EXISTS family_relationships (
     id BIGSERIAL PRIMARY KEY,
