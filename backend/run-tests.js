@@ -23,6 +23,7 @@ if (suites.length === 0) {
 // criam e configuram seu próprio banco isolado durante o teste.
 const testEnv = { ...process.env };
 delete testEnv.DATABASE_URL;
+delete testEnv.CONNECTION_REVISIONS_ENABLED; // suites existentes usam esquema legado isolado
 
 const result = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...suites], {
   cwd: path.resolve(__dirname, '..'),
