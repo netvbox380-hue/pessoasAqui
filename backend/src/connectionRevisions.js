@@ -34,8 +34,21 @@ async function advancePairRevision(txQuery, from, to, currentState, action) {
   if (!lowerFrom || !lowerTo || lowerFrom === lowerTo) {
     throw new Error('Invalid revision pair identities');
   }
-  const low = lowerFrom < lowerTo ? from : to;
-  const high = lowerFrom < lowerTo ? to : from;
+  // Match the exact persisted identity IDs, not the uppercased HTTP form:
+  // historical PostgreSQL rows can use different casing and FKs are exact.
+  const identityRows = await txQuery(
+    'SELECT id FROM identities WHERE LOWER(id) = LOWER($1) OR LOWER(id) = LOWER($2)',
+    [from, to]
+  );
+  const fromMatches = identityRows.rows.filter(row => String(row.id).toLowerCase() === lowerFrom);
+  const toMatches = identityRows.rows.filter(row => String(row.id).toLowerCase() === lowerTo);
+  if (fromMatches.length !== 1 || toMatches.length !== 1) {
+    throw new Error('Missing or ambiguous canonical pair identities');
+  }
+  const canonicalFrom = fromMatches[0].id;
+  const canonicalTo = toMatches[0].id;
+  const low = lowerFrom < lowerTo ? canonicalFrom : canonicalTo;
+  const high = lowerFrom < lowerTo ? canonicalTo : canonicalFrom;
   const key = pairIdentityKey(from, to);
   const result = await txQuery(
     `INSERT INTO connection_revisions
@@ -56,7 +69,7 @@ async function advancePairRevision(txQuery, from, to, currentState, action) {
     `INSERT INTO connection_events
        (pair_key, actor_identity, target_identity, action, resulting_state, revision)
      VALUES ($1, $2, $3, $4, $5, $6)`,
-    [key, from, to, action, currentState, revision]
+    [key, canonicalFrom, canonicalTo, action, currentState, revision]
   );
   return revision;
 }
