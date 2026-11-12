@@ -45,6 +45,13 @@ test('invalid data and unsafe revisions fail closed', async () => {
   const unused = async () => { throw new Error('unexpected database call'); };
   await assert.rejects(() => advancePairRevision(unused, 'A', 'A', 'MUTUAL', 'MUTUAL'));
   await assert.rejects(() => advancePairRevision(unused, 'A', 'B', 'FAKE', 'MARK'));
-  const invalidTx = async () => ({ rows: [{revision: '9007199254740993'}] });
-  await assert.rejects(() => advancePairRevision(invalidTx, 'A', 'B', 'MUTUAL', 'MUTUAL'));
+  const invalidTx = async sql => (
+    sql.includes('FROM identities')
+      ? {rows: [{id: 'A'}, {id: 'B'}]}
+      : {rows: [{revision: '9007199254740993'}]}
+  );
+  await assert.rejects(
+    () => advancePairRevision(invalidTx, 'A', 'B', 'MUTUAL', 'MUTUAL'),
+    /Unsafe or missing connection revision/
+  );
 });
