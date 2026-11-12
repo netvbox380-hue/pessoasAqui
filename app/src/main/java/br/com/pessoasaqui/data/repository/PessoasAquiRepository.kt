@@ -454,6 +454,20 @@ class PessoasAquiRepository(
         (prefs?.getStringSet("pending_unmark_people", emptySet()) ?: emptySet()).toMutableSet()
     )
 
+    // Versionamento autoritativo por par (Modo B). Persistido junto aos
+    // conjuntos de conexoes; nunca derivar revisoes de timestamps locais.
+    private val savedPairRevisions = java.util.concurrent.ConcurrentHashMap<String, Long>().apply {
+        runCatching {
+            val stored = org.json.JSONObject(prefs?.getString("saved_pair_revisions", "{}") ?: "{}")
+            val keys = stored.keys()
+            while (keys.hasNext()) {
+                val peer = cleanId(keys.next())
+                val revision = stored.optLong(peer, 0L)
+                if (peer.isNotBlank() && revision > 0L) put(peer, revision)
+            }
+        }
+    }
+
     fun cleanId(id: String): String = id.removePrefix("peer-").trim().uppercase()
 
     fun saveConnectionsToPrefs() {
@@ -463,6 +477,7 @@ class PessoasAquiRepository(
             ?.putStringSet("saved_mutual_people", HashSet(savedMutualPeople))
             ?.putStringSet("saved_revoked_mutual_people", HashSet(revokedMutualPeople))
             ?.putStringSet("pending_unmark_people", HashSet(pendingUnmarkPeople))
+            ?.putString("saved_pair_revisions", org.json.JSONObject(savedPairRevisions.toMap()).toString())
             ?.apply()
         saveSavedContactsToPrefs()
     }
@@ -639,6 +654,63 @@ class PessoasAquiRepository(
      * Um evento local/WS mais recente invalida requisições emitidas antes dele.
      * O banco continua autoritativo para o conteúdo de snapshots novos.
      */
+    /**
+     * Um snapshot de revisoes e estados legados vem de UMA instrução MVCC
+     * autoritativa do servidor. Nunca deixar um snapshot anterior a um evento
+     * WS persistido sobrescrever aquele par, ainda que REST termine por ultimo.
+     */
+    private fun reconcileVersionedConnectionStatus(
+        status: br.com.pessoasaqui.data.remote.ConnectionStatusResponse
+    ) {
+        val own = status.markedByMe.map(::cleanId).toMutableSet()
+        val remote = status.markingMe.map(::cleanId).toMutableSet()
+        val mutual = status.mutual.map(::cleanId).toMutableSet()
+        val peers = (own + remote + mutual + status.pairRevisions.keys.map(::cleanId) +
+            savedPairRevisions.keys + savedMarkedPeople + savedMarkingMePeople + savedMutualPeople)
+            .filter { it.isNotBlank() }.toSet()
+        for (peer in peers) {
+            val incoming = status.pairRevisions[peer]?.revision
+            val current = savedPairRevisions[peer] ?: 0L
+            if (br.com.pessoasaqui.core.crypto.ConnectionRevisionPolicy
+                    .preserveLocalSnapshotState(current, incoming)) {
+                // Preservar somente o estado local comprovadamente mais recente.
+                if (peer in savedMarkedPeople) own.add(peer) else own.remove(peer)
+                if (peer in savedMarkingMePeople) remote.add(peer) else remote.remove(peer)
+                if (peer in savedMutualPeople) mutual.add(peer) else mutual.remove(peer)
+            } else if (incoming != null && incoming >= current) {
+                savedPairRevisions[peer] = incoming
+            }
+        }
+        // Todas as revisoes e os conjuntos de vinculos são gravados pela
+        // mesma operacao de preferencias durante a reconciliacao.
+        reconcileConnectionStatus(own, remote, mutual)
+    }
+
+    /** Eventos versionados do WS nunca substituem estado local mais recente. */
+    private fun handleVersionedConnectionEvent(
+        type: String, peerIdentity: String, alias: String, revision: Long
+    ) {
+        val peer = cleanId(peerIdentity)
+        if (peer.isBlank()) return
+        synchronized(connectionStateLock) {
+            val old = savedPairRevisions[peer] ?: 0L
+            if (!br.com.pessoasaqui.core.crypto.ConnectionRevisionPolicy
+                    .isNewerEvent(revision, old)) return
+            savedPairRevisions[peer] = revision
+            when (type) {
+                "MUTUAL_CONNECTION_ESTABLISHED" ->
+                    confirmMutualConnectionFromServer(peer, alias)
+                "MUTUAL_CONNECTION_BROKEN" ->
+                    revokeMutualLocally(peer)
+                "PEER_MARKED_YOU" -> {
+                    connectionEventGeneration++
+                    if (peer !in revokedMutualPeople) savedMarkingMePeople.add(peer)
+                    saveConnectionsToPrefs()
+                }
+            }
+        }
+    }
+
     private suspend fun fetchAndReconcileConnectionStatus(
         identity: String
     ): br.com.pessoasaqui.data.remote.ConnectionStatusResponse? {
@@ -653,7 +725,13 @@ class PessoasAquiRepository(
                 null
             } else {
                 lastAppliedConnectionStatusRequest = requestId
-                reconcileConnectionStatus(status.markedByMe, status.markingMe, status.mutual)
+                if (status.hasPairRevisions) {
+                    reconcileVersionedConnectionStatus(status)
+                } else {
+                    // Backend legado sem o protocolo: manter as salvaguardas
+                    // existentes de geracao de evento e revogacao persistida.
+                    reconcileConnectionStatus(status.markedByMe, status.markingMe, status.mutual)
+                }
                 status
             }
         }
@@ -2165,6 +2243,9 @@ class PessoasAquiRepository(
                             },
                             onMutualConnectionBroken = { partnerId, _ ->
                                 revokeMutualLocally(partnerId)
+                            },
+                            onConnectionRevisionEvent = { type, partnerId, partnerAlias, revision ->
+                                handleVersionedConnectionEvent(type, partnerId, partnerAlias, revision)
                             },
                             onPeerMarkedYou = { markerId, _ ->
                                 val cleanMarker = cleanId(markerId)
