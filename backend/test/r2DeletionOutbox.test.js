@@ -64,13 +64,13 @@ test('successful delete acknowledges only after R2 confirms completion', async (
   const query = async (sql) => {
     if (sql.includes('WITH claimed AS')) {
       trace.push('claim');
-      return { rows: [{ object_key: 'key1', message_id: 'm', attempts: 1 }] };
+      return { rows: [{ object_key: 'pending/12/34/12345678-1234-4234-8234-123456789abc', message_id: 'm', attempts: 1 }] };
     }
     trace.push('done');
     return { rowCount: 1 };
   };
   const out = await processDeletionBatch({
-    query, deleteObject: async key => { assert.equal(key, 'key1'); trace.push('R2'); }
+    query, deleteObject: async key => { assert.equal(key, 'pending/12/34/12345678-1234-4234-8234-123456789abc'); trace.push('R2'); }
   });
   assert.deepEqual(trace, ['claim', 'R2', 'done']);
   assert.deepEqual(out, { claimed: 1, done: 1, retry: 0, stale: 0 });
@@ -81,7 +81,7 @@ test('R2 failure requeues job instead of marking DONE', async () => {
   const query = async sql => {
     if (sql.includes('WITH claimed AS')) {
       trace.push('claim');
-      return { rows: [{ object_key: 'key1', message_id: 'm', attempts: 2 }] };
+      return { rows: [{ object_key: 'pending/12/34/12345678-1234-4234-8234-123456789abc', message_id: 'm', attempts: 2 }] };
     }
     assert.match(sql, /SET state='RETRY'/);
     trace.push('retry');
@@ -98,7 +98,7 @@ test('R2 failure requeues job instead of marking DONE', async () => {
 test('stale deletion acknowledgement cannot overwrite another worker attempt', async () => {
   const query = async sql => {
     if (sql.includes('WITH claimed AS')) {
-      return { rows: [{ object_key: 'key1', message_id: 'm', attempts: 1 }] };
+      return { rows: [{ object_key: 'pending/12/34/12345678-1234-4234-8234-123456789abc', message_id: 'm', attempts: 1 }] };
     }
     return { rowCount: 0 };
   };
@@ -121,4 +121,23 @@ test('empty batch causes no remote calls', async () => {
   });
   assert.equal(calls, 0);
   assert.deepEqual(out, { claimed: 0, done: 0, retry: 0, stale: 0 });
+});
+
+
+test('corrupted outbox key cannot trigger arbitrary R2 deletion', async () => {
+  let r2DeleteCalled = false;
+  const query = async sql => {
+    if (sql.includes('WITH claimed AS')) {
+      return { rows: [{ object_key: '../production-backup', message_id: 'm', attempts: 1 }] };
+    }
+    assert.match(sql, /SET state='RETRY'/);
+    return { rowCount: 1 };
+  };
+  const outcome = await processDeletionBatch({
+    query,
+    deleteObject: async () => { r2DeleteCalled = true; }
+  });
+  assert.equal(r2DeleteCalled, false);
+  assert.equal(outcome.retry, 1);
+  assert.equal(outcome.done, 0);
 });
