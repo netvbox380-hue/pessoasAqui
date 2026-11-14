@@ -14,6 +14,7 @@
  * IMPORTANT: Only a committed receipt of DELIVERED, EXPIRED or CANCELLED
  * may enqueue an object for deletion; callers must not enqueue PENDING media.
  */
+const { validateOpaqueObjectKey } = require('./r2CiphertextAdapter');
 const DEFAULT_LEASE_SECONDS = 120;
 const MAX_BATCH_SIZE = 50;
 const MAX_RETRY_SECONDS = 3600;
@@ -122,6 +123,7 @@ async function processDeletionBatch({ query, deleteObject, batchSize = 20, lease
   for (const job of jobs) {
     try {
       // Network call only after the durable claim. Never log object identifiers.
+      validateOpaqueObjectKey(job.object_key);
       await deleteObject(job.object_key);
     } catch (error) {
       if (await rescheduleDeletion({
