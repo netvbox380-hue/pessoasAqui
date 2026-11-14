@@ -68,11 +68,11 @@ test('attaches only after mutual permission, media lock, and pending insert', as
   const r = await attachMediaObject({ ...base, withTransaction: h.withTransaction });
   assert.equal(r.success,true);
   assert.equal(r.duplicate,false);
-  assert.equal(h.steps.length, 5);
+  assert.equal(h.steps.length, 6);
   assert.match(h.steps[0].sql,/FOR SHARE/);
   assert.match(h.steps[1].sql,/FOR UPDATE/);
   assert.match(h.steps[3].sql,/clock_timestamp\(\).*48 hours/s);
-  assert.match(h.steps[4].sql,/state='ATTACHED'/);
+  assert.match(h.steps[5].sql,/state='ATTACHED'/);
 });
 test('no insert when connection is missing or unilateral', async () => {
   for (const connections of [[], [{ from_identity: base.senderIdentity, to_identity: base.recipientIdentity, is_mutual: true }]]) {
