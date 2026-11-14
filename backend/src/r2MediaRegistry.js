@@ -205,8 +205,10 @@ async function attachMediaObject({
            id, sender_identity, recipient_identity, sender_alias,
            ciphertext_payload, iv_nonce, is_delivered,
            accepted_at, expires_at, delivery_state
-         ) VALUES ($1,$2,$3,$4,$5,$6,FALSE,
-                   clock_timestamp(),clock_timestamp() + interval '48 hours','PENDING')
+         )
+         SELECT $1,$2,$3,$4,$5,$6,FALSE,
+                accepted.ts,accepted.ts + interval '48 hours','PENDING'
+           FROM (SELECT clock_timestamp() AS ts) AS accepted
          ON CONFLICT (id) DO NOTHING RETURNING id`,
         [messageId, senderIdentity, recipientIdentity, senderAlias, ciphertextPayload, ivNonce]
       );
