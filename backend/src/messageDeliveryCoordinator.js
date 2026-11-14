@@ -118,7 +118,7 @@ async function confirmInlineDelivery({ withTransaction, messageId, recipientIden
     );
     const deleted = await tx(
       `DELETE FROM public.e2ee_messages
-        WHERE id=$1 AND delivery_state='PENDING' RETURNING id`,
+        WHERE id=$1 AND delivery_state='PENDING' AND expires_at > clock_timestamp() RETURNING id`,
       [messageId]
     );
     if (deleted.rowCount !== 1) {
@@ -176,7 +176,7 @@ async function expireInlineMessage({ withTransaction, messageId, noticeId }) {
     );
     const deleted = await tx(
       `DELETE FROM public.e2ee_messages
-         WHERE id=$1 AND delivery_state='PENDING' RETURNING id`,
+         WHERE id=$1 AND delivery_state='PENDING' AND expires_at <= clock_timestamp() RETURNING id`,
       [messageId]
     );
     if (deleted.rowCount !== 1) throw new Error('EXPIRY_TRANSITION_CONFLICT');
