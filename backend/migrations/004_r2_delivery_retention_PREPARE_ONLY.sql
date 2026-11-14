@@ -62,6 +62,14 @@ CREATE TABLE IF NOT EXISTS public.message_r2_delete_outbox (
   last_error_code varchar(128)
 );
 
+-- Protecao de dados: metadados de entregas/expiracoes nao devem ser
+-- consultaveis pelo cliente Supabase. Somente o backend autenticado opera
+-- atraves de um papel PostgreSQL autorizado, com RLS conforme o projeto.
+-- Sem policies por default: acesso direto anon/authenticated fica negado.
+ALTER TABLE public.message_delivery_receipts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.message_expiration_notices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.message_r2_delete_outbox ENABLE ROW LEVEL SECURITY;
+
 CREATE INDEX IF NOT EXISTS idx_e2ee_pending_expires_at
   ON public.e2ee_messages (expires_at)
   WHERE delivery_state = 'PENDING';
