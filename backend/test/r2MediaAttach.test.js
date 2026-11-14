@@ -71,7 +71,7 @@ test('attaches only after mutual permission, media lock, and pending insert', as
   assert.equal(h.steps.length, 6);
   assert.match(h.steps[0].sql,/FOR SHARE/);
   assert.match(h.steps[1].sql,/FOR UPDATE/);
-  assert.match(h.steps[3].sql,/clock_timestamp\(\).*48 hours/s);
+  assert.match(h.steps[4].sql,/accepted\.ts\s*\+ interval '48 hours'/);
   assert.match(h.steps[5].sql,/state='ATTACHED'/);
 });
 test('no insert when connection is missing or unilateral', async () => {
