@@ -26,12 +26,12 @@ function fakeDb({object=obj,message=msg,receipt=null,now='2026-11-15T12:00:00Z',
     if(fail==='outbox' && sql.includes('INSERT INTO public.message_r2_delete_outbox'))throw Error('DB_OUTBOX_DOWN');
     if(sql.includes('FROM public.message_r2_objects'))return {rows:object?[object]:[],rowCount:object?1:0};
     if(sql.includes('FROM public.message_delivery_receipts'))return {rows:receipt?[receipt]:[],rowCount:receipt?1:0};
-    if(sql.includes('FROM public.e2ee_messages'))return {rows:message?[message]:[],rowCount:message?1:0};
+    if(sql.includes('DELETE FROM public.e2ee_messages'))return {rowCount:deleteRows};
+    if(sql.includes('SELECT') && sql.includes('FROM public.e2ee_messages'))return {rows:message?[message]:[],rowCount:message?1:0};
     if(sql.includes('clock_timestamp() AS now'))return {rows:[{now}]};
     if(sql.includes('INSERT INTO public.message_delivery_receipts'))return {rowCount:1};
     if(sql.includes('UPDATE public.message_r2_objects'))return {rowCount:1};
     if(sql.includes('INSERT INTO public.message_r2_delete_outbox'))return {rowCount:1};
-    if(sql.includes('DELETE FROM public.e2ee_messages'))return {rowCount:deleteRows};
     throw Error('UNEXPECTED_SQL');
   });
   return {steps,withTransaction};
