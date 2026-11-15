@@ -133,4 +133,120 @@ async function confirmR2Delivery({
   });
 }
 
-module.exports = { confirmR2Delivery };
+/**
+ * Stage 9: expire one ATTACHED R2 message at the DB-authoritative 48h
+ * boundary. No server timers, routes or automatic worker are enabled.
+ * Uses the SAME lock ordering as confirmR2Delivery() to serialize ACK,
+ * expiry, and orphan processing. Receipts and notices contain NO media.
+ *
+ * ACK vs expiry: whichever transaction commits the terminal receipt wins.
+ * The WHERE deadline predicate on the final DELETE rechecks the clock.
+ * The caller must run a bounded, retryable batch worker in the future.
+ */
+async function expireR2Message({ withTransaction, messageId, noticeId }) {
+  if (typeof withTransaction !== 'function') throw new TypeError('withTransaction required');
+  if (!validId(messageId, 256) ||
+      typeof noticeId !== 'string' ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(noticeId)) {
+    return { success: false, statusCode: 400, code: 'INVALID_ARGUMENT' };
+  }
+
+  return withTransaction(async tx => {
+    const objects = await tx(
+      `SELECT object_key, message_id, sender_identity, recipient_identity,
+              state, content_sha256, content_bytes
+         FROM public.message_r2_objects
+        WHERE message_id=$1 FOR UPDATE`,
+      [messageId]
+    );
+    const object = objects.rows[0];
+    if (!object) return { success: false, code: 'MEDIA_NOT_FOUND', statusCode: 404 };
+    validateOpaqueObjectKey(object.object_key);
+
+    // A committed receipt is authoritative and never overwritten.
+    const receipt = await tx(
+      'SELECT state FROM public.message_delivery_receipts WHERE message_id=$1',
+      [messageId]
+    );
+    if (receipt.rowCount > 0) {
+      return { success: false, code: 'ALREADY_FINALIZED', state: receipt.rows[0].state };
+    }
+    if (object.state !== 'ATTACHED' || !object.content_sha256 ||
+        !object.content_bytes) {
+      return { success: false, code: 'NOT_EXPIRABLE_ATTACHED' };
+    }
+
+    const messages = await tx(
+      `SELECT id, sender_identity, recipient_identity, ciphertext_payload,
+              iv_nonce, expires_at, delivery_state, is_cancelled, is_delivered
+         FROM public.e2ee_messages WHERE id=$1 FOR UPDATE`,
+      [messageId]
+    );
+    const row = messages.rows[0];
+    if (!row || row.is_delivered || row.is_cancelled ||
+        row.delivery_state !== 'PENDING' ||
+        normalized(row.sender_identity) !== normalized(object.sender_identity) ||
+        normalized(row.recipient_identity) !== normalized(object.recipient_identity) ||
+        typeof row.ciphertext_payload !== 'string' ||
+        !row.ciphertext_payload.startsWith('ENC_ECDH:') ||
+        !row.expires_at) {
+      return { success: false, code: 'NOT_EXPIRABLE_PENDING' };
+    }
+
+    const nowResult = await tx('SELECT clock_timestamp() AS now', []);
+    if (new Date(row.expires_at).getTime() > new Date(nowResult.rows[0].now).getTime()) {
+      return { success: false, code: 'NOT_EXPIRED' };
+    }
+
+    await tx(
+      `INSERT INTO public.message_delivery_receipts
+        (message_id,sender_identity,recipient_identity,payload_digest,
+         state,terminal_at,cleanup_after)
+       VALUES ($1,$2,$3,$4,'EXPIRED',clock_timestamp(),
+               clock_timestamp()+($5::integer*interval '1 day'))`,
+      [messageId,row.sender_identity,row.recipient_identity,
+        stablePayloadDigest(row),RECEIPT_RETENTION_DAYS]
+    );
+
+    // Notice is identifiers only, never ciphertext, plaintext or R2 URL.
+    await tx(
+      `INSERT INTO public.message_expiration_notices
+        (notice_id,message_id,sender_identity,recipient_identity,
+         expired_at,cleanup_after)
+       VALUES ($1,$2,$3,$4,clock_timestamp(),
+               clock_timestamp()+($5::integer*interval '1 day'))`,
+      [noticeId,messageId,row.sender_identity,row.recipient_identity,90]
+    );
+
+    const queuedMedia = await tx(
+      `UPDATE public.message_r2_objects
+          SET state='DELETE_QUEUED',last_changed_at=clock_timestamp()
+        WHERE object_key=$1 AND message_id=$2 AND state='ATTACHED'
+        RETURNING object_key`,
+      [object.object_key,messageId]
+    );
+    if (queuedMedia.rowCount !== 1) throw new Error('R2_EXPIRY_MEDIA_CONFLICT');
+
+    const outbox = await tx(
+      `INSERT INTO public.message_r2_delete_outbox
+          (object_key,message_id)
+        VALUES ($1,$2) RETURNING object_key`,
+      [object.object_key,messageId]
+    );
+    if (outbox.rowCount !== 1) throw new Error('R2_EXPIRY_OUTBOX_CONFLICT');
+
+    const deleted = await tx(
+      `DELETE FROM public.e2ee_messages
+        WHERE id=$1 AND delivery_state='PENDING' AND is_delivered=FALSE
+          AND (is_cancelled IS NULL OR is_cancelled=FALSE)
+          AND expires_at <= clock_timestamp()
+        RETURNING id`,
+      [messageId]
+    );
+    if (deleted.rowCount !== 1) throw new Error('R2_EXPIRY_DEADLINE_CONFLICT');
+
+    return { success: true, state: 'EXPIRED', noticeId };
+  });
+}
+
+module.exports = { confirmR2Delivery, expireR2Message };
