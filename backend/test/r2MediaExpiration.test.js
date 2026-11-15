@@ -63,7 +63,7 @@ test('at deadline expiration atomically creates receipt, notice, outbox and remo
     iOutbox > iMedia && iDelete > iOutbox);
   assert.match(sqls[iDelete], /expires_at <= clock_timestamp\(\)/);
   assert.match(sqls[0], /FOR UPDATE/);
-  assert.match(sqls[3], /FOR UPDATE/);
+  assert.match(sqls[2], /FOR UPDATE/);
   const noticeParams = db.statements[iNotice].params;
   assert.deepEqual(noticeParams.slice(0, 4),
     [noticeId, messageId, media.sender_identity, media.recipient_identity]);
