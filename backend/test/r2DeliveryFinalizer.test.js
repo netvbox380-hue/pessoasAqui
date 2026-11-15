@@ -51,7 +51,7 @@ test('ACK only queues deletion after receipt and media terminalization',async()=
   const deletion=s.findIndex(x=>x.includes('DELETE FROM public.e2ee_messages'));
   assert.ok(receipt>=0 && media>receipt && outbox>media && deletion>outbox);
   assert.match(s[0],/FOR UPDATE/);
-  assert.match(s[3],/FOR UPDATE/);
+  assert.match(s[2],/FOR UPDATE/);
   assert.match(s[deletion],/expires_at > clock_timestamp\(\)/);
 });
 test('rejects unauthorized recipient before receipt lookup',async()=>{
