@@ -38,7 +38,8 @@ test('uploads only opaque encrypted bytes into private bucket', async () => {
     Key: result.objectKey,
     Body: ciphertext,
     ContentType: 'application/octet-stream',
-    ContentLength: ciphertext.length
+    ContentLength: ciphertext.length,
+    IfNoneMatch: '*'
   });
   assert.equal(commands[0].input.Metadata, undefined);
   assert.equal(commands[0].input.ACL, undefined);
@@ -121,4 +122,18 @@ test('rejects object traversal on download and deletion', async () => {
   await assert.rejects(deleteCiphertext({
     client, DeleteObjectCommand, bucket: 'pessoasaqui', objectKey: '/private-key'
   }), /Invalid R2 object key/);
+});
+
+test('R2 conditional create-only PUT cannot be silently overwritten',async()=>{
+  let existing=false;
+  const client={send:async c=>{
+    assert.equal(c.input.IfNoneMatch,'*');
+    if(existing)throw Object.assign(Error('PreconditionFailed'),{statusCode:412});
+    existing=true;
+    return {};
+  }};
+  const opts={client,PutObjectCommand,bucket:'pessoasaqui',
+    ciphertext:Buffer.from('ciphertext'),randomUUID:()=>FIXED_UUID};
+  await uploadCiphertext(opts);
+  await assert.rejects(uploadCiphertext(opts),e=>e.statusCode===412);
 });
