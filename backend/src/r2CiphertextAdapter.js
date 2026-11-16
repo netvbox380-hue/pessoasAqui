@@ -80,7 +80,10 @@ async function uploadCiphertext({
     Key: objectKey,
     Body: ciphertext,
     ContentType: 'application/octet-stream',
-    ContentLength: ciphertext.byteLength
+    ContentLength: ciphertext.byteLength,
+    // R2 conditional writes are atomic. A repeated PUT to an existing key
+    // MUST fail with 412 rather than silently replacing verified ciphertext.
+    IfNoneMatch: '*'
   }));
   return Object.freeze({ objectKey, bytes: ciphertext.byteLength, sha256 });
 }
