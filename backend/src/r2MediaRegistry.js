@@ -106,10 +106,13 @@ async function markMediaUploaded({ query, objectKey, messageId, contentSha256, c
 async function attachMediaObject({
   withTransaction, messageId, objectKey, senderIdentity, recipientIdentity,
   authenticatedSenderIdentity, senderAlias, ciphertextPayload, ivNonce,
-  contentSha256, contentBytes
+  contentSha256, contentBytes, requireLeasedUpload = false, uploadGeneration
 }) {
   if (typeof withTransaction !== 'function') throw new TypeError('withTransaction required');
   validateReservation({ objectKey, messageId, senderIdentity, recipientIdentity });
+  if (requireLeasedUpload && uploadGeneration !== 1) {
+    return { success: false, attached: false, code: 'INVALID_UPLOAD_GENERATION', statusCode: 400 };
+  }
   if (!validId(authenticatedSenderIdentity, 128) ||
       authenticatedSenderIdentity.toLowerCase() !== senderIdentity.toLowerCase()) {
     return { success: false, attached: false, code: 'UNAUTHORIZED_SENDER', statusCode: 403 };
@@ -144,10 +147,17 @@ async function attachMediaObject({
       return { success: false, attached: false, code: 'NO_MUTUAL_CONNECTION', statusCode: 403 };
     }
     const mediaResult = await tx(
-      `SELECT object_key, message_id, sender_identity, recipient_identity,
-              content_sha256, content_bytes, state
-         FROM public.message_r2_objects
-        WHERE object_key=$1 AND message_id=$2 FOR UPDATE`,
+      requireLeasedUpload
+        ? `SELECT object_key, message_id, sender_identity, recipient_identity,
+                  content_sha256, content_bytes, state,
+                  upload_generation, upload_lease_expires_at, uploaded_at,
+                  (uploaded_at >= clock_timestamp() - interval '2 hours') AS fresh_upload
+             FROM public.message_r2_objects
+            WHERE object_key=$1 AND message_id=$2 FOR UPDATE`
+        : `SELECT object_key, message_id, sender_identity, recipient_identity,
+                  content_sha256, content_bytes, state
+             FROM public.message_r2_objects
+            WHERE object_key=$1 AND message_id=$2 FOR UPDATE`,
       [objectKey, messageId]
     );
     const media = mediaResult.rows[0];
@@ -162,6 +172,20 @@ async function attachMediaObject({
     }
     if (media.state !== 'UPLOADED' && media.state !== 'ATTACHED') {
       return { success: false, attached: false, code: 'INVALID_STATE_FOR_ATTACH', statusCode: 409 };
+    }
+
+    // New R2 attachment contract: generation and the two-hour window must
+    // be checked under the media row lock, never in an earlier read.
+    // Already ATTACHED retries retain the original accepted_at and remain
+    // idempotent even when uploaded_at is older than two hours.
+    if (requireLeasedUpload) {
+      if (media.upload_generation !== uploadGeneration ||
+          !media.upload_lease_expires_at || !media.uploaded_at) {
+        return { success: false, attached: false, code: 'UNLEASED_OR_WRONG_GENERATION', statusCode: 409 };
+      }
+      if (media.state === 'UPLOADED' && media.fresh_upload !== true) {
+        return { success: false, attached: false, code: 'UPLOAD_WINDOW_EXPIRED', statusCode: 409 };
+      }
     }
 
     // Reject reuse of IDs that were already finalized and removed from
@@ -230,7 +254,17 @@ async function attachMediaObject({
   });
 }
 
+/**
+ * Staged for the future authenticated R2 API only. Migration 008 required.
+ * HTTP signature verification and actual R2 ciphertext validation are
+ * required separately before calling this function.
+ */
+function attachLeasedMediaObject(args) {
+  return attachMediaObject({ ...args, requireLeasedUpload: true });
+}
+
 module.exports = {
   validateReservation, validateContentDescriptor,
-  reserveMediaObject, markMediaUploaded, attachMediaObject
+  reserveMediaObject, markMediaUploaded, attachMediaObject,
+  attachLeasedMediaObject
 };
