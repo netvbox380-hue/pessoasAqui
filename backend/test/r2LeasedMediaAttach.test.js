@@ -99,3 +99,25 @@ test('a terminalized message cannot be resurrected by leased attachment',async()
   assert.equal(result.code,'MESSAGE_ALREADY_TERMINAL');
   assert.equal(db.calls.some(x=>x.sql.includes('INSERT INTO public.e2ee_messages')),false);
 });
+
+test('caller cannot bypass lease by passing legacy requireLeasedUpload=false',async()=>{
+  const db=fakeDb({patch:{upload_lease_expires_at:null}});
+  const result=await send(db,{requireLeasedUpload:false});
+  assert.equal(result.code,'UNLEASED_OR_WRONG_GENERATION');
+  assert.equal(db.calls.some(x=>x.sql.includes('INSERT INTO public.e2ee_messages')),false);
+});
+test('direct attachMediaObject also enforces mandatory generation and lease',async()=>{
+  const { attachMediaObject } = require('../src/r2MediaRegistry');
+  const withoutGeneration=fakeDb();
+  const missing=await attachMediaObject({
+    ...input,uploadGeneration:undefined,requireLeasedUpload:false,
+    withTransaction:withoutGeneration.withTransaction
+  });
+  assert.equal(missing.code,'INVALID_UPLOAD_GENERATION');
+  assert.equal(withoutGeneration.calls.length,0);
+  const noLease=fakeDb({patch:{upload_lease_expires_at:null}});
+  const rejected=await attachMediaObject({
+    ...input,requireLeasedUpload:false,withTransaction:noLease.withTransaction
+  });
+  assert.equal(rejected.code,'UNLEASED_OR_WRONG_GENERATION');
+});
