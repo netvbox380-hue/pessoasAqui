@@ -13,7 +13,8 @@ const base = Object.freeze({
   ciphertextPayload: 'ENC_ECDH:iv:ciphertext',
   ivNonce: 'iv',
   contentSha256: 'a'.repeat(64),
-  contentBytes: 300
+  contentBytes: 300,
+  uploadGeneration: 1
 });
 function harness(options = {}) {
   let steps = [];
@@ -23,6 +24,8 @@ function harness(options = {}) {
     object_key: base.objectKey, message_id: base.messageId, sender_identity: base.senderIdentity,
     recipient_identity: base.recipientIdentity, content_sha256: base.contentSha256,
     content_bytes: base.contentBytes, state: 'UPLOADED',
+    upload_generation: 1, upload_lease_expires_at: '2026-11-16T12:00:00Z',
+    uploaded_at: '2026-11-16T11:00:00Z', fresh_upload: true,
     ...options.media
   };
   const stored = options.existing === undefined ? null : options.existing;
