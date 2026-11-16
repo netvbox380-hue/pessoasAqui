@@ -137,9 +137,10 @@ CREATE OR REPLACE FUNCTION public.pessoasaqui_guard_r2_orphan_outbox()
 RETURNS trigger LANGUAGE plpgsql
 SET search_path=pg_catalog, public
 AS $func$
-DECLARE media_state text;
-DECLARE media_generation integer;
-DECLARE media_message_id varchar(256);
+DECLARE
+  media_state text;
+  media_generation integer;
+  media_message_id varchar(256);
 BEGIN
   SELECT state, upload_generation, message_id
     INTO media_state, media_generation, media_message_id
