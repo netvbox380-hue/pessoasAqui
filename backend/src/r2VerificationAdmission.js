@@ -20,7 +20,8 @@ const { validateOpaqueObjectKey } = require('./r2CiphertextAdapter');
 const MAX_DAILY_VERIFICATIONS = 12;
 const MAX_DAILY_VERIFIED_BYTES = 200 * 1024 * 1024;
 const MAX_OBJECT_BYTES = 25 * 1024 * 1024;
-const VERIFICATION_CLAIM_SECONDS = 90;
+// Must exceed the absolute maximum GET deadline (120s) plus settlement margin.
+const VERIFICATION_CLAIM_SECONDS = 180;
 const VALID_ID = /^[A-F0-9]{16}$/i;
 
 function result(code, statusCode) {
