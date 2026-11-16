@@ -26,33 +26,6 @@ function validateReservation({ objectKey, messageId, senderIdentity, recipientId
   }
 }
 
-async function reserveMediaObject({ query, objectKey, messageId, senderIdentity, recipientIdentity }) {
-  if (typeof query !== 'function') throw new TypeError('query required');
-  validateReservation({ objectKey, messageId, senderIdentity, recipientIdentity });
-  // Do not ON CONFLICT DO UPDATE: the same ID must NEVER be repointed
-  // at a different object or identity on retries.
-  const created = await query(
-    `INSERT INTO public.message_r2_objects
-      (object_key, message_id, sender_identity, recipient_identity)
-      VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING object_key`,
-    [objectKey, messageId, senderIdentity, recipientIdentity]
-  );
-  if (created.rowCount === 1) return { reserved: true, duplicate: false };
-  const existing = await query(
-    `SELECT object_key, sender_identity, recipient_identity, state
-       FROM public.message_r2_objects WHERE message_id=$1`, [messageId]
-  );
-  const row = existing.rows[0];
-  const same = row && row.object_key === objectKey &&
-    row.sender_identity.toLowerCase() === senderIdentity.toLowerCase() &&
-    row.recipient_identity.toLowerCase() === recipientIdentity.toLowerCase();
-  if (!same) return { reserved: false, duplicate: false, code: 'CONFLICT' };
-  if (row.state !== 'RESERVED') {
-    return { reserved: false, duplicate: true, state: row.state, code: 'ALREADY_ADVANCED' };
-  }
-  return { reserved: true, duplicate: true, state: row.state };
-}
-
 function validateContentDescriptor({ contentSha256, contentBytes }) {
   if (typeof contentSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(contentSha256) ||
       !Number.isSafeInteger(contentBytes) || contentBytes < 1 ||
@@ -61,35 +34,8 @@ function validateContentDescriptor({ contentSha256, contentBytes }) {
   }
 }
 
-async function markMediaUploaded({ query, objectKey, messageId, contentSha256, contentBytes }) {
-  if (typeof query !== 'function') throw new TypeError('query required');
-  validateOpaqueObjectKey(objectKey);
-  if (!validId(messageId, 256)) throw new TypeError('Invalid message ID');
-  validateContentDescriptor({ contentSha256, contentBytes });
-  const result = await query(
-    `UPDATE public.message_r2_objects
-        SET state='UPLOADED', content_sha256=$3, content_bytes=$4,
-            uploaded_at=clock_timestamp(), last_changed_at=clock_timestamp()
-      WHERE object_key=$1 AND message_id=$2 AND state='RESERVED'
-      RETURNING object_key`,
-    [objectKey, messageId, contentSha256, contentBytes]
-  );
-  if (result.rowCount === 1) return { uploaded: true, duplicate: false };
-  const existing = await query(
-    `SELECT state, content_sha256, content_bytes
-       FROM public.message_r2_objects WHERE object_key=$1 AND message_id=$2`,
-    [objectKey, messageId]
-  );
-  const row = existing.rows[0];
-  if (row && ['UPLOADED','ATTACHED'].includes(row.state) &&
-      row.content_sha256 === contentSha256 && Number(row.content_bytes) === contentBytes) {
-    return { uploaded: true, duplicate: true, state: row.state };
-  }
-  return { uploaded: false, code: 'CONFLICT_OR_NOT_RESERVED' };
-}
-
 /**
- * FASE 7 — STAGED ONLY, NOT CALLED BY server.js.
+ * FASE 14 — ENFORCED LEASE CONTRACT, STAGED ONLY, NOT CALLED BY server.js.
  *
  * The authenticated API caller MUST verify the cryptographic signature
  * independently. authenticatedSenderIdentity is taken from that verified
@@ -106,11 +52,11 @@ async function markMediaUploaded({ query, objectKey, messageId, contentSha256, c
 async function attachMediaObject({
   withTransaction, messageId, objectKey, senderIdentity, recipientIdentity,
   authenticatedSenderIdentity, senderAlias, ciphertextPayload, ivNonce,
-  contentSha256, contentBytes, requireLeasedUpload = false, uploadGeneration
+  contentSha256, contentBytes, uploadGeneration
 }) {
   if (typeof withTransaction !== 'function') throw new TypeError('withTransaction required');
   validateReservation({ objectKey, messageId, senderIdentity, recipientIdentity });
-  if (requireLeasedUpload && uploadGeneration !== 1) {
+  if (uploadGeneration !== 1) {
     return { success: false, attached: false, code: 'INVALID_UPLOAD_GENERATION', statusCode: 400 };
   }
   if (!validId(authenticatedSenderIdentity, 128) ||
@@ -147,17 +93,12 @@ async function attachMediaObject({
       return { success: false, attached: false, code: 'NO_MUTUAL_CONNECTION', statusCode: 403 };
     }
     const mediaResult = await tx(
-      requireLeasedUpload
-        ? `SELECT object_key, message_id, sender_identity, recipient_identity,
-                  content_sha256, content_bytes, state,
-                  upload_generation, upload_lease_expires_at, uploaded_at,
-                  (uploaded_at >= clock_timestamp() - interval '2 hours') AS fresh_upload
-             FROM public.message_r2_objects
-            WHERE object_key=$1 AND message_id=$2 FOR UPDATE`
-        : `SELECT object_key, message_id, sender_identity, recipient_identity,
-                  content_sha256, content_bytes, state
-             FROM public.message_r2_objects
-            WHERE object_key=$1 AND message_id=$2 FOR UPDATE`,
+      `SELECT object_key, message_id, sender_identity, recipient_identity,
+              content_sha256, content_bytes, state,
+              upload_generation, upload_lease_expires_at, uploaded_at,
+              (uploaded_at >= clock_timestamp() - interval '2 hours') AS fresh_upload
+         FROM public.message_r2_objects
+        WHERE object_key=$1 AND message_id=$2 FOR UPDATE`,
       [objectKey, messageId]
     );
     const media = mediaResult.rows[0];
@@ -178,14 +119,12 @@ async function attachMediaObject({
     // be checked under the media row lock, never in an earlier read.
     // Already ATTACHED retries retain the original accepted_at and remain
     // idempotent even when uploaded_at is older than two hours.
-    if (requireLeasedUpload) {
-      if (media.upload_generation !== uploadGeneration ||
-          !media.upload_lease_expires_at || !media.uploaded_at) {
-        return { success: false, attached: false, code: 'UNLEASED_OR_WRONG_GENERATION', statusCode: 409 };
-      }
-      if (media.state === 'UPLOADED' && media.fresh_upload !== true) {
-        return { success: false, attached: false, code: 'UPLOAD_WINDOW_EXPIRED', statusCode: 409 };
-      }
+    if (media.upload_generation !== uploadGeneration ||
+        !media.upload_lease_expires_at || !media.uploaded_at) {
+      return { success: false, attached: false, code: 'UNLEASED_OR_WRONG_GENERATION', statusCode: 409 };
+    }
+    if (media.state === 'UPLOADED' && media.fresh_upload !== true) {
+      return { success: false, attached: false, code: 'UPLOAD_WINDOW_EXPIRED', statusCode: 409 };
     }
 
     // Reject reuse of IDs that were already finalized and removed from
@@ -260,11 +199,10 @@ async function attachMediaObject({
  * required separately before calling this function.
  */
 function attachLeasedMediaObject(args) {
-  return attachMediaObject({ ...args, requireLeasedUpload: true });
+  return attachMediaObject(args);
 }
 
 module.exports = {
   validateReservation, validateContentDescriptor,
-  reserveMediaObject, markMediaUploaded, attachMediaObject,
-  attachLeasedMediaObject
+  attachMediaObject, attachLeasedMediaObject
 };
