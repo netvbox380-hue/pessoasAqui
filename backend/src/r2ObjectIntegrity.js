@@ -71,7 +71,6 @@ async function verifyStoredCiphertext({
       timedOut = true;
       body.destroy(new R2IntegrityError('R2_READ_TIMEOUT'));
     }, timeoutMs);
-    timeout.unref?.();
     for await (const chunk of body) {
       if (!(Buffer.isBuffer(chunk) || chunk instanceof Uint8Array)) {
         throw new R2IntegrityError('R2_INVALID_STREAM_CHUNK');
