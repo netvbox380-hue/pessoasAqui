@@ -75,3 +75,33 @@ test('invalid chunk type fails closed and destroys stream',async()=>{
   const h=harness(['wrong-type']);
   await assert.rejects(verify(h.client),e=>e.code==='R2_INVALID_STREAM_CHUNK');
 });
+
+test('pre-header stall is stopped by global deadline, with abort passed to S3 send',async()=>{
+  let observedSignal;
+  const client={send:(_cmd, options)=>{
+    observedSignal=options?.abortSignal;
+    return new Promise(()=>{}); // even a non-cooperative SDK stub must not hang
+  }};
+  await assert.rejects(verify(client,{timeoutMs:100}),e=>e.code==='R2_READ_TIMEOUT');
+  assert.equal(observedSignal?.aborted,true);
+});
+test('late GET response after timeout closes abandoned body',async()=>{
+  let resolveHeader;
+  const client={send:()=>new Promise(resolve=>{resolveHeader=resolve;})};
+  await assert.rejects(verify(client,{timeoutMs:100}),e=>e.code==='R2_READ_TIMEOUT');
+  const stream=Readable.from([bytes]);
+  resolveHeader({Body:stream,ContentLength:bytes.length});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(stream.destroyed,true);
+});
+test('first response GET has abort signal for connection and body phases',async()=>{
+  let signal;
+  const client={send:async(_cmd,options)=>{
+    signal=options?.abortSignal;
+    return {Body:Readable.from([bytes]),ContentLength:bytes.length};
+  }};
+  const result=await verify(client);
+  assert.equal(result.verified,true);
+  assert.equal(typeof signal?.addEventListener,'function');
+  assert.equal(signal.aborted,false);
+});
