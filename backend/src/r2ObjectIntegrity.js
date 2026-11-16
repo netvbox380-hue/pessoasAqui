@@ -53,10 +53,30 @@ async function verifyStoredCiphertext({
   let body;
   let timeout;
   let timedOut = false;
+  const controller = new AbortController();
+  let rejectDeadline;
+  // Start BEFORE DNS/TCP/TLS/HTTP headers; timeout covers the whole GET,
+  // including the streaming phase. The race is required even if a mocked
+  // or buggy S3 client ignores the AbortSignal.
+  const deadline = new Promise((_, reject) => { rejectDeadline = reject; });
+  timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+    if (body && !body.destroyed) {
+      // Destroy without an error: the deadline promise carries the failure,
+      // avoiding unhandled 'error' events on streams not yet iterated.
+      body.destroy();
+    }
+    rejectDeadline(new R2IntegrityError('R2_READ_TIMEOUT'));
+  }, timeoutMs);
   try {
-    const object = await fetchCiphertext({
-      client, GetObjectCommand, bucket, objectKey, maxBytes
-    });
+    const object = await Promise.race([
+      fetchCiphertext({
+        client, GetObjectCommand, bucket, objectKey, maxBytes,
+        abortSignal: controller.signal
+      }),
+      deadline
+    ]);
     body = object.body;
     if (!body || typeof body[Symbol.asyncIterator] !== 'function' ||
         typeof body.destroy !== 'function') {
@@ -67,10 +87,6 @@ async function verifyStoredCiphertext({
     }
     const digest = crypto.createHash('sha256');
     let actualBytes = 0;
-    timeout = setTimeout(() => {
-      timedOut = true;
-      body.destroy(new R2IntegrityError('R2_READ_TIMEOUT'));
-    }, timeoutMs);
     for await (const chunk of body) {
       if (!(Buffer.isBuffer(chunk) || chunk instanceof Uint8Array)) {
         throw new R2IntegrityError('R2_INVALID_STREAM_CHUNK');
@@ -98,7 +114,7 @@ async function verifyStoredCiphertext({
     }
     throw error;
   } finally {
-    if (timeout) clearTimeout(timeout);
+    clearTimeout(timeout);
     if (body && !body.destroyed && typeof body.destroy === 'function') {
       body.destroy();
     }
