@@ -106,7 +106,8 @@ async function deleteCiphertext({ client, DeleteObjectCommand, bucket, objectKey
  * Streaming, bounded response size and cancellation remain prerequisites.
  */
 async function fetchCiphertext({
-  client, GetObjectCommand, bucket, objectKey, maxBytes = DEFAULT_MAX_CIPHERTEXT_BYTES
+  client, GetObjectCommand, bucket, objectKey, maxBytes = DEFAULT_MAX_CIPHERTEXT_BYTES,
+  abortSignal
 }) {
   if (!client || typeof client.send !== 'function' || typeof GetObjectCommand !== 'function') {
     throw new TypeError('R2 S3 client/command required');
@@ -114,7 +115,20 @@ async function fetchCiphertext({
   requireBucket(bucket);
   validateOpaqueObjectKey(objectKey);
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new TypeError('Invalid maxBytes');
-  const result = await client.send(new GetObjectCommand({ Bucket: bucket, Key: objectKey }));
+  // SDK v3 supports AbortSignal as client.send(command, { abortSignal }).
+  // The caller owns the overall request deadline and should also configure
+  // SDK connection/socket timeouts before activating R2.
+  if (abortSignal?.aborted) throw Object.assign(new Error('R2 GET aborted'), { code: 'R2_GET_ABORTED' });
+  const result = await client.send(
+    new GetObjectCommand({ Bucket: bucket, Key: objectKey }),
+    abortSignal ? { abortSignal } : undefined
+  );
+  // Some S3 client mocks/adapters may ignore abort: close late-arriving
+  // bodies rather than leaking an unread socket after the global timeout.
+  if (abortSignal?.aborted) {
+    result?.Body?.destroy?.();
+    throw Object.assign(new Error('R2 GET aborted'), { code: 'R2_GET_ABORTED' });
+  }
   const announced = Number(result && result.ContentLength);
   if (!Number.isSafeInteger(announced) || announced < 1 || announced > maxBytes) {
     // The caller must destroy/cancel the response stream when applicable.
