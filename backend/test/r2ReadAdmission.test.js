@@ -75,7 +75,7 @@ test('ECDSA authenticated recipient and exact object is admitted and charged onc
   assert.equal('url' in r.value,false);
   assert.equal('token' in r.value,false);
   assert.equal(m.calls.filter(x=>x.sql.includes('UPDATE public.r2_read_daily_budget')).length,1);
-  assert.match(m.calls.at(-1).sql,/reserved_bytes <= \$4 - \$2/);
+  assert.match(m.calls.at(-1).sql,/reserved_bytes <= \(\$4::bigint - \$2::bigint\)/);
 });
 test('invalid proof and replay reject before object or quota query',async()=>{
   const m=mock(),p=proof();p.signature='not-valid';
