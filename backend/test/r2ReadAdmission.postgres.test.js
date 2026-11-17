@@ -14,6 +14,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
+const crypto=require('node:crypto');
 
 const testUrl=process.env.PESSOASAQUI_TEST_PG_URL;
 const allowed=(()=>{
@@ -42,7 +43,7 @@ test('EXACT application SQL is parsed and executed by isolated PostgreSQL', {
   await client.connect();
   try{
     await client.query('BEGIN');
-    const actor='A0A0A0A0A0A0A0A0';
+    const actor=crypto.randomBytes(8).toString('hex').toUpperCase();
     // Explicitly avoid changing persisted test fixtures.
     await client.query(
       "INSERT INTO public.r2_read_daily_budget(identity_id,day_utc) VALUES($1,(clock_timestamp() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING",
