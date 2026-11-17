@@ -54,7 +54,7 @@ async function admitAuthenticatedR2Read({
           WHERE identity_id=$1
             AND day_utc=(clock_timestamp() AT TIME ZONE 'UTC')::date
             AND attempts < $3
-            AND reserved_bytes <= $4 - $2
+            AND reserved_bytes <= ($4::bigint - $2::bigint)
           RETURNING attempts,reserved_bytes`,
         [recipient, allowed.expectedBytes, MAX_DAILY_READS, MAX_DAILY_READ_BYTES]
       );
