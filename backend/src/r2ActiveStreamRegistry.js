@@ -47,6 +47,9 @@ function createR2ActiveStreamRegistry({
     const entry=active.get(token);
     if (!entry) return false;
     active.delete(token);
+    if (entry.signalListener) {
+      entry.abortController.signal.removeEventListener('abort',entry.signalListener);
+    }
     for (const [emitter,event,handler] of entry.listeners) {
       emitter.off(event,handler);
     }
