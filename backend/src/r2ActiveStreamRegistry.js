@@ -88,6 +88,10 @@ function createR2ActiveStreamRegistry({
       senderIdentity:reference.senderIdentity,
       recipientIdentity:reference.recipientIdentity,
       messageId:reference.messageId,
+      // Incomplete legacy references are aborted during reconciliation.
+      objectKey:reference.objectKey,
+      expectedSha256:reference.expectedSha256,
+      expectedBytes:reference.expectedBytes,
       abortController,response,listeners:[]
     };
     const cleanup=()=>remove(token);
@@ -133,8 +137,28 @@ function createR2ActiveStreamRegistry({
     return stopped;
   }
 
+  // A snapshot never exposes sockets or controllers. The token is a
+  // process-local opaque handle, not a URL or a client capability.
+  function listActive() {
+    return Object.freeze([...active].map(([token,e])=>Object.freeze({
+      token,senderIdentity:e.senderIdentity,
+      recipientIdentity:e.recipientIdentity,messageId:e.messageId,
+      objectKey:e.objectKey,expectedSha256:e.expectedSha256,
+      expectedBytes:e.expectedBytes
+    })));
+  }
+
+  function abortAll() {
+    let stopped=0;
+    for(const token of [...active.keys()]){
+      if(abort(token,'R2_STREAM_FAIL_CLOSED'))stopped++;
+    }
+    return stopped;
+  }
+
   return Object.freeze({
-    register,revokeMessage,revokePair,
+    register,revokeMessage,revokePair,abortAll,listActive,
+    cancelToken:token=>abort(token,'R2_STREAM_RECONCILE_REJECTED'),
     get activeCount(){return active.size;}
   });
 }
