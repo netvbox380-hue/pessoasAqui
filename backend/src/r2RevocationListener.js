@@ -35,6 +35,7 @@ function createR2RevocationListener({
       typeof clearTimer!=='function')throw new TypeError('Invalid R2 listener setup');
   let running=false,ready=false,client=null,timer=null,attempt=0,epoch=0;
   let chain=Promise.resolve(),pending=0;
+  const earlyEvents=new Set();
   const detach=(c,handler,down)=>{
     c.off('notification',handler);
     c.off('error',down);
@@ -64,7 +65,7 @@ function createR2RevocationListener({
     if(!running||id!==epoch)return;
     ready=false;
     try{abortActive();}finally{
-      epoch++;void cleanupClient().finally(retry);
+      epoch++;earlyEvents.clear();void cleanupClient().finally(retry);
     }
   };
   const establish=async()=>{
@@ -80,22 +81,30 @@ function createR2RevocationListener({
         throw Error('R2_LISTENER_REQUIRES_DEDICATED_CLIENT');
       client=c;
       const down=()=>failed(id);
+      const enqueue=eventId=>{
+        if(++pending>MAX_PENDING){pending--;failed(id);return;}
+        chain=chain.then(async()=>{
+          if(!running||id!==epoch)return;
+          await dispatchCommittedRevocation({
+            query:(sql,args)=>c.query(sql,args),
+            registry,eventId
+          }).then(result=>{
+            if(!result.dispatched)throw Error('R2_OUTBOX_EVENT_MISSING');
+          });
+        }).catch(()=>failed(id)).finally(()=>{pending--;});
+      };
       const handler=msg=>{
         if(!running||id!==epoch||msg?.channel!==CHANNEL)return;
         if(!UUID.test(msg.payload||'')){
           failed(id);return;
         }
         if(registry.activeCount===0)return; // no needless SQL
-        if(++pending>MAX_PENDING){pending--;failed(id);return;}
-        chain=chain.then(async()=>{
-          if(!running||id!==epoch||!ready)return;
-          await dispatchCommittedRevocation({
-            query:(sql,args)=>c.query(sql,args),
-            registry,eventId:msg.payload
-          }).then(result=>{
-            if(!result.dispatched)throw Error('R2_OUTBOX_EVENT_MISSING');
-          });
-        }).catch(()=>failed(id)).finally(()=>{pending--;});
+        if(!ready){
+          earlyEvents.add(msg.payload);
+          if(earlyEvents.size>MAX_PENDING)failed(id);
+          return;
+        }
+        enqueue(msg.payload);
       };
       c.on('notification',handler);
       c.on('error',down);
@@ -113,6 +122,10 @@ function createR2RevocationListener({
       await reconcile();
       if(!running||id!==epoch)return;
       ready=true;attempt=0;
+      // Notifications received during the boot reconciliation are replayed.
+      // No await occurs between becoming ready and draining this set.
+      for(const eventId of earlyEvents)enqueue(eventId);
+      earlyEvents.clear();
     }catch(_){
       if(running&&id===epoch)failed(id);
     }
