@@ -6,6 +6,8 @@
  * Scan candidate DELETE_QUEUED media without doing R2 I/O. Uses a short
  * PostgreSQL transaction with FOR UPDATE OF media SKIP LOCKED so two
  * batch scanners do not block each other while discovering candidates.
+ * Stage 30D filters terminal receipts, retired PUT windows, and active or
+ * completed claims to avoid repeatedly selecting ineligible rows.
  * Row locks are released at COMMIT; this does NOT grant an execution lease.
  *
  * Each returned candidate MUST separately pass claimQueuedR2Delete() (30B)
@@ -34,6 +36,30 @@ async function discoverQueuedR2DeleteCandidates({withTransaction,limit=16}){
             SELECT 1 FROM public.message_r2_delete_outbox q
              WHERE q.object_key=o.object_key
                AND q.message_id=o.message_id
+          )
+          -- Filter terminality before locking candidates. Claim will
+          -- independently recheck this under the authoritative locks.
+          AND EXISTS (
+            SELECT 1 FROM public.message_delivery_receipts r
+             WHERE r.message_id=o.message_id
+               AND r.state IN ('DELIVERED','EXPIRED')
+          )
+          -- Legacy/unsealed/live PUT capabilities are quarantined.
+          AND EXISTS (
+            SELECT 1 FROM public.r2_put_capability_windows p
+             WHERE p.object_key=o.object_key
+               AND p.sealed_at IS NOT NULL
+               AND clock_timestamp() >=
+                 p.expires_at + (120 * interval '1 second')
+          )
+          -- Completed claims, active leases, and retry-exhausted
+          -- claims cannot be rediscovered in a tight polling loop.
+          AND NOT EXISTS (
+            SELECT 1 FROM public.r2_delete_claims c
+             WHERE c.object_key=o.object_key
+               AND (c.completed_at IS NOT NULL
+                 OR c.lease_until >= clock_timestamp()
+                 OR c.attempts >= 20)
           )
         ORDER BY o.last_changed_at ASC,o.object_key ASC
         LIMIT $1::integer
