@@ -71,3 +71,19 @@ test('database failure propagates without fallback',async()=>{
     withTransaction:db([],{down:true}).withTransaction
   }),/PG_UNAVAILABLE/);
 });
+
+test('discovery SQL excludes nonterminal receipts, live PUTs and active/completed GC claims',async()=>{
+  const d=db([]);
+  await discoverQueuedR2DeleteCandidates({withTransaction:d.withTransaction});
+  const sql=d.statements[0].sql;
+  assert.match(sql,/message_delivery_receipts/);
+  assert.match(sql,/r.state IN \('DELIVERED','EXPIRED'\)/);
+  assert.match(sql,/r2_put_capability_windows/);
+  assert.match(sql,/p.sealed_at IS NOT NULL/);
+  assert.match(sql,/p.expires_at \+ \(120 \* interval '1 second'\)/);
+  assert.match(sql,/r2_delete_claims/);
+  assert.match(sql,/c.completed_at IS NOT NULL/);
+  assert.match(sql,/c.lease_until >= clock_timestamp\(\)/);
+  assert.match(sql,/c.attempts >= 20/);
+  assert.match(sql,/FOR UPDATE OF o SKIP LOCKED/);
+});
