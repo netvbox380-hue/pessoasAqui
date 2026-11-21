@@ -95,9 +95,16 @@ function createR2ActiveStreamRegistry({
       abortController,response,listeners:[]
     };
     const cleanup=()=>remove(token);
+    // A premature HTTP close means the peer disconnected. Remove the session
+    // and abort the upstream R2 read so a pending 'drain' cannot hang until
+    // the gateway deadline. A normal close after 'finish' is cleanup only.
+    const onResponseClose=()=>{
+      if (!response.writableEnded) abort(token,'CLIENT_DISCONNECT');
+      else cleanup();
+    };
     const onAbort=()=>abort(token,'R2_STREAM_ABORTED');
     for (const [emitter,event,handler] of [
-      [response,'close',cleanup],
+      [response,'close',onResponseClose],
       [response,'finish',cleanup]
     ]) {
       emitter.once(event,handler);
