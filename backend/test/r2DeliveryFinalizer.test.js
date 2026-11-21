@@ -18,7 +18,7 @@ const msg={
   iv_nonce:'iv', expires_at:'2026-11-16T12:00:00.000Z',
   delivery_state:'PENDING',is_cancelled:false,is_delivered:false
 };
-function fakeDb({object=obj,message=msg,receipt=null,now='2026-11-15T12:00:00Z',fail='',deleteRows=1}={}) {
+function fakeDb({object=obj,message=msg,receipt=null,now='2026-11-15T12:00:00Z',fail='',deleteRows=1,missingWindow=false}={}) {
   const steps=[];
   const withTransaction=async work=>work(async (sql,params)=>{
     steps.push({sql,params});
@@ -31,6 +31,10 @@ function fakeDb({object=obj,message=msg,receipt=null,now='2026-11-15T12:00:00Z',
     if(sql.includes('clock_timestamp() AS now'))return {rows:[{now}]};
     if(sql.includes('INSERT INTO public.message_delivery_receipts'))return {rowCount:1};
     if(sql.includes('UPDATE public.message_r2_objects'))return {rowCount:1};
+    if(sql.includes('UPDATE public.r2_put_capability_windows')){
+      if(fail==='seal')throw Error('DB_PUT_SEAL_DOWN');
+      return {rowCount:missingWindow?0:1};
+    }
     if(sql.includes('INSERT INTO public.message_r2_delete_outbox'))return {rowCount:1};
     throw Error('UNEXPECTED_SQL');
   });
@@ -47,9 +51,10 @@ test('ACK only queues deletion after receipt and media terminalization',async()=
   const s=db.steps.map(x=>x.sql);
   const receipt=s.findIndex(x=>x.includes('INSERT INTO public.message_delivery_receipts'));
   const media=s.findIndex(x=>x.includes('UPDATE public.message_r2_objects'));
+  const seal=s.findIndex(x=>x.includes('UPDATE public.r2_put_capability_windows'));
   const outbox=s.findIndex(x=>x.includes('INSERT INTO public.message_r2_delete_outbox'));
   const deletion=s.findIndex(x=>x.includes('DELETE FROM public.e2ee_messages'));
-  assert.ok(receipt>=0 && media>receipt && outbox>media && deletion>outbox);
+  assert.ok(receipt>=0 && media>receipt && seal>media && outbox>seal && deletion>outbox);
   assert.match(s[0],/FOR UPDATE/);
   assert.match(s[2],/FOR UPDATE/);
   assert.match(s[deletion],/expires_at > clock_timestamp\(\)/);
@@ -99,7 +104,7 @@ test('expiry equality is terminal: late ACK cannot delete as delivered',async()=
   assert.equal(db.steps.some(x=>x.sql.includes('INSERT INTO public.message_delivery_receipts')),false);
 });
 test('DB failure before terminalization propagates for transaction rollback',async()=>{
-  for(const fail of ['receipt','outbox']){
+  for(const fail of ['receipt','seal','outbox']){
     const db=fakeDb({fail});
     await assert.rejects(call(db),/DB_/);
   }
@@ -112,4 +117,10 @@ test('invalid R2 object key blocks deletion even when stored in registry',async(
   const db=fakeDb({object:{...obj,object_key:'../private'}});
   await assert.rejects(call(db),/Invalid R2 object key/);
   assert.equal(db.steps.some(x=>x.sql.includes('INSERT INTO public.message_delivery_receipts')),false);
+});
+
+test('unknown legacy PUT window denies ACK before delete outbox insertion',async()=>{
+  const db=fakeDb({missingWindow:true});
+  await assert.rejects(call(db),/R2_PUT_WINDOW_UNKNOWN/);
+  assert.equal(db.steps.some(x=>x.sql.includes('INSERT INTO public.message_r2_delete_outbox')),false);
 });
