@@ -17,6 +17,7 @@
  */
 const { stablePayloadDigest } = require('./messageDeliveryCoordinator');
 const { validateOpaqueObjectKey } = require('./r2CiphertextAdapter');
+const { sealPutKeyForRetirement } = require('./r2PutRetirementFence');
 
 const RECEIPT_RETENTION_DAYS = 30; // Proposed retention, subject to final rollout review.
 function validId(v, max) {
@@ -112,6 +113,9 @@ async function confirmR2Delivery({
       [object.object_key,messageId]
     );
     if (terminalObject.rowCount !== 1) throw new Error('R2_TERMINAL_MEDIA_CONFLICT');
+    // Same DB transaction as DELETE_QUEUED + outbox. Unknown PUT history
+    // fails closed; never enqueue a key whose old URLs might still work.
+    await sealPutKeyForRetirement({ tx, objectKey: object.object_key });
 
     // Migration 006 checks DELETE_QUEUED + terminal receipt under row lock.
     const queued = await tx(
@@ -226,6 +230,9 @@ async function expireR2Message({ withTransaction, messageId, noticeId }) {
       [object.object_key,messageId]
     );
     if (queuedMedia.rowCount !== 1) throw new Error('R2_EXPIRY_MEDIA_CONFLICT');
+    // Seal before queuing a physical delete. A missing ledger aborts the
+    // entire terminalization transaction; legacy keys require quarantine.
+    await sealPutKeyForRetirement({ tx, objectKey: object.object_key });
 
     const outbox = await tx(
       `INSERT INTO public.message_r2_delete_outbox
