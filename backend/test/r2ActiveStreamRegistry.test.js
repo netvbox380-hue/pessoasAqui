@@ -84,3 +84,15 @@ test('no S3 client, network or SQL is used by registry',()=>{
   assert.equal(r.revokePair(sender,recipient),1);
   assert.equal(r.activeCount,0);
 });
+
+test('premature HTTP close aborts upstream immediately instead of waiting for drain',()=>{
+  const r=createR2ActiveStreamRegistry(),s=stream();
+  const h=r.register(s);
+  s.response.destroyed=true;
+  s.response.emit('close');
+  assert.equal(s.abortController.signal.aborted,true);
+  assert.equal(s.abortController.signal.reason,'CLIENT_DISCONNECT');
+  assert.equal(h.active,false);
+  assert.equal(r.activeCount,0);
+  assert.equal(r.revokeMessage('message-1'),0);
+});
