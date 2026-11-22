@@ -8,6 +8,8 @@
  * batch scanners do not block each other while discovering candidates.
  * Stage 30D filters terminal receipts, retired PUT windows, and active or
  * completed claims to avoid repeatedly selecting ineligible rows.
+ * Stage 30E uses the outbox retry deadline already present since migration 004,
+ * preventing repeat discovery of jobs in scheduled cooldown.
  * Row locks are released at COMMIT; this does NOT grant an execution lease.
  *
  * Each returned candidate MUST separately pass claimQueuedR2Delete() (30B)
@@ -36,6 +38,8 @@ async function discoverQueuedR2DeleteCandidates({withTransaction,limit=16}){
             SELECT 1 FROM public.message_r2_delete_outbox q
              WHERE q.object_key=o.object_key
                AND q.message_id=o.message_id
+               AND q.state IN ('PENDING','RETRY')
+               AND q.next_attempt_at <= clock_timestamp()
           )
           -- Filter terminality before locking candidates. Claim will
           -- independently recheck this under the authoritative locks.
