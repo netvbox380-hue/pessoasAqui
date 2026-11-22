@@ -21,6 +21,11 @@ const { verifyInviteIdentityProof, deriveInviteId } = require('./inviteAuth');
 const { verifyWsIdentity } = require('./identityAuth');
 const { registerFamilyRecoveryRoutes } = require('./familyRecoveryRoutes');
 const { registerOfferRoutesV2 } = require('./offerRoutesV2');
+const {
+  r2RevocationBridgeEnabled,
+  assertR2RevocationSchemaInTransaction,
+  recordGuardedUnmarkRevocation
+} = require('./r2UnmarkRevocationGate');
 
 function verifyClientEcdsaSignature(publicKeyBase64, dataString, signatureBase64) {
   if (!publicKeyBase64 || !signatureBase64) return false;
@@ -2103,12 +2108,12 @@ app.post('/api/connections/unmark', async (req, res) => {
 
   // R2 Stage 30M: dual flag, disabled by default. No R2 DB access without
   // explicit operator approval and migration 012 present in PostgreSQL.
-  const {
-    r2RevocationBridgeEnabled,
-    assertR2RevocationSchemaInTransaction,
-    recordGuardedUnmarkRevocation
-  } = require('./r2UnmarkRevocationGate');
-  const r2RevocationEnabled = r2RevocationBridgeEnabled();
+  // The legacy VM regression suite extracts this handler without the module
+  // imports; the real server always imports the trusted gate at module scope.
+  // The extracted legacy handler must remain R2-disabled by default.
+  const r2RevocationEnabled = (typeof r2RevocationBridgeEnabled === 'function')
+    ? r2RevocationBridgeEnabled()
+    : false;
   if (r2RevocationEnabled && !isPostgres()) {
     return res.status(503).json({success:false,error:'R2 revocation database unavailable.'});
   }
