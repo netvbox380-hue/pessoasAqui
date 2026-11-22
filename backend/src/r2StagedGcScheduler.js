@@ -7,7 +7,7 @@
  * until start() is called explicitly by trusted backend code.
  *
  * This is NOT a production-ready worker. No multi-node global quota,
- * shutdown cancellation propagated into batch, readiness attestation,
+ * readiness attestation,
  * deployment wiring or credential installation. start() requires a
  * separately injected explicit readiness/authorization gate.
  */
@@ -35,6 +35,7 @@ function createStagedR2GcScheduler({
   let inflight=null;
   let errors=0;
   let epoch=0;
+  let activeController=null;
 
   function cancelTimer(){
     if(timer!==null){clearTimer(timer);timer=null;}
@@ -61,7 +62,9 @@ function createStagedR2GcScheduler({
           errors=0;
           return;
         }
-        const result=await runBatch();
+        const controller=new AbortController();
+        activeController=controller;
+        const result=await runBatch({signal:controller.signal});
         if(!running||epoch!==expectedEpoch)return;
         errors=0;
         try{onResult(result);}catch(_){}
@@ -74,7 +77,7 @@ function createStagedR2GcScheduler({
     })();
     inflight=work;
     try{await work;}finally{
-      if(inflight===work)inflight=null;
+      if(inflight===work){inflight=null;activeController=null;}
       if(running&&epoch===expectedEpoch){
         const delay=errors?
           Math.min(maxFailureDelayMs,pollIntervalMs*2**Math.min(errors,12)):
@@ -100,6 +103,9 @@ function createStagedR2GcScheduler({
     cancelTimer();
     // Drain waits until the active batch returns. Batch is responsible for
     // its own network timeout. No new batches are scheduled while stopping.
+    // Abort the active batch on SIGTERM-style stop. The batch must
+    // propagate this signal to storage, never to a client-supplied handler.
+    activeController?.abort();
     const job=inflight;
     if(job)await job;
     return Boolean(active);
