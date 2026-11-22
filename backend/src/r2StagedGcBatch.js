@@ -94,9 +94,16 @@ async function processStagedR2GcBatch({
         if(signal.aborted)abort();
       });
       const result=await Promise.race([
-        Promise.resolve().then(()=>deleteObject({
-          objectKey:claim.objectKey,signal:controller.signal
-        })),deadline,stopDeadline
+        Promise.resolve().then(()=>{
+          if(controller.signal.aborted){
+            const err=new Error('R2_DELETE_ABORTED');
+            err.code='R2_DELETE_ABORTED';
+            throw err;
+          }
+          return deleteObject({
+            objectKey:claim.objectKey,signal:controller.signal
+          });
+        }),deadline,stopDeadline
       ]);
       if(timedOut||!strictResult(result)||result.objectKey!==claim.objectKey)
         throw Error('R2_DELETE_UNVERIFIED_RESULT');
