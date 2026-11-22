@@ -58,6 +58,7 @@ async function processStagedR2GcBatch({
     const controller=new AbortController();
     let timer;
     let timedOut=false;
+    let storageSucceeded=false;
     let outcome;
     try{
       // This timer is a per-operation timeout, NOT a polling worker/scheduler.
@@ -78,6 +79,7 @@ async function processStagedR2GcBatch({
       ]);
       if(timedOut||!strictResult(result)||result.objectKey!==claim.objectKey)
         throw Error('R2_DELETE_UNVERIFIED_RESULT');
+      storageSucceeded=true;
       const finalized=await finalizeTrustedR2Delete({
         withTransaction,
         objectKey:claim.objectKey,messageId:claim.messageId,
@@ -91,7 +93,7 @@ async function processStagedR2GcBatch({
       // Once storage confirmed success, a DB failure must NOT be treated as
       // a storage failure. Instead allow the claim to expire and retry the
       // immutable key idempotently on a later explicitly invoked batch.
-      if(error?.code==='R2_GC_FINALIZE_DB_FAILURE')throw error;
+      if(storageSucceeded)throw error;
       const safeCode=timedOut?'R2_DELETE_TIMEOUT':'R2_DELETE_FAILED';
       const jitter=makeJitterSeconds();
       if(!Number.isSafeInteger(jitter)||jitter<0||jitter>30)
