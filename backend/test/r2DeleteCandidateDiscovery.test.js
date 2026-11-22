@@ -87,3 +87,13 @@ test('discovery SQL excludes nonterminal receipts, live PUTs and active/complete
   assert.match(sql,/c.attempts >= 20/);
   assert.match(sql,/FOR UPDATE OF o SKIP LOCKED/);
 });
+
+test('discovery requires pending or retry job with persisted retry deadline elapsed',async()=>{
+  const d=db([]);
+  await discoverQueuedR2DeleteCandidates({withTransaction:d.withTransaction});
+  const sql=d.statements[0].sql;
+  assert.match(sql,/q.state IN \('PENDING','RETRY'\)/);
+  assert.match(sql,/q.next_attempt_at <= clock_timestamp\(\)/);
+  assert.match(sql,/q.object_key=o.object_key/);
+  assert.match(sql,/q.message_id=o.message_id/);
+});
