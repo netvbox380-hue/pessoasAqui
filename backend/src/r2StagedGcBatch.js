@@ -12,6 +12,8 @@
  * PostgreSQL locks are held ONLY inside the transactional discovery, claim,
  * finalize and retry callbacks, never across storage I/O. Lease is 90 seconds;
  * the injected delete must have a shorter enforced network deadline.
+ * Optional trusted shutdown AbortSignal prevents new claims and interrupts
+ * active operations; a noncooperative SDK can still finish remotely.
  */
 const crypto=require('node:crypto');
 const {discoverQueuedR2DeleteCandidates}=require('./r2DeleteCandidateDiscovery');
@@ -35,17 +37,22 @@ function strictResult(result){
 async function processStagedR2GcBatch({
   withTransaction,deleteObject,limit=4,deleteTimeoutMs=15000,
   makeClaimToken=()=>crypto.randomUUID(),
-  makeJitterSeconds=()=>crypto.randomInt(0,31)
+  makeJitterSeconds=()=>crypto.randomInt(0,31),signal
 }={}){
   if(typeof withTransaction!=='function'||typeof deleteObject!=='function'||
     !Number.isSafeInteger(limit)||limit<1||limit>MAX_DELETE_PER_BATCH||
     !Number.isSafeInteger(deleteTimeoutMs)||deleteTimeoutMs<100||
     deleteTimeoutMs>MAX_DELETE_TIMEOUT_MS||
-    typeof makeClaimToken!=='function'||typeof makeJitterSeconds!=='function')
+    typeof makeClaimToken!=='function'||typeof makeJitterSeconds!=='function'||
+    (signal!==undefined&&(typeof signal.aborted!=='boolean'||
+      typeof signal.addEventListener!=='function'||
+      typeof signal.removeEventListener!=='function')))
     throw new TypeError('Trusted and bounded GC batch dependencies required');
+  if(signal?.aborted)return Object.freeze([]);
   const discovered=await discoverQueuedR2DeleteCandidates({withTransaction,limit});
   const outcomes=[];
   for(const candidate of discovered){
+    if(signal?.aborted)break;
     const claim=await claimQueuedR2Delete({
       withTransaction,...candidate,claimToken:makeClaimToken()
     });
@@ -58,6 +65,8 @@ async function processStagedR2GcBatch({
     const controller=new AbortController();
     let timer;
     let timedOut=false;
+    let shutdownAborted=false;
+    let stopAbortListener=null;
     let storageSucceeded=false;
     let outcome;
     try{
@@ -71,10 +80,23 @@ async function processStagedR2GcBatch({
           }));
         },deleteTimeoutMs);
       });
+      const stopDeadline=new Promise((_,reject)=>{
+        if(!signal)return;
+        const abort=()=>{
+          shutdownAborted=true;
+          controller.abort();
+          const error=new Error('R2_GC_SHUTDOWN_ABORTED');
+          error.code='R2_GC_SHUTDOWN_ABORTED';
+          reject(error);
+        };
+        stopAbortListener=abort;
+        signal.addEventListener('abort',abort,{once:true});
+        if(signal.aborted)abort();
+      });
       const result=await Promise.race([
         Promise.resolve().then(()=>deleteObject({
           objectKey:claim.objectKey,signal:controller.signal
-        })),deadline
+        })),deadline,stopDeadline
       ]);
       if(timedOut||!strictResult(result)||result.objectKey!==claim.objectKey)
         throw Error('R2_DELETE_UNVERIFIED_RESULT');
@@ -93,7 +115,8 @@ async function processStagedR2GcBatch({
       // a storage failure. Instead allow the claim to expire and retry the
       // immutable key idempotently on a later explicitly invoked batch.
       if(storageSucceeded)throw error;
-      const safeCode=timedOut?'R2_DELETE_TIMEOUT':'R2_DELETE_FAILED';
+      const safeCode=shutdownAborted?'R2_DELETE_ABORTED':
+        timedOut?'R2_DELETE_TIMEOUT':'R2_DELETE_FAILED';
       const jitter=makeJitterSeconds();
       if(!Number.isSafeInteger(jitter)||jitter<0||jitter>30)
         throw new TypeError('Invalid trusted GC jitter');
@@ -107,6 +130,7 @@ async function processStagedR2GcBatch({
         code:retry.code||safeCode};
     }finally{
       if(timer)clearTimeout(timer);
+      if(stopAbortListener)signal.removeEventListener('abort',stopAbortListener);
       controller.abort();
     }
     outcomes.push(Object.freeze(outcome));
