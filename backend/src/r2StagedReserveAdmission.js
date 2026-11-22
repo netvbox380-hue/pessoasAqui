@@ -8,9 +8,11 @@
  * 60-minute reservation occur in ONE transaction. No SDK, URL, HTTP route,
  * credentials, network or server.js import.
  *
- * The objectKey must already be allocated by a trusted reservation/challenge
- * flow, then signed by the Android identity. A future route MUST NOT trust a
- * client-generated object key merely because it matches an opaque-key regex.
+ * The objectKey is a fresh opaque proposal, cryptographically signed by
+ * the active Android identity and bound to the exact pair/message. Unique
+ * ownership and lease are decided by the authoritative PostgreSQL INSERT.
+ * Future rollout must separately review key-generation provenance and the
+ * presigned PUT retirement fence before exposing any storage capability.
  */
 const {executeAuthenticatedR2Action}=require('./r2ActionAuth');
 const {reserveLeasedMediaObject}=require('./r2UploadLeaseRegistry');
@@ -26,8 +28,8 @@ function denied(statusCode,code){
 }
 
 /**
- * PRECONDITION: objectKey has been minted in a trusted backend challenge
- * and is cryptographically bound by proof to sender, peer and messageId.
+ * PRECONDITION: objectKey is cryptographically bound by the P-256 proof to
+ * sender, peer and messageId; the DB creates the durable ownership record.
  * This module intentionally does not issue an upload URL or PUT capability.
  *
  * withTransaction must be a real BEGIN/COMMIT/ROLLBACK PostgreSQL runner;
