@@ -60,7 +60,10 @@ function createStagedR2GetTransport({client,GetObjectCommand,bucket}={}){
     // Keep cancellation wired through the ENTIRE download, not only the
     // initial SDK request. All listeners detach when stream ends/closes.
     let attached=true;
-    const cancel=()=>body.destroy(aborted());
+    // Destroy without an error argument: a stream cancelled before the
+    // gateway starts async iteration may have no 'error' listener yet.
+    // The shared abortSignal is authoritative for cancellation status.
+    const cancel=()=>body.destroy();
     const detach=()=>{
       if(!attached)return;
       attached=false;
