@@ -70,7 +70,6 @@ async function processStagedR2GcBatch({
             code:'R2_DELETE_TIMEOUT'
           }));
         },deleteTimeoutMs);
-        timer.unref?.();
       });
       const result=await Promise.race([
         Promise.resolve().then(()=>deleteObject({
