@@ -24,11 +24,11 @@ async function assertR2RevocationSchemaInTransaction({txQuery}={}){
   if(typeof txQuery!=='function')
     throw new TypeError('PostgreSQL transaction query required');
   const found=await txQuery(
-    "SELECT to_regclass('public.r2_stream_revocation_events')::text AS relation",
+    "SELECT to_regclass('public.r2_stream_revocation_events') IS NOT NULL AS present",
     []
   );
   if(found?.rowCount!==1||
-     found.rows?.[0]?.relation!=='r2_stream_revocation_events')
+     found.rows?.[0]?.present!==true)
     throw Error('R2_REVOCATION_SCHEMA_NOT_READY');
   return true;
 }
