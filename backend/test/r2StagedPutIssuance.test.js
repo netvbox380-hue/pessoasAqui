@@ -16,9 +16,10 @@ const bucket='pessoasaqui-media';
 const now=Date.parse('2026-11-22T20:00:00Z');
 function makeProof(opts={}){
   const timestamp=opts.timestamp??now,nonce=opts.nonce??crypto.randomUUID();
+  const operation=opts.operation??'R2_ISSUE_PUT';
   const fields={messageId,objectKey};
   const signer=crypto.createSign('SHA256');
-  signer.update(canonicalR2Action('R2_RESERVE',identity,peerIdentity,
+  signer.update(canonicalR2Action(operation,identity,peerIdentity,
     fields,timestamp,nonce),'utf8');signer.end();
   return {v:1,timestamp,nonce,publicKey,
     signature:signer.sign(pair.privateKey).toString('base64')};
@@ -146,4 +147,36 @@ test('invalid identifiers and bucket fail without starting SQL',async()=>{
     else assert.equal(x.authorized,false);
     assert.equal(h.calls.length,0);
   }
+});
+
+test('R2_RESERVE signature cannot authorize R2_ISSUE_PUT even with matching fields',async()=>{
+  const h=harness();
+  const original=makeProof({operation:'R2_RESERVE'});
+  const out=await issue(h,{proof:original});
+  assert.equal(out.authorized,false);
+  assert.equal(out.code,'INVALID_R2_IDENTITY_PROOF');
+  assert.equal(h.signs,0);
+  assert.equal(h.calls.some(x=>x.sql.includes('r2_action_nonces')),false);
+  assert.equal(h.calls.some(x=>x.sql.includes('r2_put_capability_windows')),false);
+});
+test('R2_ISSUE_PUT proof cannot be repurposed as a signed reservation',()=>{
+  const issueProof=makeProof();
+  const {verifyR2ActionProof}=require('../src/r2ActionAuth');
+  const fields={messageId,objectKey};
+  assert.equal(verifyR2ActionProof({
+    operation:'R2_RESERVE',identity,peerIdentity,fields,
+    proof:issueProof,activePublicKey:publicKey,now
+  }),false);
+  assert.equal(verifyR2ActionProof({
+    operation:'R2_ISSUE_PUT',identity,peerIdentity,fields,
+    proof:issueProof,activePublicKey:publicKey,now
+  }),true);
+});
+test('domain-separated canonical payload differs for same key, actor, nonce and timestamp',()=>{
+  const nonce=crypto.randomUUID();
+  const fields={messageId,objectKey};
+  const reserve=canonicalR2Action('R2_RESERVE',identity,peerIdentity,fields,now,nonce);
+  const issue=canonicalR2Action('R2_ISSUE_PUT',identity,peerIdentity,fields,now,nonce);
+  assert.notEqual(reserve,issue);
+  assert.match(issue,/R2_ISSUE_PUT/);
 });
