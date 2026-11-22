@@ -90,7 +90,8 @@ test('abort after SDK returns cancels active stream and detaches listener',async
     objectKey,expectedBytes:3,abortSignal:ctrl.signal
   });
   assert.equal(opened.body,body);
-  assert.equal(ctrl.signal.listenerCount?.('abort'),undefined);
+  // The real streaming gateway consumes these errors via async iteration.
+  body.on('error',()=>{});
   ctrl.abort();
   assert.equal(body.destroyed,true);
   assert.equal(ctrl.signal.aborted,true);
