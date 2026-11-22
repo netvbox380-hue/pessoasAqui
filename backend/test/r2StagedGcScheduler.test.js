@@ -125,3 +125,21 @@ test('configuration rejects unbounded poll intervals or unknown dependencies',()
     runBatch:null,canRun:async()=>true
   }),/Trusted staged GC/);
 });
+
+test('stop sends AbortSignal to active batch and drains abort-aware work',async()=>{
+  let started=false,aborted=false;
+  const h=harness({runBatch:({signal})=>{
+    started=true;
+    return new Promise(resolve=>{
+      signal.addEventListener('abort',()=>{aborted=true;resolve([]);},{once:true});
+    });
+  }});
+  h.scheduler.start();
+  await h.fire();
+  assert.equal(started,true);
+  assert.equal(h.scheduler.busy,true);
+  await h.scheduler.stop();
+  assert.equal(aborted,true);
+  assert.equal(h.scheduler.busy,false);
+  assert.equal(h.jobs.size,0);
+});
