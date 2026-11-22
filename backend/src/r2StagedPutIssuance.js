@@ -4,16 +4,16 @@
  * PessoasAqui Stage 30T — authenticated create-only PUT issuance (STAGED).
  *
  * NO server.js route. NO credentials, AWS SDK or network on import.
- * A fresh P-256 R2_RESERVE proof authenticates sender/peer/message/key.
+ * A fresh P-256 R2_ISSUE_PUT proof authenticates sender/peer/message/key.
  * The same PostgreSQL transaction holds bilateral FOR SHARE, nonce insertion,
  * object FOR UPDATE, DB lease and durable PUT retirement ledger.
  *
  * Signer MUST be local SigV4 (no network) and only injected by trusted backend.
  * Do not expose a URL before the wrapping transaction has COMMITTED.
  *
- * The R2_RESERVE operation is reused with a NEW nonce until Android adopts
- * a dedicated signed PUT operation. Audit the semantic separation before
- * activation. A signed PUT URL is a bearer capability.
+ * R2_ISSUE_PUT is cryptographically distinct from R2_RESERVE and requires
+ * a separate Android signature with a fresh nonce. Old RESERVE signatures
+ * are invalid for PUT issuance. A signed PUT URL is a bearer capability.
  */
 const {executeAuthenticatedR2Action}=require('./r2ActionAuth');
 const {issuePutWithDurableRetirementFence}=
@@ -49,7 +49,7 @@ async function issueAuthenticatedR2Put({
   catch(_){return deny('INVALID_R2_PUT_REQUEST',400);}
 
   const verified=await executeAuthenticatedR2Action({
-    withTransaction,operation:'R2_RESERVE',
+    withTransaction,operation:'R2_ISSUE_PUT',
     identity,peerIdentity,fields:{messageId,objectKey},proof,now,
     action:async(tx,context)=>{
       // Row lock prevents concurrent finalization/expiry state mutations.
