@@ -103,3 +103,15 @@ test('trusted result mismatch is fail-closed rather than acknowledging',async()=
   assert.equal(f.res.code,503);
   assert.equal(f.res.payload.code,'R2_RESERVATION_MISMATCH');
 });
+
+test('reservation daily quota denial propagates HTTP 429 without storage capability',async()=>{
+  const f=fixture({
+    authorized:false,reserved:false,statusCode:429,
+    code:'R2_RESERVE_DAILY_QUOTA_EXCEEDED'
+  });
+  await f.invoke();
+  assert.equal(f.res.code,429);
+  assert.equal(f.res.payload.success,false);
+  assert.equal(f.res.payload.code,'R2_RESERVE_DAILY_QUOTA_EXCEEDED');
+  assert.equal(f.res.payload.url,undefined);
+});
