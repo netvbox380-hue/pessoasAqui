@@ -24,7 +24,7 @@ function proof(fields={messageId,objectKey},options={}){
     signature:signer.sign(kp.privateKey).toString('base64')};
 }
 function database({key=publicKey,bilateral=true,replay=false,
-  collision=false,expired=false,dbError=false}={}){
+  collision=false,expired=false,dbError=false,quotaExceeded=false}={}){
   const queries=[];
   const tx=async(sql,args=[])=>{
     queries.push({sql,args});
@@ -40,6 +40,10 @@ function database({key=publicKey,bilateral=true,replay=false,
     }
     if(sql.includes('INSERT INTO public.r2_action_nonces'))
       return {rowCount:replay?0:1,rows:replay?[]:[{nonce:args[1]}]};
+    if(sql.includes('INSERT INTO public.r2_reserve_daily_budget')){
+      return {rowCount:quotaExceeded?0:1,
+        rows:quotaExceeded?[]:[{reservations:1}]};
+    }
     if(sql.includes('INSERT INTO public.message_r2_objects')){
       if(collision)return {rowCount:0,rows:[]};
       return {rowCount:1,rows:[{
@@ -76,8 +80,9 @@ test('trusted proof, mutual connections and nonce precede immutable reservation'
     s.includes('identity_key_bindings')?'KEY':
     s.includes('FROM public.connections')?'PAIR':
     s.includes('r2_action_nonces')?'NONCE':
-    s.includes('INSERT INTO public.message_r2_objects')?'RESERVE':'OTHER'
-  ),['KEY','PAIR','NONCE','RESERVE']);
+    s.includes('INSERT INTO public.message_r2_objects')?'RESERVE':
+    s.includes('INSERT INTO public.r2_reserve_daily_budget')?'QUOTA':'OTHER'
+  ),['KEY','PAIR','NONCE','RESERVE','QUOTA']);
   assert.equal(db.queries[3].args[2],actor);
   assert.equal(db.queries[3].args[3],peer);
 });
@@ -143,4 +148,34 @@ test('invalid or ambiguous identities and keys are refused before SQL',async()=>
 test('database outages throw, never fall back to local RAM',async()=>{
   const db=database({dbError:true});
   await assert.rejects(reserve(db),/POSTGRES_DOWN/);
+});
+
+test('new reservation consumes quota after DB object INSERT, before COMMIT',async()=>{
+  const db=database();
+  const x=await reserve(db);
+  assert.equal(x.authorized,true);
+  const queries=db.queries.map(o=>o.sql);
+  const media=queries.findIndex(s=>s.includes('INSERT INTO public.message_r2_objects'));
+  const quota=queries.findIndex(s=>s.includes('INSERT INTO public.r2_reserve_daily_budget'));
+  assert.equal(quota,media+1);
+  assert.deepEqual(db.queries[quota].args.slice(1),[24]);
+  assert.equal(db.queries[quota].args[0],actor);
+});
+test('quota exhaustion returns 429 and must roll back nonce and reservation',async()=>{
+  const db=database({quotaExceeded:true});
+  const x=await reserve(db);
+  assert.equal(x.authorized,false);
+  assert.equal(x.reserved,false);
+  assert.equal(x.statusCode,429);
+  assert.equal(x.code,'R2_RESERVE_DAILY_QUOTA_EXCEEDED');
+  assert.ok(db.queries.some(o=>o.sql.includes('INSERT INTO public.message_r2_objects')));
+  // The enclosing real PostgreSQL withTransaction rolls back on throw.
+  assert.ok(db.queries.some(o=>o.sql.includes('INSERT INTO public.r2_reserve_daily_budget')));
+});
+test('idempotent duplicate does not charge new reservation quota',async()=>{
+  const db=database({collision:true});
+  const x=await reserve(db);
+  assert.equal(x.reserved,true);
+  assert.equal(x.duplicate,true);
+  assert.equal(db.queries.some(o=>o.sql.includes('r2_reserve_daily_budget')),false);
 });
