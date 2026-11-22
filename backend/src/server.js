@@ -2101,6 +2101,18 @@ app.post('/api/connections/unmark', async (req, res) => {
     return res.status(503).json({success:false,error:'Banco de conexões indisponível.'});
   }
 
+  // R2 Stage 30M: dual flag, disabled by default. No R2 DB access without
+  // explicit operator approval and migration 012 present in PostgreSQL.
+  const {
+    r2RevocationBridgeEnabled,
+    assertR2RevocationSchemaInTransaction,
+    recordGuardedUnmarkRevocation
+  } = require('./r2UnmarkRevocationGate');
+  const r2RevocationEnabled = r2RevocationBridgeEnabled();
+  if (r2RevocationEnabled && !isPostgres()) {
+    return res.status(503).json({success:false,error:'R2 revocation database unavailable.'});
+  }
+
   const kFrom = keyId(from);
   const kTo = keyId(to);
   let connectionRevision = null;
@@ -2120,8 +2132,13 @@ app.post('/api/connections/unmark', async (req, res) => {
         // A revogação usa o mesmo lock transacional de /connections/mark,
         // para que mark e unmark do mesmo par não sejam intercalados.
         await txQuery('SELECT pg_advisory_xact_lock(hashtext($1))', [pairKey(from, to)]);
+        // Refuse an enabled R2 rollout without migration 012, BEFORE making
+        // any connection or message mutation. The default path does no probe.
+        if (r2RevocationEnabled) {
+          await assertR2RevocationSchemaInTransaction({txQuery});
+        }
         // 1. Exclusão bilateral dos vínculos na tabela connections
-        await txQuery(
+        const delRes = await txQuery(
           `DELETE FROM connections
            WHERE (LOWER(from_identity) = LOWER($1) AND LOWER(to_identity) = LOWER($2))
               OR (LOWER(from_identity) = LOWER($2) AND LOWER(to_identity) = LOWER($1))`,
@@ -2130,7 +2147,7 @@ app.post('/api/connections/unmark', async (req, res) => {
 
         // 2. Cancelamento atômico das mensagens pendentes não entregues
         // Mensagens já entregues (is_delivered = TRUE) permanecem intocadas!
-        await txQuery(
+        const cancelRes = await txQuery(
           `UPDATE e2ee_messages
            SET is_cancelled = TRUE, cancelled_at = NOW()
            WHERE is_delivered = FALSE
@@ -2139,6 +2156,17 @@ app.post('/api/connections/unmark', async (req, res) => {
                OR (LOWER(sender_identity) = LOWER($2) AND LOWER(recipient_identity) = LOWER($1)))`,
           [from, to]
         );
+        // Pair notification is inserted and pg_notify queued INSIDE this
+        // same authoritative transaction, after the real SQL mutations.
+        // Both conditions must hold; off by default even on a live backend.
+        if (r2RevocationEnabled) {
+          await recordGuardedUnmarkRevocation({
+            txQuery,identityA:from,identityB:to,
+            deletedConnectionRows:delRes.rowCount,
+            cancelledMessageRows:cancelRes.rowCount,
+            enabled:true
+          });
+        }
         if (revisionsEnabled()) {
           return advancePairRevision(txQuery, from, to, 'NONE', 'UNMARK');
         }
