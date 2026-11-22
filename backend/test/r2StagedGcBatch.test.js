@@ -111,3 +111,43 @@ test('limit, timeout and trusted callbacks are bounded before database use',asyn
   await assert.rejects(call(db,null),/bounded GC/);
   assert.equal(db.statements.length,0);
 });
+
+test('pre-aborted shutdown returns without database or storage access',async()=>{
+  const db=database(),shutdown=new AbortController();
+  shutdown.abort();
+  let called=0;
+  const out=await call(db,async()=>{called++;return {deleted:true,objectKey};},
+    {signal:shutdown.signal});
+  assert.deepEqual(out,[]);
+  assert.equal(db.statements.length,0);
+  assert.equal(called,0);
+});
+test('shutdown during storage forwards abort and persists deferred retry',async()=>{
+  const db=database(),shutdown=new AbortController();
+  let storageAborted=false;
+  const out=await call(db,({signal})=>new Promise((_,reject)=>{
+    signal.addEventListener('abort',()=>{
+      storageAborted=true;
+      reject(Error('TRANSPORT_ABORTED'));
+    },{once:true});
+    shutdown.abort();
+  }),{signal:shutdown.signal});
+  assert.equal(storageAborted,true);
+  assert.equal(out[0].state,'RETRY_SCHEDULED');
+  assert.equal(out[0].code,'R2_DELETE_ABORTED');
+  assert.ok(db.statements.some(x=>x.sql.includes("state='RETRY'")));
+  assert.equal(db.statements.some(x=>x.sql.includes("state='DELETED'")),false);
+});
+test('shutdown with noncooperative SDK does not accept late storage completion',async()=>{
+  const db=database(),shutdown=new AbortController();
+  let lateResolve;
+  const out=await call(db,()=>new Promise(resolve=>{
+    lateResolve=resolve;
+    shutdown.abort();
+  }),{signal:shutdown.signal});
+  assert.equal(out[0].state,'RETRY_SCHEDULED');
+  assert.equal(out[0].code,'R2_DELETE_ABORTED');
+  lateResolve({deleted:true,objectKey});
+  await Promise.resolve();
+  assert.equal(db.statements.some(x=>x.sql.includes("state='DELETED'")),false);
+});
