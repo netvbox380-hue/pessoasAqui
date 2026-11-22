@@ -16,6 +16,9 @@ const crypto = require('node:crypto');
 const PROOF_WINDOW_MS = 120000;
 const OPERATIONS = Object.freeze({
   R2_RESERVE: ['messageId', 'objectKey'],
+  // Dedicated ECDSA domain for physical PUT capability issuance.
+  // A signed R2_RESERVE proof must NEVER authorize storage access.
+  R2_ISSUE_PUT: ['messageId', 'objectKey'],
   R2_CONFIRM: ['messageId', 'objectKey', 'generation', 'contentSha256', 'contentBytes'],
   R2_ATTACH: ['messageId', 'objectKey', 'generation', 'contentSha256', 'contentBytes',
     'ciphertextDigest'],
