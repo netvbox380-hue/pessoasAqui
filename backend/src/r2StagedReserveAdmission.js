@@ -5,7 +5,7 @@
  *
  * Uses the existing ECDSA P-256 / SHA-256 action proof and authoritative
  * PostgreSQL bilateral-connection check. The nonce insertion and immutable
- * 60-minute reservation occur in ONE transaction. No SDK, URL, HTTP route,
+ * 60-minute reservation and quota charge occur in ONE transaction. No SDK, URL, HTTP route,
  * credentials, network or server.js import.
  *
  * The objectKey is a fresh opaque proposal, cryptographically signed by
@@ -17,6 +17,7 @@
 const {executeAuthenticatedR2Action}=require('./r2ActionAuth');
 const {reserveLeasedMediaObject}=require('./r2UploadLeaseRegistry');
 const {validateOpaqueObjectKey}=require('./r2CiphertextAdapter');
+const {chargeNewR2Reservation,QUOTA_CODE}=require('./r2ReserveDailyBudget');
 
 const ID=/^[A-F0-9]{16}$/;
 function validMessageId(value){
@@ -49,16 +50,34 @@ async function admitAuthenticatedR2Reserve({
   try{validateOpaqueObjectKey(objectKey);}
   catch(_){return denied(400,'INVALID_R2_RESERVATION_REQUEST');}
 
-  const verified=await executeAuthenticatedR2Action({
-    withTransaction,operation:'R2_RESERVE',
-    identity,peerIdentity,
-    fields:{messageId,objectKey},proof,now,
-    action:(tx,context)=>reserveLeasedMediaObject({
-      query:tx,objectKey,messageId,
-      senderIdentity:context.authenticatedIdentity,
-      recipientIdentity:context.peerIdentity
-    })
-  });
+  let verified;
+  try{
+    verified=await executeAuthenticatedR2Action({
+      withTransaction,operation:'R2_RESERVE',
+      identity,peerIdentity,
+      fields:{messageId,objectKey},proof,now,
+      action:async(tx,context)=>{
+        const reservation=await reserveLeasedMediaObject({
+          query:tx,objectKey,messageId,
+          senderIdentity:context.authenticatedIdentity,
+          recipientIdentity:context.peerIdentity
+        });
+        // Charge ONLY new reservations; idempotent duplicates do not renew
+        // the lease and do not consume the daily quota again.
+        if(reservation?.reserved===true&&reservation.duplicate!==true){
+          // Throw on exhaustion to roll back BOTH the reservation and nonce.
+          await chargeNewR2Reservation({
+            tx,authenticatedIdentity:context.authenticatedIdentity
+          });
+        }
+        return reservation;
+      }
+    });
+  }catch(error){
+    if(error?.code===QUOTA_CODE)
+      return denied(429,QUOTA_CODE);
+    throw error;
+  }
 
   if(verified?.authorized!==true){
     return Object.freeze({
