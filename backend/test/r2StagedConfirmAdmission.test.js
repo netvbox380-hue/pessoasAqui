@@ -14,7 +14,7 @@ const objectKey='pending/12/34/12345678-1234-4234-8234-123456789abc';
 const contentSha256='a'.repeat(64),contentBytes=1234,generation=1;
 const now=Date.parse('2026-11-22T20:00:00Z');
 function proof(operation='R2_CONFIRM',override={}){
-  const fields=operation==='R2_RESERVE'
+  const fields=['R2_RESERVE','R2_ISSUE_PUT'].includes(operation)
     ? {messageId,objectKey}
     : {messageId,objectKey,generation,contentSha256,contentBytes,...override};
   const timestamp=now,nonce=crypto.randomUUID();
@@ -93,6 +93,15 @@ test('R2_RESERVE proof never authorizes R2_CONFIRM, even for same object/message
   assert.equal(out.code,'INVALID_R2_IDENTITY_PROOF');
   assert.equal(db.queries.length,1);
 });
+test('R2_ISSUE_PUT proof never authorizes R2_CONFIRM',async()=>{
+  const db=harness();
+  const out=await run(db,{proof:proof('R2_ISSUE_PUT')});
+  assert.equal(out.authorized,false);
+  assert.equal(out.code,'INVALID_R2_IDENTITY_PROOF');
+  assert.equal(db.queries.length,1);
+  assert.equal(db.queries.some(q=>q.sql.includes('r2_action_nonces')),false);
+});
+
 test('unilateral connection cannot claim or charge verification',async()=>{
   const db=harness({unilateral:true});const out=await run(db);
   assert.equal(out.code,'NO_MUTUAL_R2_CONNECTION');
