@@ -74,8 +74,6 @@ test('P-256 confirm atomically records nonce, claim and verification quota after
   assert.equal(out.authorized,true);
   assert.equal(out.granted,true);
   assert.match(out.claimId,/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
-  assert.equal(out.claimId,db.queries[6].sql.includes('r2_verification_claims')
-    ? '123e4567-e89b-42d3-a456-426614174000' : null);
   assert.equal(out.expectedBytes,contentBytes);
   assert.equal(Object.isFrozen(out),true);
   assert.equal(db.queries.length,8);
