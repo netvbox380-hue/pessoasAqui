@@ -103,6 +103,9 @@ async function checkPairAndMedia(tx,ticket,activePublicKey){
  * Never hold locks while waiting or downloading from storage.
  */
 async function preflightRetiredR2Put({withTransaction,ticket,activePublicKey}){
+  if(typeof withTransaction!=='function'||!validTicket(ticket)||
+    typeof activePublicKey!=='string'||!activePublicKey)
+    throw new TypeError('Trusted R2 preflight context required');
   return withTransaction(async tx=>{
     const denied=await checkPairAndMedia(tx,ticket,activePublicKey);
     if(denied)return denied;
