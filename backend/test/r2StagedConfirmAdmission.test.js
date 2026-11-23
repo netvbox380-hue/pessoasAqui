@@ -14,7 +14,9 @@ const objectKey='pending/12/34/12345678-1234-4234-8234-123456789abc';
 const contentSha256='a'.repeat(64),contentBytes=1234,generation=1;
 const now=Date.parse('2026-11-22T20:00:00Z');
 function proof(operation='R2_CONFIRM',override={}){
-  const fields={messageId,objectKey,generation,contentSha256,contentBytes,...override};
+  const fields=operation==='R2_RESERVE'
+    ? {messageId,objectKey}
+    : {messageId,objectKey,generation,contentSha256,contentBytes,...override};
   const timestamp=now,nonce=crypto.randomUUID();
   const signed=canonicalR2Action(operation,identity,peerIdentity,fields,timestamp,nonce);
   const signer=crypto.createSign('SHA256');
@@ -71,7 +73,9 @@ test('P-256 confirm atomically records nonce, claim and verification quota after
   const db=harness();const out=await run(db);
   assert.equal(out.authorized,true);
   assert.equal(out.granted,true);
-  assert.equal(out.claimId,'123e4567-e89b-42d3-a456-426614174000');
+  assert.match(out.claimId,/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  assert.equal(out.claimId,db.queries[6].sql.includes('r2_verification_claims')
+    ? '123e4567-e89b-42d3-a456-426614174000' : null);
   assert.equal(out.expectedBytes,contentBytes);
   assert.equal(Object.isFrozen(out),true);
   assert.equal(db.queries.length,8);
