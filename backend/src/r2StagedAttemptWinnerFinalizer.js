@@ -22,7 +22,7 @@ const {sealPutKeyForRetirement,SAFETY_SECONDS}=
 const {validateOpaqueObjectKey}=require('./r2CiphertextAdapter');
 const ID=/^[A-F0-9]{16}$/;
 const SHA=/^[a-f0-9]{64}$/;
-const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX=25*1024*1024;
 const reject=(code,statusCode=409)=>Object.freeze({
   confirmed:false,selected:false,code,statusCode
