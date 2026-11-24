@@ -10,6 +10,11 @@ ALTER TABLE public.message_r2_upload_attempts
   UNIQUE (object_key,message_id,sender_identity,generation);
 
 ALTER TABLE public.r2_attempt_verification_claims
+  ADD CONSTRAINT r2_claim_winner_exact_reference
+  UNIQUE (claim_id,object_key,message_id,identity_id,generation,
+          content_sha256,content_bytes);
+
+ALTER TABLE public.r2_attempt_verification_claims
   ADD CONSTRAINT r2_claim_attempt_exact_binding
   FOREIGN KEY (object_key,message_id,identity_id,generation)
   REFERENCES public.message_r2_upload_attempts
@@ -84,8 +89,12 @@ CREATE TABLE IF NOT EXISTS public.message_r2_winning_attempts (
     REFERENCES public.message_r2_upload_attempts
       (object_key,message_id,sender_identity,generation)
     ON UPDATE RESTRICT ON DELETE RESTRICT,
-  CONSTRAINT r2_winner_verified_claim
-    FOREIGN KEY(claim_id) REFERENCES public.r2_attempt_verification_claims(claim_id)
+  CONSTRAINT r2_winner_verified_claim_exact
+    FOREIGN KEY(claim_id,object_key,message_id,sender_identity,
+                generation,content_sha256,content_bytes)
+    REFERENCES public.r2_attempt_verification_claims
+      (claim_id,object_key,message_id,identity_id,generation,
+       content_sha256,content_bytes)
     ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 
@@ -117,8 +126,8 @@ BEGIN
 END $roles$;
 COMMIT;
 
--- This table is only a future pinning primitive. Its FK proves claim row
--- existence, NOT that claim.state=COMPLETED, not an independent GET SHA256,
+-- This table is only a future pinning primitive. Its composite FK proves
+-- exact claim binding, NOT that claim.state=COMPLETED or independent GET SHA256,
 -- not that the PUT cannot still be in flight, nor that content is E2EE.
 -- NEVER INSERT a winner from client-supplied verification flags.
 -- A later audited, backend-only finalizer must validate all of those inside
