@@ -17,6 +17,8 @@
  */
 const { authorizeRecipientR2Read } = require('./r2RecipientReadAuth');
 
+const { authorizeWinningRecipientR2Read } = require('./r2WinningRecipientReadAuth');
+
 function rejected(code, statusCode = 403) {
   return { allowed: false, statusCode, code };
 }
@@ -32,7 +34,7 @@ async function revalidateR2ReadAtStreamStart({ withTransaction, admission }) {
   }
   const {
     authenticatedIdentity: recipient, peerIdentity: sender,
-    messageId, objectKey, expectedSha256, expectedBytes
+    messageId, objectKey, expectedSha256, expectedBytes, winnerMode, identityKey
   } = admission.value;
 
   // Validate that the admitted values are syntactically valid. The original
@@ -47,6 +49,11 @@ async function revalidateR2ReadAtStreamStart({ withTransaction, admission }) {
   }
 
   return withTransaction(async tx => {
+    if (winnerMode === true) {
+      if (typeof identityKey !== 'string' || !identityKey) return rejected('R2_INVALID_PRIOR_ADMISSION',401);
+      const binding = await tx('SELECT public_key_spki FROM public.identity_key_bindings WHERE identity_id=$1 FOR SHARE',[recipient]);
+      if (binding.rowCount !== 1 || binding.rows[0].public_key_spki !== identityKey) return rejected('R2_IDENTITY_REVOKED',401);
+    }
     const conn = await tx(
       `SELECT from_identity,to_identity,is_mutual
          FROM public.connections
@@ -62,7 +69,8 @@ async function revalidateR2ReadAtStreamStart({ withTransaction, admission }) {
         r.to_identity?.toUpperCase() === sender && r.is_mutual === true);
     if (!both) return rejected('R2_CONNECTION_REVOKED');
 
-    const current = await authorizeRecipientR2Read({
+    const authorize = winnerMode === true ? authorizeWinningRecipientR2Read : authorizeRecipientR2Read;
+    const current = await authorize({
       tx, authenticatedIdentity: recipient, peerIdentity: sender,
       messageId, objectKey
     });
