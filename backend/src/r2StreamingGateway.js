@@ -65,7 +65,8 @@ async function streamAuthenticatedR2Ciphertext({
       reference:{
         senderIdentity:v.peerIdentity,recipientIdentity:v.authenticatedIdentity,
         messageId:v.messageId,objectKey:v.objectKey,
-        expectedSha256:v.expectedSha256,expectedBytes:v.expectedBytes
+        expectedSha256:v.expectedSha256,expectedBytes:v.expectedBytes,
+        ...(v.winnerMode===true?{winnerMode:true,identityKey:v.identityKey}:{})
       },
       abortController,response
     });
@@ -83,7 +84,7 @@ async function streamAuthenticatedR2Ciphertext({
     // The injected adapter must accept signal and return {body,contentLength}.
     // It MUST support abort on SDK send and destroy late-arriving bodies.
     const opened=await openCiphertext({
-      objectKey:v.objectKey,expectedBytes:v.expectedBytes,
+      objectKey:current.objectKey,expectedBytes:current.expectedBytes,
       abortSignal:abortController.signal
     });
     body=opened?.body;
