@@ -8,7 +8,7 @@
  * backend POST route after migration, R2 runtime and rollout approval.
  * Never permit Android to submit a prior admission or decrypted payload.
  */
-const {admitAuthenticatedR2Read}=require('./r2ReadAdmission');
+const {admitAuthenticatedR2Read,admitAuthenticatedWinningR2Read}=require('./r2ReadAdmission');
 const {validateOpaqueObjectKey}=require('./r2CiphertextAdapter');
 const ID=/^[A-F0-9]{16}$/;
 const MAX_MESSAGE=256;
@@ -118,4 +118,8 @@ function createStagedR2ReadHandler({
   };
 }
 
-module.exports={createStagedR2ReadHandler};
+// Explicit server-side factory; no client-selected mode and no fallback.
+function createStagedWinningR2ReadHandler(options={}){
+  return createStagedR2ReadHandler({...options,admitRead:admitAuthenticatedWinningR2Read});
+}
+module.exports={createStagedR2ReadHandler,createStagedWinningR2ReadHandler};
