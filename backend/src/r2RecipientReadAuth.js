@@ -57,6 +57,8 @@ async function authorizeRecipientR2Read({
        FROM public.message_r2_objects o
        JOIN public.e2ee_messages m ON m.id=o.message_id
       WHERE o.object_key=$1 AND o.message_id=$2
+        AND (to_jsonb(o)->>'r2_winner_attach_mode') IS DISTINCT FROM 'true'
+        AND (to_jsonb(m)->>'r2_winning_object_key') IS NULL
         AND UPPER(o.sender_identity)=$3
         AND UPPER(o.recipient_identity)=$4
         AND UPPER(m.sender_identity)=$3
