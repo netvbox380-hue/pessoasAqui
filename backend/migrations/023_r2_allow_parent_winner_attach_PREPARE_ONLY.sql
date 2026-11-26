@@ -13,7 +13,7 @@ ALTER TABLE public.message_r2_objects
   DROP CONSTRAINT message_r2_objects_completed_fields_chk;
 ALTER TABLE public.message_r2_objects
   ADD CONSTRAINT message_r2_objects_completed_fields_chk CHECK (
-    state IN ('RESERVED','ORPHAN_QUEUED','ORPHAN_DELETED')
+    (r2_winner_attach_mode=FALSE AND state IN ('RESERVED','ORPHAN_QUEUED','ORPHAN_DELETED'))
     OR (r2_winner_attach_mode=FALSE
         AND content_sha256 IS NOT NULL
         AND content_bytes IS NOT NULL
