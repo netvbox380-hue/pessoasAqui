@@ -92,6 +92,7 @@ function createR2ActiveStreamRegistry({
       objectKey:reference.objectKey,
       expectedSha256:reference.expectedSha256,
       expectedBytes:reference.expectedBytes,
+      winnerMode:reference.winnerMode,identityKey:reference.identityKey,
       abortController,response,listeners:[]
     };
     const cleanup=()=>remove(token);
@@ -151,7 +152,8 @@ function createR2ActiveStreamRegistry({
       token,senderIdentity:e.senderIdentity,
       recipientIdentity:e.recipientIdentity,messageId:e.messageId,
       objectKey:e.objectKey,expectedSha256:e.expectedSha256,
-      expectedBytes:e.expectedBytes
+      expectedBytes:e.expectedBytes,
+      ...(e.winnerMode===true?{winnerMode:true,identityKey:e.identityKey}:{})
     })));
   }
 
