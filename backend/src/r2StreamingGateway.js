@@ -53,7 +53,7 @@ async function streamAuthenticatedR2Ciphertext({
   if(!listener.ready)return denied('R2_REVOCATION_LISTENER_NOT_READY');
   const v=admission.value;
   const abortController=new AbortController();
-  let handle,body,timer,timedOut=false,sentBytes=0;
+  let handle,body,timer,monitor,timedOut=false,sentBytes=0;
   timer=setTimeout(()=>{
     timedOut=true;
     abortController.abort('R2_STREAM_DEADLINE');
@@ -80,6 +80,20 @@ async function streamAuthenticatedR2Ciphertext({
     if(!handle.active||abortController.signal.aborted||!listener.ready){
       handle.cancel();
       return denied('R2_STREAM_REVOKED_BEFORE_START');
+    }
+    // Winner-only ongoing checks: bounded periodic revalidation even if
+    // identity rotation or expiry has no corresponding outbox event.
+    // Never overlap checks; errors cancel the transfer.
+    if(v.winnerMode===true){
+      const check=async()=>{
+        try{
+          if(!handle.active)return;
+          const fresh=await revalidateR2ReadAtStreamStart({withTransaction,admission});
+          if(!fresh.allowed||!listener.ready){handle.cancel();return;}
+          if(handle.active){monitor=setTimeout(check,2000);monitor.unref?.();}
+        }catch(_){handle.cancel();}
+      };
+      monitor=setTimeout(check,2000);monitor.unref?.();
     }
     // The injected adapter must accept signal and return {body,contentLength}.
     // It MUST support abort on SDK send and destroy late-arriving bodies.
@@ -123,6 +137,11 @@ async function streamAuthenticatedR2Ciphertext({
     if(sentBytes!==v.expectedBytes||
        digest.digest('hex')!==v.expectedSha256)
       throw Error('R2_CIPHERTEXT_INTEGRITY_FAILED');
+    if(v.winnerMode===true){
+      const final=await revalidateR2ReadAtStreamStart({withTransaction,admission});
+      if(!final.allowed||!handle.active||abortController.signal.aborted||!listener.ready)
+        throw Error('R2_STREAM_REVOKED');
+    }
     response.end();
     return Object.freeze({sent:true,bytes:sentBytes});
   }catch(error){
@@ -131,6 +150,7 @@ async function streamAuthenticatedR2Ciphertext({
     return denied('R2_STREAM_ABORTED_OR_INTEGRITY_FAILED');
   }finally{
     clearTimeout(timer);
+    clearTimeout(monitor);
     body?.destroy?.();
     handle?.close();
   }
