@@ -4,7 +4,7 @@
  * PessoasAqui 30Y-D1 — authenticated E2EE attachment to ONE immutable
  * verified physical winner. STAGED ONLY; not imported by server.js.
  *
- * Requires migration 022. Never uses parent.object_key for storage access.
+ * Requires migrations 022 and 023. Never uses parent.object_key for storage access.
  * No GET/PUT, no delivery ACK, no plaintext or E2EE key material.
  */
 const crypto=require('node:crypto');
@@ -142,8 +142,8 @@ async function attachAuthenticatedWinningR2Media({
       if(inserted.rowCount!==1)throw Error('R2_ATTACH_MESSAGE_INSERT_CONFLICT');
       const updated=await tx(
         `UPDATE public.message_r2_objects
-            SET state='ATTACHED',attached_at=clock_timestamp(),
-                last_changed_at=clock_timestamp()
+            SET state='ATTACHED',r2_winner_attach_mode=TRUE,
+                attached_at=clock_timestamp(),last_changed_at=clock_timestamp()
           WHERE message_id=$1 AND state='RESERVED'
             AND upload_lease_expires_at>clock_timestamp()
           RETURNING message_id`,[messageId]
