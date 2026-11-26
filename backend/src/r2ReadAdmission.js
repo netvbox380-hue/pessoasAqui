@@ -14,14 +14,16 @@
 const { executeAuthenticatedR2Action } = require('./r2ActionAuth');
 const { authorizeRecipientR2Read } = require('./r2RecipientReadAuth');
 
+const { authorizeWinningRecipientR2Read } = require('./r2WinningRecipientReadAuth');
+
 const MAX_DAILY_READS = 24;
 const MAX_DAILY_READ_BYTES = 300 * 1024 * 1024;
 const MAX_READ_BYTES = 25 * 1024 * 1024;
 
-async function admitAuthenticatedR2Read({
+async function admitReadWithMode({
   withTransaction, identity, peerIdentity, messageId, objectKey, proof,
   now = Date.now()
-}) {
+}, winnerMode) {
   if (typeof withTransaction !== 'function') {
     throw new TypeError('PostgreSQL transaction required');
   }
@@ -29,7 +31,8 @@ async function admitAuthenticatedR2Read({
     withTransaction, operation: 'R2_READ', identity, peerIdentity,
     fields: { messageId, objectKey }, proof, now,
     action: async (tx, ctx) => {
-      const allowed = await authorizeRecipientR2Read({
+      const authorize = winnerMode ? authorizeWinningRecipientR2Read : authorizeRecipientR2Read;
+      const allowed = await authorize({
         tx, authenticatedIdentity: ctx.authenticatedIdentity,
         peerIdentity: ctx.peerIdentity, messageId, objectKey
       });
@@ -69,7 +72,8 @@ async function admitAuthenticatedR2Read({
         peerIdentity: allowed.peerIdentity,
         messageId: allowed.messageId, objectKey: allowed.objectKey,
         expectedSha256: allowed.expectedSha256,
-        expectedBytes: allowed.expectedBytes
+        expectedBytes: allowed.expectedBytes,
+        ...(winnerMode ? { winnerMode: true, identityKey: proof.publicKey } : {})
       });
     }
   });
@@ -80,7 +84,11 @@ async function admitAuthenticatedR2Read({
   return { authorized: true, admitted: true, value: verification.value };
 }
 
+function admitAuthenticatedR2Read(args) { return admitReadWithMode(args, false); }
+function admitAuthenticatedWinningR2Read(args) { return admitReadWithMode(args, true); }
+
 module.exports = {
+  admitAuthenticatedWinningR2Read,
   MAX_DAILY_READS, MAX_DAILY_READ_BYTES,
   admitAuthenticatedR2Read
 };
