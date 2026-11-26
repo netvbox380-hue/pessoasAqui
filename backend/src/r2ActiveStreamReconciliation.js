@@ -55,7 +55,8 @@ async function reconcileR2ActiveStreams({registry,withTransaction}){
           peerIdentity:entry.senderIdentity,
           messageId:entry.messageId,objectKey:entry.objectKey,
           expectedSha256:entry.expectedSha256,
-          expectedBytes:entry.expectedBytes
+          expectedBytes:entry.expectedBytes,
+          ...(entry.winnerMode===true?{winnerMode:true,identityKey:entry.identityKey}:{})
         }
       };
       // Constructed only from a private registry snapshot, never request JSON.
